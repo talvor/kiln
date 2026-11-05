@@ -135,6 +135,11 @@ async function serve(
   }
 }
 
+/** A socket file younger than this may belong to a daemon that has bound but not yet listened. */
+const FRESH_SOCKET_MS = 2000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /** Bind the daemon socket; returns undefined if a live daemon already owns it. */
 async function claimSocket(path: string, log: Logger): Promise<Deno.Listener | undefined> {
   const listen = () => {
@@ -148,12 +153,23 @@ async function claimSocket(path: string, log: Logger): Promise<Deno.Listener | u
     // Typically AddrInUse, but the error class varies by platform: decide by probing instead.
     log.info("socket already exists", { path, err });
   }
-  if (await canConnect(path)) {
-    log.info("daemon already running; exiting");
-    return undefined;
+
+  // Another daemon may be between bind and listen. Give a fresh socket a moment to come alive.
+  const deadline = Date.now() + FRESH_SOCKET_MS;
+  while (true) {
+    if (await canConnect(path)) {
+      log.info("daemon already running; exiting");
+      return undefined;
+    }
+    let ageMs = Infinity;
+    try {
+      ageMs = Date.now() - (Deno.statSync(path).mtime?.getTime() ?? 0);
+    } catch { /* socket vanished: nothing to wait for */ }
+    if (ageMs > FRESH_SOCKET_MS || Date.now() > deadline) break;
+    await sleep(50);
   }
   log.info("removing stale socket", { path });
-  Deno.removeSync(path);
+  removeQuietly(path);
   return listen();
 }
 
