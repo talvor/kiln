@@ -4,7 +4,7 @@
 // directly can embed the native Claude binaries from the SDK's optional per-platform
 // packages. The bundle limits the compile input to the JavaScript the program imports.
 // The result goes through the guards.
-import { dirname, fromFileUrl, join, resolve } from "jsr:@std/path@1";
+import { dirname, fromFileUrl, join, resolve } from "@std/path";
 import { checkExecutable } from "./guard.ts";
 
 const root = resolve(dirname(fromFileUrl(import.meta.url)), "..");

@@ -1,4 +1,4 @@
-import { fromFileUrl } from "jsr:@std/path@1";
+import { fromFileUrl } from "@std/path";
 import { lastError } from "./log.ts";
 import type { KilnPaths } from "./paths.ts";
 import { readLines, type Response, writeJson } from "./protocol.ts";

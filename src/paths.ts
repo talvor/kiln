@@ -1,4 +1,4 @@
-import { join } from "jsr:@std/path@1";
+import { join } from "@std/path";
 
 export interface KilnPaths {
   /** Configuration: roles, playbooks, config file. Safe to keep in git. */

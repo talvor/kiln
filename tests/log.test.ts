@@ -1,7 +1,7 @@
 // The daemon log is only reachable through a running daemon for a few events, so the
 // redaction and rotation rules are tested at the logger's own interface.
-import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
-import { join } from "jsr:@std/path@1";
+import { assert, assertEquals, assertFalse } from "@std/assert";
+import { join } from "@std/path";
 import { createLogger } from "../src/log.ts";
 
 function lines(file: string): Record<string, unknown>[] {

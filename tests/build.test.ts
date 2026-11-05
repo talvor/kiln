@@ -1,7 +1,7 @@
 // The build recipe and its guards, driven the way a person drives them: `deno task build`
 // produces the executable, the executable runs, and the guards fail a bad one.
-import { assert, assertEquals, assertMatch, assertStringIncludes } from "jsr:@std/assert@1";
-import { fromFileUrl, join } from "jsr:@std/path@1";
+import { assert, assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
+import { fromFileUrl, join } from "@std/path";
 import denoJson from "../deno.json" with { type: "json" };
 import { makeHome } from "./helpers.ts";
 

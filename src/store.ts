@@ -1,4 +1,4 @@
-import { join } from "jsr:@std/path@1";
+import { join } from "@std/path";
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import type { Logger } from "./log.ts";
 
