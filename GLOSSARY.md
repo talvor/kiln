@@ -1,0 +1,57 @@
+# Kiln
+
+Kiln is a long-running AI coding factory. A person asks it for software work across the projects registered with it, and departments of AI agents carry that work out and check it.
+
+## Language
+
+**Kiln**:
+The factory as a whole: the overseer, its departments, and the projects registered with it.
+_Avoid_: platform, system, orchestrator
+
+**Overseer**:
+The single role the user talks to. It receives requests, delegates them to departments, and brings the user the decisions that are theirs.
+_Avoid_: manager, coordinator, orchestrator, boss
+
+**Department**:
+A group of roles responsible for one kind of work, made up of one leader and its workers.
+_Avoid_: team, squad, role group
+
+**Leader**:
+The role that heads a department. It coordinates and verifies the department's work and never does that work itself.
+_Avoid_: lead, manager, supervisor
+
+**Worker**:
+A role that does the actual work of a department, one assignment at a time.
+_Avoid_: agent, minion, drone
+
+**Project**:
+A code repository registered with Kiln, which Kiln can do work on.
+_Avoid_: repo, codebase, target
+
+**Request**:
+A piece of work the user asks the overseer for on a project, such as implementing a ticket, researching a bug, or designing a feature.
+_Avoid_: task, job, order
+
+**Assignment**:
+A unit of a request handed from a leader to a worker.
+_Avoid_: task, job
+
+**Playbook**:
+The ordered list of department steps Kiln follows for one type of request.
+_Avoid_: workflow, pipeline, recipe
+
+**Gate**:
+A point in a request where the overseer must bring the user a decision before work can continue.
+_Avoid_: approval step, checkpoint
+
+**Escalation**:
+A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make.
+_Avoid_: alert, handoff up
+
+**Inbox**:
+The place where messages addressed to one agent wait to be read. Assignments, results, questions and answers all travel as messages in inboxes.
+_Avoid_: mailbox, queue, channel
+
+**Nudge**:
+A short prompt from Kiln that wakes an agent so it reads its inbox.
+_Avoid_: ping, wake-up call, notification

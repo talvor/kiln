@@ -1,43 +1,45 @@
-# Issue tracker: otman
+# Issue tracker: GitHub
 
-Issues and specs for this repo live as Items in an Obsidian Vault managed by [otman](https://github.com/talvor/otman). Use the `otman` CLI for all operations; never edit Item files directly.
-
-This repo is linked to Project `KILN` by `.otman.toml` at the repo root (`otman project link KILN`). The Vault path and your actor name come from `~/.config/otman/config.toml` (`otman config show` prints the effective values). Agents run as the human's configured actor: `@me` means that actor.
+Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
 ## Conventions
 
-- **Refer to Items** as `KILN-<n>` (e.g. `KILN-12`), and in prose by their title. Inside Item bodies, link with a full-filename wikilink: `[[KILN-12 Allocate item numbers]]`. A bare number like `12` or `#12` means `KILN-12`.
-- **Output**: piped output is compact AXI-style. Add `--json` whenever you parse a result; it is the stable contract (`{"schema_version":1,"data":…,"warnings":[]}`). On failure, stdout is empty and stderr carries `error.code`/`error.hint`. Exit 3 means not found, and 4 means a conflict (already claimed, an ambiguous ID, or a stale edit).
-- **Multi-line text**: pass it with `--body-file -` and a heredoc, never with `--body "…"`.
-- **Create an issue**: `otman create --title "..." --body-file - <<'EOF' … EOF`. Add `--kind spec` for a spec and `--kind prd` only when a PRD is asked for by name. Add `--label`, `--parent REF` and `--blocked-by REF` as needed.
-- **Read an issue**: `otman view <REF> --full --comments` (or `--json`, which always includes body and comments).
-- **List issues**: `otman list --json` with `--label L` (repeatable, AND), `--without-label L`, `--unlabeled`, `--state open|closed|all`, `--kind`, `--assignee @me|NAME`, `--unassigned`, `--parent REF`, `--blocked-by REF` and `--search TEXT`. The default is the 50 oldest open Items; follow `has_more` with `--offset`, or pass `--all`.
-- **Comment on an issue**: `otman comment <REF> --body-file - <<'EOF' … EOF`
-- **Apply / remove labels**: `otman edit <REF> --add-label "..." --remove-label "..."` in one call. Repeated adds or removes are no-ops.
-- **Close**: `otman close <REF> --comment-file - <<'EOF' … EOF`. Reopen with `otman reopen <REF>`.
-- **Edit a body safely**: read `rev` from `otman view <REF> --json`, write the new body with `otman edit <REF> --body-file - --if-rev <rev>`. On exit 4 `stale_item`, re-read, re-apply your change and retry.
-- **Nothing closes Items automatically.** Commits and PRs should mention `KILN-<n>`, but only `otman close` closes work.
+- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **Comment on an issue**: `gh issue comment <number> --body "..."`
+- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
+- **Close**: `gh issue close <number> --comment "..."`
+
+Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
 ## Pull requests as a triage surface
 
-**PRs as a request surface: not applicable.** otman tracks no pull requests; `/triage` covers Items only.
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+
+When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
+
+- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
+- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
+
+GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
 ## When a skill says "publish to the issue tracker"
 
-Create an Item with `otman create`: `--kind spec` for a spec (to-spec), `--kind issue --parent <spec>` for implementation tickets (to-tickets), and `--kind issue` otherwise.
+Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `otman view <REF> --full --comments`.
+Run `gh issue view <number> --comments`.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a single Item with **child** Items as tickets.
+Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: an Item of Kind `issue` labelled `wayfinder:map`, holding the Destination / Notes / Decisions-so-far / Not yet specified / Out of scope body. `otman create --label wayfinder:map --title "..." --body-file -`.
-- **Child ticket**: `otman create --parent <map> --label wayfinder:<type> --title "..." --body-file -`, where type is `research`/`prototype`/`grilling`/`task`. List them with `otman list --parent <map> --state all`. Map order is number order.
-- **Blocking**: otman's native `blocked_by` relation, which also renders in Obsidian Bases. Add an edge with `otman block <child> --by <blocker>` (or `--blocked-by` at create). Both Items must be in the same Project, and cycles are rejected. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: `otman frontier --parent <map> --json` returns the open, unassigned children with no open blocker, in map order. Take the first.
-- **Claim**: `otman claim <n>`, the session's first write. Exit 4 means someone else holds it: take the next frontier ticket.
-- **Resolve**: `otman close <n> --comment-file - <<'EOF' <answer> EOF`. Then append a context pointer (`- [[KILN-n Title]]: gist`) to the map's Decisions-so-far with a guarded body edit (`--if-rev`, above), because other sessions may be editing the map at the same time.
-- **Drop a ticket** that the map no longer needs: close it with a comment saying why. otman has no delete.
+- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
+- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
+- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
+- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
+- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
+- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
