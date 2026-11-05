@@ -23,12 +23,7 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
   try {
     await serveForever(paths, log);
   } catch (err) {
-    log.error(
-      `daemon crashed: ${(err as Error).message} ${
-        ((err as Error).stack ?? "").split("\n").slice(0, 6).join(" | ")
-      }`,
-      { err },
-    ); // DEBUG
+    log.error(`daemon crashed: ${(err as Error).message}`, { err });
     Deno.exit(1);
   }
 }
@@ -93,7 +88,19 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   store.appendEvent("daemon.started", { pid: Deno.pid, version: VERSION });
   log.info("daemon started", { pid: Deno.pid, version: VERSION, socket: paths.socket });
 
-  for await (const conn of listener) serve(conn, handlers, log);
+  while (!stopping) {
+    let conn: Deno.Conn;
+    try {
+      conn = await listener.accept();
+    } catch (err) {
+      if (stopping || err instanceof Deno.errors.BadResource) break;
+      // macOS reports EINVAL when a client (e.g. a liveness probe) hangs up before we accept it.
+      log.debug("accept failed; continuing", { err });
+      await sleep(10);
+      continue;
+    }
+    serve(conn, handlers, log);
+  }
 }
 
 interface Context {
