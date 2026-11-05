@@ -8,11 +8,10 @@ import { makeHome } from "./helpers.ts";
 const ROOT = fromFileUrl(new URL("..", import.meta.url));
 const dec = new TextDecoder();
 
-async function deno(args: string[], env: Record<string, string> = {}) {
+async function deno(args: string[]) {
   const out = await new Deno.Command(Deno.execPath(), {
     args,
     cwd: ROOT,
-    env,
     stdout: "piped",
     stderr: "piped",
   })
@@ -20,8 +19,8 @@ async function deno(args: string[], env: Record<string, string> = {}) {
   return { code: out.code, stdout: dec.decode(out.stdout), stderr: dec.decode(out.stderr) };
 }
 
-const build = (out: string, extra: string[] = [], env: Record<string, string> = {}) =>
-  deno(["run", "-A", "scripts/build.ts", "--out", out, ...extra], env);
+const build = (out: string, extra: string[] = []) =>
+  deno(["run", "-A", "scripts/build.ts", "--out", out, ...extra]);
 
 async function scratch<T>(body: (dir: string) => Promise<T>): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "kiln-build-test-" });
@@ -31,8 +30,6 @@ async function scratch<T>(body: (dir: string) => Promise<T>): Promise<T> {
     await Deno.remove(dir, { recursive: true });
   }
 }
-
-const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
 
 Deno.test("the Claude Agent SDK is pinned to an exact version", () => {
   const spec = denoJson.imports["@anthropic-ai/claude-agent-sdk"];
@@ -83,13 +80,15 @@ Deno.test("an executable built against the pinned SDK stays lean and runs", asyn
   });
 });
 
-Deno.test("the build fails, and leaves no executable, when it is over the size limit", async () => {
+Deno.test("the guard fails an executable over the fixed size limit", async () => {
   await scratch(async (dir) => {
     const exe = join(dir, "kiln");
-    const built = await build(exe, [], { KILN_MAX_EXE_BYTES: "1000000" });
-    assertEquals(built.code, 1);
-    assertStringIncludes(built.stderr, "guard size");
-    assertEquals(await exists(exe), false);
+    await Deno.writeFile(exe, new Uint8Array());
+    await Deno.truncate(exe, 150_000_001);
+    const guard = await deno(["run", "-A", "scripts/guard.ts", exe]);
+    assertEquals(guard.code, 1);
+    assertStringIncludes(guard.stderr, "guard size");
+    assert(!guard.stderr.includes("guard native-claude-binary"));
   });
 });
 

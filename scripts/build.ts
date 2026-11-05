@@ -1,4 +1,4 @@
-// Builds the single-file `kiln` executable: `deno task build [--entry file] [--out file]`.
+// Builds the single-file `kiln` executable: `deno task build`.
 //
 // The entry point is bundled first, then the bundle is compiled. Compiling the sources
 // directly makes Deno embed every npm package the Claude Agent SDK lists, including the
@@ -21,9 +21,10 @@ async function run(args: string[]): Promise<void> {
     stdout: "inherit",
     stderr: "inherit",
   }).output();
-  if (!out.success) Deno.exit(out.code || 1);
+  if (!out.success) throw new Error(`deno ${args[0]} failed with exit code ${out.code}`);
 }
 
+// --entry and --out are test support, not supported user-facing build options.
 const entry = resolve(option("--entry", join(root, "src", "main.ts")));
 const outFile = resolve(option("--out", join(root, "dist", "kiln")));
 await Deno.mkdir(dirname(outFile), { recursive: true });
@@ -36,9 +37,7 @@ try {
   await Deno.remove(work, { recursive: true });
 }
 
-const violations = checkExecutable(outFile, {
-  maxBytes: Number(Deno.env.get("KILN_MAX_EXE_BYTES") ?? "") || undefined,
-});
+const violations = checkExecutable(outFile);
 if (violations.length) {
   await Deno.remove(outFile);
   for (const v of violations) console.error(`build failed, guard ${v.guard}: ${v.message}`);
