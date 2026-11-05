@@ -1,7 +1,7 @@
 // Fake PR-status command (`gh pr view <branch> --json ...`). Each call consumes the next
 // scripted status from $KILN_FAKE_DIR/pr-status/script.json, records
 // the call, and prints the status as JSON.
-import { join } from "jsr:@std/path@1";
+import { join } from "node:path";
 
 const dir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "pr-status");
 const scriptFile = join(dir, "script.json");

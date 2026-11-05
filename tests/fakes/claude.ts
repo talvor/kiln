@@ -2,7 +2,7 @@
 // $KILN_FAKE_DIR/launcher/script.json, records the call, and replays the run:
 // write files into the working directory, print output, exit with the scripted code.
 // Once the script is exhausted every further call fails loudly (exit 99).
-import { dirname, join } from "jsr:@std/path@1";
+import { dirname, join } from "node:path";
 
 export interface LauncherRun {
   stdout?: string;

@@ -22,5 +22,11 @@
         "jsr:@std/internal@^1.0.14"
       ]
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@std/assert@1",
+      "jsr:@std/path@1"
+    ]
   }
 }

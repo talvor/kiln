@@ -1,5 +1,5 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
-import { join } from "jsr:@std/path@1";
+import { assert, assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { status } from "./helpers.ts";
 import { withWorld } from "./world.ts";
 

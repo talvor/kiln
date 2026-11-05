@@ -2,7 +2,7 @@
 // all fake and local: a scripted `claude` launcher, a bare git remote with a seeded Project
 // clone, and a scripted PR-status command (`gh`). The shims sit first on PATH, so the real
 // daemon and anything it spawns finds them exactly as it would find the real tools.
-import { fromFileUrl, join } from "jsr:@std/path@1";
+import { fromFileUrl, join } from "@std/path";
 import { type Home, makeHome, type Result, runKiln } from "./helpers.ts";
 import type { LauncherRun } from "./fakes/claude.ts";
 
