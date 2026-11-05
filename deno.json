@@ -1,0 +1,21 @@
+{
+  "name": "@talvor/kiln",
+  "version": "0.1.0",
+  "exports": "./src/main.ts",
+  "tasks": {
+    "kiln": "deno run -A src/main.ts",
+    "check": "deno check src tests",
+    "test": "deno test -A"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "include": [
+      "src/",
+      "tests/",
+      "deno.json"
+    ]
+  }
+}
