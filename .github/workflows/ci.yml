@@ -26,8 +26,6 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno run -A dbg.ts
-        continue-on-error: true
       - run: deno fmt --check
       - run: deno check src tests
       - run: deno task test

@@ -1,5 +1,5 @@
 import { join } from "jsr:@std/path@1";
-import { DatabaseSync } from "node:sqlite";
+import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import type { Logger } from "./log.ts";
 
 /**
@@ -39,7 +39,7 @@ export interface StoreInfo {
 export interface Store {
   info(): StoreInfo;
   /** Write a consistent copy of the store into the backups directory; returns its path. */
-  backup(label?: string): string;
+  backup(label?: string): Promise<string>;
   appendEvent(kind: string, data?: Record<string, unknown>): void;
   close(): void;
 }
@@ -55,7 +55,7 @@ function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-export function openStore(opts: StoreOptions): Store {
+export async function openStore(opts: StoreOptions): Promise<Store> {
   const migrations = opts.migrations ?? MIGRATIONS;
   const existed = (() => {
     try {
@@ -81,17 +81,18 @@ export function openStore(opts: StoreOptions): Store {
     if (found > migrations.length) throw new StoreTooNewError(found, migrations.length);
 
     let backupSeq = 0;
-    const backup = (label = "manual"): string => {
+    // Uses SQLite's online backup API (VACUUM INTO fails to open its target under Deno on macOS).
+    const backup = async (label = "manual"): Promise<string> => {
       Deno.mkdirSync(opts.backupsDir, { recursive: true, mode: 0o700 });
       const dest = join(opts.backupsDir, `kiln-${label}-${stamp()}-${backupSeq++}.db`);
-      db.exec(`vacuum into '${dest.replaceAll("'", "''")}'`);
+      await sqliteBackup(db, dest);
       Deno.chmodSync(dest, 0o600);
       return dest;
     };
 
     if (found < migrations.length) {
       if (existed) {
-        const dest = backup(`pre-migrate-v${found}`);
+        const dest = await backup(`pre-migrate-v${found}`);
         opts.log.info("store backed up before migration", {
           from: found,
           to: migrations.length,

@@ -28,7 +28,7 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
 
   let store: Store;
   try {
-    store = openStore({ file: paths.store, backupsDir: paths.backups, log });
+    store = await openStore({ file: paths.store, backupsDir: paths.backups, log });
   } catch (err) {
     log.error((err as Error).message, { err });
     listener.close();
@@ -72,7 +72,7 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
   const handlers: Record<string, Handler> = {
     ping: () => ({ pid: Deno.pid }),
     status,
-    backup: () => ({ path: store.backup() }),
+    backup: async () => ({ path: await store.backup() }),
     stop: (_params, ctx) => {
       ctx.afterReply = () => shutdown("stop command");
       return { stopping: true };
