@@ -1,9 +1,9 @@
 // Builds the single-file `kiln` executable: `deno task build`.
 //
 // The entry point is bundled first, then the bundle is compiled. Compiling the sources
-// directly makes Deno embed every npm package the Claude Agent SDK lists, including the
-// native Claude binaries of its optional per-platform packages (+660 MB). The bundle only
-// carries the JavaScript the program actually imports. The result goes through the guards.
+// directly can embed the native Claude binaries from the SDK's optional per-platform
+// packages. The bundle limits the compile input to the JavaScript the program imports.
+// The result goes through the guards.
 import { dirname, fromFileUrl, join, resolve } from "jsr:@std/path@1";
 import { checkExecutable } from "./guard.ts";
 

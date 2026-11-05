@@ -24,5 +24,10 @@
       "scripts/",
       "deno.json"
     ]
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-import-prefix"]
+    }
   }
 }
