@@ -17,7 +17,7 @@ export interface Result {
 }
 
 export async function makeHome(extraEnv: Record<string, string> = {}): Promise<Home> {
-  const root = await Deno.makeTempDir({ prefix: "kiln-" });
+  const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-" }); // short: unix socket paths are length-limited;
   const dirs = {
     config: join(root, "config"),
     data: join(root, "data"),

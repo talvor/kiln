@@ -20,7 +20,15 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
   Deno.umask(0o077); // everything the daemon creates is private to the user
   ensureDirs(paths);
   const log = createLogger({ file: paths.log });
+  try {
+    await serveForever(paths, log);
+  } catch (err) {
+    log.error(`daemon crashed: ${(err as Error).message}`, { err });
+    Deno.exit(1);
+  }
+}
 
+async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   // Claim the socket before touching the store: binding is atomic, so of several daemons
   // started at once exactly one proceeds, and clients queue on the socket while it migrates.
   const listener = await claimSocket(paths.socket, log);
@@ -32,7 +40,7 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
   } catch (err) {
     log.error((err as Error).message, { err });
     listener.close();
-    Deno.removeSync(paths.socket);
+    removeQuietly(paths.socket);
     Deno.exit(1);
   }
 
@@ -59,9 +67,7 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
     // is gone, a new daemon may start.
     listener.close();
     store.close();
-    try {
-      Deno.removeSync(paths.socket);
-    } catch { /* already gone */ }
+    removeQuietly(paths.socket);
     log.info("daemon stopped");
     Deno.exit(0);
   };
@@ -139,7 +145,8 @@ async function claimSocket(path: string, log: Logger): Promise<Deno.Listener | u
   try {
     return listen();
   } catch (err) {
-    if (!(err instanceof Deno.errors.AddrInUse)) throw err;
+    // Typically AddrInUse, but the error class varies by platform: decide by probing instead.
+    log.info("socket already exists", { path, err });
   }
   if (await canConnect(path)) {
     log.info("daemon already running; exiting");
@@ -148,4 +155,10 @@ async function claimSocket(path: string, log: Logger): Promise<Deno.Listener | u
   log.info("removing stale socket", { path });
   Deno.removeSync(path);
   return listen();
+}
+
+function removeQuietly(path: string): void {
+  try {
+    Deno.removeSync(path);
+  } catch { /* already gone */ }
 }

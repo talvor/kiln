@@ -143,7 +143,7 @@ withHome("a terminal interrupt or hangup does not stop the daemon", async (home)
 });
 
 Deno.test("files go in the standard per-purpose locations", async () => {
-  const root = await Deno.makeTempDir({ prefix: "kiln-" });
+  const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-" });
   const env = {
     PATH: Deno.env.get("PATH") ?? "",
     HOME: root,
@@ -158,10 +158,17 @@ Deno.test("files go in the standard per-purpose locations", async () => {
     await runKiln(env, ["daemon", "start"]);
     const r = await runKiln(env, ["daemon", "status", "--json"]);
     const p = JSON.parse(r.stdout).paths;
-    assertEquals(p.config, join(root, "xc", "kiln"));
-    assertEquals(p.store, join(root, "xd", "kiln", "kiln.db"));
-    assertEquals(p.log, join(root, "xs", "kiln", "daemon.log"));
-    assertEquals(p.socket, join(root, "xr", "kiln", "kiln.sock"));
+    if (Deno.build.os === "darwin") {
+      const support = join(root, "Library", "Application Support", "kiln");
+      assertEquals(p.config, join(support, "config"));
+      assertEquals(p.store, join(support, "data", "kiln.db"));
+      assertEquals(p.log, join(root, "Library", "Logs", "kiln", "daemon.log"));
+    } else {
+      assertEquals(p.config, join(root, "xc", "kiln"));
+      assertEquals(p.store, join(root, "xd", "kiln", "kiln.db"));
+      assertEquals(p.log, join(root, "xs", "kiln", "daemon.log"));
+      assertEquals(p.socket, join(root, "xr", "kiln", "kiln.sock"));
+    }
     assert((await Deno.stat(p.config)).isDirectory, "config location is created");
   } finally {
     await runKiln(env, ["daemon", "stop"]);
