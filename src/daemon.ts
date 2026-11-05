@@ -23,7 +23,12 @@ export async function runDaemon(paths: KilnPaths): Promise<void> {
   try {
     await serveForever(paths, log);
   } catch (err) {
-    log.error(`daemon crashed: ${(err as Error).message} ${((err as Error).stack ?? "").split("\n").slice(0, 6).join(" | ")}`, { err }); // DEBUG
+    log.error(
+      `daemon crashed: ${(err as Error).message} ${
+        ((err as Error).stack ?? "").split("\n").slice(0, 6).join(" | ")
+      }`,
+      { err },
+    ); // DEBUG
     Deno.exit(1);
   }
 }
