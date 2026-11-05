@@ -1,5 +1,5 @@
 // Fake PR-status command (`gh pr view <branch> --json ...`). Each call consumes the next
-// scripted status from $KILN_FAKE_DIR/pr-status/script.json (the last one repeats), records
+// scripted status from $KILN_FAKE_DIR/pr-status/script.json, records
 // the call, and prints the status as JSON.
 import { join } from "jsr:@std/path@1";
 
@@ -17,9 +17,9 @@ if (Deno.args[0] !== "pr" || Deno.args[1] !== "view") {
   console.error(`fake gh: only 'pr view' is scripted, got: ${Deno.args.join(" ")}`);
   Deno.exit(98);
 }
-const status = script.statuses[Math.min(script.next, script.statuses.length - 1)];
+const status = script.statuses[script.next];
 if (status === undefined) {
-  console.error("fake gh: no PR status scripted");
+  console.error("fake gh: no scripted PR status left");
   Deno.exit(99);
 }
 script.next++;

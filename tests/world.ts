@@ -4,18 +4,13 @@
 // daemon and anything it spawns finds them exactly as it would find the real tools.
 import { fromFileUrl, join } from "jsr:@std/path@1";
 import { type Home, makeHome, type Result, runKiln } from "./helpers.ts";
+import type { LauncherRun } from "./fakes/claude.ts";
 
 const FAKES = fromFileUrl(new URL("./fakes/", import.meta.url));
 
 export interface PrStatus {
   state: "OPEN" | "MERGED" | "CLOSED";
   checks: "PENDING" | "SUCCESS" | "FAILURE";
-}
-export interface LauncherRun {
-  stdout?: string;
-  stderr?: string;
-  exit?: number;
-  writeFiles?: Record<string, string>;
 }
 interface Call {
   args: string[];
@@ -29,7 +24,7 @@ export interface World extends Home {
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
   launcher: { script(runs: LauncherRun[]): Promise<void>; calls(): Promise<Call[]> };
-  /** The scripted PR-status command: statuses are consumed in order, the last one repeats. */
+  /** The scripted PR-status command: statuses are consumed in order. */
   prStatus: { script(statuses: PrStatus[]): Promise<void>; calls(): Promise<Call[]> };
   /** Run a command the way the daemon would: in the world's environment. */
   exec(cwd: string, cmd: string, ...args: string[]): Promise<Result>;

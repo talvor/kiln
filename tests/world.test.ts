@@ -36,7 +36,11 @@ withWorld("a running Kiln can do a piece of work against the fake world", async 
   const view = () => world.exec(world.project.path, "gh", "pr", "view", "kiln/hello", "--json");
   assertEquals(JSON.parse((await view()).stdout), { state: "OPEN", checks: "PENDING" });
   assertEquals(JSON.parse((await view()).stdout), { state: "OPEN", checks: "SUCCESS" });
-  assertEquals((await world.prStatus.calls()).length, 2);
+  const exhausted = await view();
+  assertEquals(exhausted.code, 99);
+  assertEquals(exhausted.stdout, "");
+  assertEquals(exhausted.stderr, "fake gh: no scripted PR status left\n");
+  assertEquals((await world.prStatus.calls()).length, 3);
 
   // Kiln itself is unaffected throughout, and stops cleanly.
   assertEquals((await status(world)).code, 0);
