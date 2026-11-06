@@ -169,6 +169,13 @@ export async function removeClone(clonePath: string, projectsDir: string): Promi
   try {
     await Deno.remove(clonePath, { recursive: true });
   } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      try {
+        await Deno.lstat(clonePath);
+      } catch (statError) {
+        if (statError instanceof Deno.errors.NotFound) return;
+      }
+    }
     throw new Error(
       `Project record was removed, but its clone at ${clonePath} could not be deleted: ${(err as Error).message}. Remove that directory to reuse the name.`,
     );

@@ -4,7 +4,7 @@ import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
-import { type NewProject, openStore, type ProjectPatch, type Store } from "./store.ts";
+import { type NewProject, openStore, type Store } from "./store.ts";
 
 export const VERSION: string = denoJson.version;
 
@@ -105,13 +105,14 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     backup: async () => ({ path: await store.backup() }),
     "projects.list": (params) =>
       store.listProjects({ includeRemoved: params.includeRemoved === true }),
-    "projects.get": (params) => store.getProject(String(params.name)),
-    "projects.update": (params) => withProjectQueue(String(params.name), () => {
+    "projects.pause": (params) => withProjectQueue(String(params.name), () => {
       const name = String(params.name);
-      const patch = params.patch as ProjectPatch;
-      const project = store.updateProject(name, patch);
-      store.appendEvent("project.updated", { id: project.id, name, fields: Object.keys(patch) });
-      return project;
+      const project = store.getProject(name);
+      const paused = params.paused === true;
+      if (project.paused === paused) return { changed: false };
+      store.updateProject(name, { paused });
+      store.appendEvent("project.updated", { id: project.id, name, fields: ["paused"] });
+      return { changed: true };
     }),
     "projects.recheck": (params) => withProjectQueue(String(params.name), async () => {
       const name = String(params.name);

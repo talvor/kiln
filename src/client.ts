@@ -110,17 +110,15 @@ export async function ensureDaemon(paths: KilnPaths, timeoutMs = 15_000): Promis
 }
 
 /** Ask the daemon to stop and wait until it has gone. Returns false if it was not running. */
-export async function stopDaemon(paths: KilnPaths, timeoutMs = 15_000): Promise<boolean> {
+export async function stopDaemon(paths: KilnPaths): Promise<boolean> {
   try {
     await call(paths, "stop");
   } catch (err) {
     if (err instanceof DaemonNotRunning) return false;
     throw err;
   }
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (true) {
     if (!(await canConnect(paths.socket))) return true;
     await sleep(50);
   }
-  throw new Error("The daemon did not stop in time.");
 }

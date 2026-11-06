@@ -63,6 +63,27 @@ withWorld("a paused project is shown paused until it is resumed", async (world) 
   assertStringIncludes(missing.stderr, 'No project named "nope"');
 });
 
+withWorld("overlapping pause and resume use the latest project state", async (world) => {
+  await register(world);
+  const marker = join(world.dirs.data, "projects", "remote", "started.txt");
+  const edit = world.kiln("project", "edit", "remote", "--setup", "echo started > started.txt; sleep 2");
+  const deadline = Date.now() + 5000;
+  while (!await Deno.stat(marker).then(() => true, () => false)) {
+    assert(Date.now() < deadline, "the edit did not begin setup");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const pause = world.kiln("project", "pause", "remote");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const resume = world.kiln("project", "resume", "remote");
+  const [edited, paused, resumed] = await Promise.all([edit, pause, resume]);
+  assertEquals(edited.code, 0, edited.stderr);
+  assertEquals(paused.code, 0, paused.stderr);
+  assertEquals(resumed.code, 0, resumed.stderr);
+  assertStringIncludes(paused.stdout, "Paused remote");
+  assertStringIncludes(resumed.stdout, "Resumed remote");
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "remote  active");
+});
+
 withWorld("editing commands re-checks the project and records a new baseline", async (world) => {
   await register(world);
   const calls = (await world.githubApi.calls()).length;
@@ -182,11 +203,11 @@ withWorld("a post-checkout inspection failure restores the recorded branch", asy
   assertEquals((await world.git(clone, "rev-parse", "--abbrev-ref", "HEAD")).stdout.trim(), "main");
 });
 
-withWorld("daemon stop waits for a running re-check to persist", async (world) => {
+withWorld("daemon stop waits past the old timeout for a running re-check", async (world) => {
   await register(world);
   const marker = join(world.dirs.data, "projects", "remote", "started.txt");
   const edit = world.kiln(
-    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 1",
+    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 16",
     "--test", "exit 3",
   );
   const deadline = Date.now() + 5000;
@@ -288,6 +309,15 @@ withWorld("clone deletion failure reports the removed record and recovery path",
   await world.launcher.script([{ result: JSON.stringify(COMMANDS) }]);
   const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(again.code, 0, again.stderr);
+});
+
+withWorld("removal succeeds when Kiln's clone is already absent", async (world) => {
+  await register(world);
+  await Deno.remove(join(world.dirs.data, "projects", "remote"), { recursive: true });
+  const removed = await world.kiln("project", "remove", "remote");
+  assertEquals(removed.code, 0, removed.stderr);
+  assertStringIncludes(removed.stdout, "Removed remote");
+  assertStringIncludes((await world.kiln("project", "list", "--all")).stdout, "remote  removed");
 });
 
 withWorld(

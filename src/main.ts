@@ -94,19 +94,25 @@ async function main(args: string[]): Promise<number> {
       case "resume": {
         if (rest.length !== 1 || rest[0].startsWith("-")) return usage();
         const paused = sub === "pause";
-        return await withProject(rest[0], async (p) => {
-          if (p.paused === paused) {
-            console.log(`${p.name} is already ${paused ? "paused" : "active"}.`);
-          } else {
-            await update(p.name, { paused });
-            console.log(
-              paused
-                ? `Paused ${p.name}: it takes no new requests until you resume it.`
-                : `Resumed ${p.name}.`,
-            );
-          }
+        const name = rest[0];
+        await ensureDaemon(paths);
+        try {
+          const { changed } = await call<{ changed: boolean }>(paths, "projects.pause", {
+            name,
+            paused,
+          });
+          console.log(
+            changed
+              ? paused
+                ? `Paused ${name}: it takes no new requests until you resume it.`
+                : `Resumed ${name}.`
+              : `${name} is already ${paused ? "paused" : "active"}.`,
+          );
           return 0;
-        });
+        } catch (err) {
+          console.error((err as Error).message);
+          return 1;
+        }
       }
       case "edit": {
         const change: Change = {};
@@ -157,25 +163,6 @@ async function main(args: string[]): Promise<number> {
       default:
         return usage();
     }
-  }
-
-  async function withProject(
-    name: string,
-    body: (project: ProjectRecord) => Promise<number>,
-  ): Promise<number> {
-    await ensureDaemon(paths);
-    let project: ProjectRecord;
-    try {
-      project = await call<ProjectRecord>(paths, "projects.get", { name });
-    } catch (err) {
-      console.error((err as Error).message);
-      return 1;
-    }
-    return await body(project);
-  }
-
-  function update(name: string, patch: Record<string, unknown>) {
-    return call<ProjectRecord>(paths, "projects.update", { name, patch });
   }
 
   async function recheckAndRecord(
