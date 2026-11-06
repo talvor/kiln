@@ -545,7 +545,9 @@ export function createConductor(opts: ConductorOptions) {
       try {
         return store.getAssignment(m.id).status === "planned";
       } catch {
-        return false;
+        return store.listRequests("active").some((r) =>
+          store.listSteps(r.id).some((s) => s.status === "active" && s.worker === m.to)
+        );
       }
     },
     /** The turns and spend a launch for the worker may still use; none for other agents. */
