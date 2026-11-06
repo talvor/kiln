@@ -1,13 +1,17 @@
 import { call, DaemonNotRunning, ensureDaemon, isRunning, stopDaemon } from "./client.ts";
+import { ClaudeNotInstalled, launch } from "./launcher.ts";
 import { type DaemonStatus, runDaemon, VERSION } from "./daemon.ts";
 import { resolvePaths } from "./paths.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
+const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
 const USAGE = `kiln ${VERSION}
 
 Usage:
   ${DAEMON_USAGE.slice("Usage: ".length)}
   kiln backup            Write a safe copy of the store and print its path
+  kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]
+                         Run Claude once on a prompt in a directory (default: here)
   kiln --version
 
 Any command that needs the daemon starts it if it is not running.`;
@@ -36,9 +40,40 @@ async function main(args: string[]): Promise<number> {
       console.log(path);
       return 0;
     }
+    case "launch":
+      return await launchCommand(args.slice(1));
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
+  }
+
+  async function launchCommand(rest: string[]): Promise<number> {
+    const flag = (name: string) => {
+      const i = rest.indexOf(name);
+      return i >= 0 ? rest.splice(i, 2)[1] : undefined;
+    };
+    const cwd = flag("--cwd") ?? Deno.cwd();
+    const budget = flag("--max-budget-usd");
+    const asJson = rest.includes("--json");
+    const prompt = rest.filter((a) => a !== "--json").join(" ");
+    const maxBudgetUsd = budget === undefined ? undefined : Number(budget);
+    if (!prompt || (maxBudgetUsd !== undefined && !(maxBudgetUsd > 0))) {
+      console.error(LAUNCH_USAGE);
+      return 2;
+    }
+    try {
+      const result = await launch({ prompt, cwd, maxBudgetUsd });
+      if (asJson) console.log(JSON.stringify(result));
+      else if (result.ok) console.log(result.text);
+      else console.error(`claude stopped: ${result.outcome}: ${result.text}`);
+      return result.ok ? 0 : 1;
+    } catch (err) {
+      if (err instanceof ClaudeNotInstalled) {
+        console.error(err.message);
+        return 1;
+      }
+      throw err;
+    }
   }
 
   async function daemonCommand(
