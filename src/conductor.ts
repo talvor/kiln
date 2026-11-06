@@ -64,6 +64,10 @@ export function createConductor(opts: ConductorOptions) {
     return project;
   };
 
+  /** The Assignments the leader gave this Step's worker. */
+  const assignmentsOf = (request: RequestRecord, step: StepRecord): AssignmentRecord[] =>
+    store.listAssignments(request.id).filter((a) => store.getMessage(a.id)?.to === step.worker);
+
   /** The session at the seat, opened if nobody sits there yet. */
   const seat = (
     find: (s: SessionRecord) => boolean,
@@ -163,17 +167,13 @@ export function createConductor(opts: ConductorOptions) {
         throw err;
       }
     }
-    const mine = store.listAssignments(request.id).filter((a) =>
-      store.getMessage(a.id)?.to === step.worker
-    );
+    const mine = assignmentsOf(request, step);
     for (const a of mine.filter((a) => a.status === "active")) {
       const result = store.listMessages({ kind: "result", inReplyTo: a.id })[0];
       if (!result) continue;
       store.setAssignmentState(a.id, result.body.status === "done" ? "done" : "failed");
     }
-    return store.listAssignments(request.id).filter((a) =>
-      store.getMessage(a.id)?.to === step.worker
-    );
+    return assignmentsOf(request, step);
   }
 
   /** The leader says the step is verified: merge the work back, publish, and finish the step. */
