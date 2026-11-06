@@ -1,6 +1,6 @@
 // Managing registered Projects, driven the way a person drives it: `kiln project ...` against the
 // fake world. Projects are registered through the real command (scripted onboarding agent, bare
-// remote); Requests do not exist as a feature yet, so tests put active ones in the store file.
+// remote); Requests do not exist as a feature yet, so tests seed them in the store file.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,20 +25,16 @@ async function register(world: World, commands: Record<string, string | null> = 
   assertEquals(r.code, 0, r.stderr);
 }
 
-/** Run SQL against the store file, as the tests' stand-in for Requests being made. */
-function sql<T = Record<string, unknown>>(world: World, query: string): T[] {
+/** Seed a Request until Kiln has a public Request command. */
+function startRequest(world: World, status = "active"): void {
   const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
   try {
-    return db.prepare(query).all() as T[];
+    db.prepare("insert into requests (project_id, status, created_at) values (1, ?, 'now')")
+      .run(status);
   } finally {
     db.close();
   }
 }
-const startRequest = (world: World, status = "active") =>
-  sql(
-    world,
-    `insert into requests (project_id, status, created_at) values (1, '${status}', 'now') returning id`,
-  );
 
 async function pushCommit(world: World, file: string, content: string, branch = "main") {
   const dir = world.project.path;
@@ -49,9 +45,6 @@ async function pushCommit(world: World, file: string, content: string, branch = 
   await world.git(dir, "push", "origin", branch);
   return (await world.git(dir, "rev-parse", "HEAD")).stdout.trim();
 }
-
-const baselineOf = async (world: World) =>
-  JSON.parse((await sql<{ baseline: string }>(world, "select baseline from projects"))[0].baseline);
 
 withWorld("a paused project is shown paused until it is resumed", async (world) => {
   await register(world);
@@ -87,31 +80,54 @@ withWorld("editing commands re-checks the project and records a new baseline", a
   assertStringIncludes(r.stdout, "Test baseline: FAILING (exit 3)");
   assertStringIncludes(r.stdout, "warning: No lint command");
 
-  const [row] = await sql<Record<string, string | null>>(world, "select * from projects");
-  assertEquals(row.test_command, "echo tests are red; exit 3");
-  assertEquals(row.lint_command, null);
-  assertEquals(row.setup_command, COMMANDS.setup); // untouched
-  const baseline = await baselineOf(world);
-  assertEquals([baseline.passed, baseline.exitCode], [false, 3]);
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline FAILING");
+  assertEquals(
+    await Deno.readTextFile(join(world.dirs.data, "projects", "remote", "prepared.txt")),
+    "prepared\n",
+  );
+  const rerun = await world.kiln("project", "baseline", "remote");
+  assertStringIncludes(rerun.stdout, "Test baseline: FAILING (exit 3)");
+  assertStringIncludes(rerun.stdout, "warning: No lint command");
   // The branch protection question was asked again.
-  assertEquals((await world.githubApi.calls()).length, calls + 1);
+  assertEquals((await world.githubApi.calls()).length, calls + 2);
+});
+
+withWorld("overlapping edit and baseline keep the edited test command", async (world) => {
+  await register(world);
+  const marker = join(world.dirs.data, "projects", "remote", "started.txt");
+  const edit = world.kiln(
+    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 1",
+    "--test", "exit 3",
+  );
+  const deadline = Date.now() + 5000;
+  while (!await Deno.stat(marker).then(() => true, () => false)) {
+    assert(Date.now() < deadline, "the edit did not begin setup");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const baseline = world.kiln("project", "baseline", "remote");
+  const [edited, rerun] = await Promise.all([edit, baseline]);
+  assertEquals(edited.code, 0, edited.stderr);
+  assertEquals(rerun.code, 0, rerun.stderr);
+  assertStringIncludes(rerun.stdout, "Test baseline: FAILING (exit 3)");
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline FAILING");
 });
 
 withWorld("an edit whose re-check fails changes nothing", async (world) => {
   await register(world);
-  const before = await sql(world, "select * from projects");
+  const before = (await world.kiln("project", "list")).stdout;
 
-  const r = await world.kiln("project", "edit", "remote", "--setup", "exit 7");
+  const r = await world.kiln("project", "edit", "remote", "--setup", "touch failed.txt; exit 7");
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "Re-check blocked: Setup failed (exit 7)");
-  assertEquals(await sql(world, "select * from projects"), before);
+  assertEquals((await world.kiln("project", "list")).stdout, before);
+  assert((await Deno.stat(join(world.dirs.data, "projects", "remote", "failed.txt"))).isFile);
 
   // Kiln can no longer push to the remote: blocked too.
   await world.remote.refusePushes();
   const noPush = await world.kiln("project", "edit", "remote", "--test", "true");
   assertEquals(noPush.code, 1);
   assertStringIncludes(noPush.stderr, "push dry-run");
-  assertEquals(await sql(world, "select * from projects"), before);
+  assertEquals((await world.kiln("project", "list")).stdout, before);
 
   // Editing needs at least one command to change, and only known ones.
   assertEquals((await world.kiln("project", "edit", "remote")).code, 2);
@@ -120,19 +136,17 @@ withWorld("an edit whose re-check fails changes nothing", async (world) => {
 
 withWorld("re-running the baseline tests the latest default branch", async (world) => {
   await register(world, { ...COMMANDS, test: "test ! -f broken.txt" });
-  const first = await baselineOf(world);
-  assert(first.passed);
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline passing");
 
   const commit = await pushCommit(world, "broken.txt", "oops\n");
   const r = await world.kiln("project", "baseline", "remote");
   assertEquals(r.code, 0, r.stderr);
   assertStringIncludes(r.stdout, "Test baseline: FAILING");
 
-  const baseline = await baselineOf(world);
-  assertEquals(baseline.passed, false);
-  assertEquals(baseline.commit, commit);
-  const [row] = await sql<{ head_commit: string }>(world, "select head_commit from projects");
-  assertEquals(row.head_commit, commit);
+  assertStringIncludes(
+    (await world.kiln("project", "list")).stdout,
+    `main@${commit.slice(0, 7)}  baseline FAILING`,
+  );
 });
 
 withWorld("repo files may suggest commands but never grant power", async (world) => {
@@ -153,11 +167,7 @@ withWorld("repo files may suggest commands but never grant power", async (world)
   const clone = join(world.dirs.data, "projects", "remote");
   assert(await Deno.stat(join(clone, "pwned.txt")).then(() => false, () => true));
   assertEquals((await world.launcher.calls()).length, asked);
-  const [row] = await sql<Record<string, string>>(world, "select * from projects");
-  assertEquals(
-    [row.setup_command, row.test_command, row.lint_command, row.build_command],
-    [COMMANDS.setup, COMMANDS.test, COMMANDS.lint, COMMANDS.build],
-  );
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline passing");
 });
 
 withWorld("changing the default branch moves Kiln's clone and baseline to it", async (world) => {
@@ -171,9 +181,10 @@ withWorld("changing the default branch moves Kiln's clone and baseline to it", a
 
   const r = await world.kiln("project", "default-branch", "remote", "develop");
   assertEquals(r.code, 0, r.stderr);
-  const [row] = await sql<Record<string, string>>(world, "select * from projects");
-  assertEquals([row.default_branch, row.head_commit], ["develop", develop]);
-  assertEquals((await baselineOf(world)).commit, develop);
+  assertStringIncludes(
+    (await world.kiln("project", "list")).stdout,
+    `develop@${develop.slice(0, 7)}  baseline passing`,
+  );
   const clone = join(world.dirs.data, "projects", "remote");
   assertEquals(
     (await world.git(clone, "rev-parse", "--abbrev-ref", "HEAD")).stdout.trim(),
@@ -184,11 +195,7 @@ withWorld("changing the default branch moves Kiln's clone and baseline to it", a
   const nope = await world.kiln("project", "default-branch", "remote", "nope");
   assertEquals(nope.code, 1);
   assertStringIncludes(nope.stderr, 'no branch "nope"');
-  assertEquals(
-    (await sql<{ default_branch: string }>(world, "select default_branch from projects"))[0]
-      .default_branch,
-    "develop",
-  );
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "develop@");
 });
 
 withWorld("removal is refused while requests are active unless forced", async (world) => {
@@ -208,12 +215,27 @@ withWorld("removal is refused while requests are active unless forced", async (w
   assertEquals(forced.code, 0, forced.stderr);
   assert(await Deno.stat(clone).then(() => false, () => true), "the clone is deleted");
   assertEquals((await world.kiln("project", "list")).stdout.trim(), "No projects registered.");
-  assertEquals(
-    (await sql<{ status: string }>(world, "select status from requests order by id")).map((r) =>
-      r.status
-    ),
-    ["cancelled", "done"],
-  );
+});
+
+withWorld("clone deletion failure reports the removed record and recovery path", async (world) => {
+  await register(world);
+  const projects = join(world.dirs.data, "projects");
+  const clone = join(projects, "remote");
+  await Deno.chmod(projects, 0o500);
+  try {
+    const removed = await world.kiln("project", "remove", "remote");
+    assertEquals(removed.code, 1);
+    assertStringIncludes(removed.stderr, "Project record was removed");
+    assertStringIncludes(removed.stderr, clone);
+    assertStringIncludes((await world.kiln("project", "list", "--all")).stdout, "remote  removed");
+  } finally {
+    await Deno.chmod(projects, 0o700);
+  }
+  await Deno.remove(clone, { recursive: true });
+  await world.githubApi.script([{ stdout: "{}\n" }]);
+  await world.launcher.script([{ result: JSON.stringify(COMMANDS) }]);
+  const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(again.code, 0, again.stderr);
 });
 
 withWorld(
@@ -222,16 +244,11 @@ withWorld(
     await register(world);
     assertEquals((await world.kiln("project", "remove", "remote")).code, 0);
 
-    // History: the record, its baseline and the events stay.
-    const [row] = await sql<Record<string, string | null>>(world, "select * from projects");
-    assertEquals(row.name, "remote");
-    assert(row.removed_at);
-    assert(row.baseline);
-    const kinds = (await sql<{ kind: string }>(world, "select kind from events")).map((e) =>
-      e.kind
+    assertStringIncludes(
+      (await world.kiln("project", "list", "--all")).stdout,
+      "remote  removed  main@",
     );
-    assert(kinds.includes("project.registered") && kinds.includes("project.removed"), `${kinds}`);
-    assertStringIncludes((await world.kiln("project", "list", "--all")).stdout, "remote  removed");
+    assertStringIncludes((await world.kiln("project", "list", "--all")).stdout, "baseline passing");
 
     // The removed project cannot be managed, but the name is free again.
     assertEquals((await world.kiln("project", "pause", "remote")).code, 1);
@@ -239,7 +256,9 @@ withWorld(
     await world.launcher.script([{ result: JSON.stringify(COMMANDS) }]);
     const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
     assertEquals(again.code, 0, again.stderr);
-    assertEquals((await sql(world, "select id from projects")).length, 2);
     assertStringIncludes((await world.kiln("project", "list")).stdout, "remote  active");
+    const history = (await world.kiln("project", "list", "--all")).stdout;
+    assertStringIncludes(history, "remote  removed");
+    assertStringIncludes(history, "remote  active");
   },
 );

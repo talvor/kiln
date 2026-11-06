@@ -16,7 +16,9 @@ All commands act on a registered project by name (`kiln project list` shows them
 Edit, baseline and default-branch share one re-check, run in Kiln's clone: fetch the remote,
 check out the default branch at the remote's tip, require agent docs (`AGENTS.md` or `CLAUDE.md`),
 do a push dry-run, look at branch protection, run `setup`, then run `test` and record a new
-baseline. If any blocking step fails, nothing is changed. Warnings are recomputed.
+baseline. If a blocking step fails, the project record is unchanged and Kiln tries to restore
+the clone's recorded branch and commit. A failed setup may leave files in the clone. Warnings are
+recomputed after a successful re-check.
 
 ## Removal
 

@@ -16,7 +16,7 @@ import {
 import { readableOnboardingFiles } from "./register.ts";
 import type { Baseline, ProjectPatch, ProjectRecord } from "./store.ts";
 
-/** The re-check cannot go ahead or failed; nothing about the Project was changed. */
+/** The re-check cannot go ahead or failed; the Project record was not changed. */
 export class RecheckBlocked extends Error {}
 
 /** What the user asked to change before the re-check. `null` clears a command. */
@@ -41,13 +41,23 @@ export async function recheckProject(
   try {
     return await recheck(project, change, progress);
   } catch (err) {
-    // A blocked re-check changes nothing: put the clone back where the record says it is.
     if (err instanceof RecheckBlocked) {
-      await run(
-        "git",
-        ["checkout", "--force", "-B", project.defaultBranch, project.headCommit],
-        project.clonePath,
-      ).catch(() => {});
+      let reason: string | undefined;
+      try {
+        const rollback = await run(
+          "git",
+          ["checkout", "--force", "-B", project.defaultBranch, project.headCommit],
+          project.clonePath,
+        );
+        if (rollback.code !== 0) reason = firstLine(rollback.stderr);
+      } catch (rollbackError) {
+        reason = (rollbackError as Error).message;
+      }
+      if (reason) {
+        throw new RecheckBlocked(
+          `${err.message}\nCould not restore the clone to ${project.defaultBranch}: ${reason}`,
+        );
+      }
     }
     throw err;
   }
@@ -76,7 +86,10 @@ async function recheck(
   if (checkout.code !== 0) {
     throw new RecheckBlocked(`Cannot check out ${branch}: ${firstLine(checkout.stderr)}`);
   }
-  await git("clean", "-fdx");
+  const clean = await git("clean", "-fdx");
+  if (clean.code !== 0) {
+    throw new RecheckBlocked(`Cannot clean the clone: ${firstLine(clean.stderr)}`);
+  }
   const headCommit = (await git("rev-parse", "HEAD")).stdout.trim();
 
   const docs = await readableOnboardingFiles(clone);
@@ -143,6 +156,16 @@ async function recheck(
 /** Removing a Project deletes only Kiln's own clone, and only if it sits under `projectsDir`. */
 export async function removeClone(clonePath: string, projectsDir: string): Promise<void> {
   const within = relative(resolve(projectsDir), resolve(clonePath));
-  if (!within || within.startsWith("..") || isAbsolute(within)) return;
-  await Deno.remove(clonePath, { recursive: true }).catch(() => {});
+  if (!within || within === ".." || within.startsWith("../") || isAbsolute(within)) {
+    throw new Error(
+      `Project record was removed, but its clone at ${clonePath} is outside ${projectsDir}. Remove that directory to reuse the name.`,
+    );
+  }
+  try {
+    await Deno.remove(clonePath, { recursive: true });
+  } catch (err) {
+    throw new Error(
+      `Project record was removed, but its clone at ${clonePath} could not be deleted: ${(err as Error).message}. Remove that directory to reuse the name.`,
+    );
+  }
 }

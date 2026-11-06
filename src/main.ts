@@ -8,7 +8,7 @@ import {
   RegistrationBlocked,
   RegistrationDeclined,
 } from "./register.ts";
-import { type Change, RecheckBlocked, recheckProject } from "./manage.ts";
+import type { Change } from "./manage.ts";
 import type { ProjectRecord } from "./store.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
@@ -125,17 +125,18 @@ async function main(args: string[]): Promise<number> {
           // An empty command clears it.
           (change as Record<string, string | null>)[field] = value.trim() || null;
         }
-        return await withProject(name, (p) => recheckAndRecord(p, change, "Edited"));
+        return await recheckAndRecord(name, change, "Edited");
       }
       case "baseline": {
         if (rest.length !== 1 || rest[0].startsWith("-")) return usage();
-        return await withProject(rest[0], (p) => recheckAndRecord(p, {}, "Re-ran the baseline of"));
+        return await recheckAndRecord(rest[0], {}, "Re-ran the baseline of");
       }
       case "default-branch": {
         if (rest.length !== 2 || rest.some((a) => a.startsWith("-"))) return usage();
-        return await withProject(
+        return await recheckAndRecord(
           rest[0],
-          (p) => recheckAndRecord(p, { defaultBranch: rest[1] }, "Changed the default branch of"),
+          { defaultBranch: rest[1] },
+          "Changed the default branch of",
         );
       }
       case "remove": {
@@ -178,23 +179,30 @@ async function main(args: string[]): Promise<number> {
   }
 
   async function recheckAndRecord(
-    project: ProjectRecord,
+    name: string,
     change: Change,
     done: string,
   ): Promise<number> {
     try {
-      const patch = await recheckProject(project, change, console.log);
-      const updated = await update(project.name, { ...patch });
-      for (const w of updated.warnings) console.log(`warning: ${w}`);
-      console.log(describeBaseline(updated));
-      console.log(`${done} ${project.name}.`);
-      return 0;
-    } catch (err) {
-      if (err instanceof RecheckBlocked) {
-        console.error(`Re-check blocked: ${err.message}\nNothing was changed.`);
+      await ensureDaemon(paths);
+      const result = await call<{
+        project?: ProjectRecord;
+        progress: string[];
+        blocked?: string;
+      }>(paths, "projects.recheck", { name, change });
+      for (const message of result.progress) console.log(message);
+      if (result.blocked) {
+        console.error(`Re-check blocked: ${result.blocked}\nThe project record was not changed. Setup may have left files in Kiln's clone.`);
         return 1;
       }
-      throw err;
+      const updated = result.project!;
+      for (const w of updated.warnings) console.log(`warning: ${w}`);
+      console.log(describeBaseline(updated));
+      console.log(`${done} ${name}.`);
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
     }
   }
 

@@ -3,7 +3,7 @@ import { canConnect, closeQuietly } from "./client.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
-import { removeClone } from "./manage.ts";
+import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import { type NewProject, openStore, type ProjectPatch, type Store } from "./store.ts";
 
 export const VERSION: string = denoJson.version;
@@ -54,6 +54,21 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     store: store.info(),
   });
 
+  const projectQueues = new Map<string, Promise<void>>();
+  const withProjectQueue = async <T>(name: string, work: () => Promise<T> | T): Promise<T> => {
+    const previous = projectQueues.get(name);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => release = resolve);
+    projectQueues.set(name, current);
+    if (previous) await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (projectQueues.get(name) === current) projectQueues.delete(name);
+    }
+  };
+
   let stopping = false;
   const shutdown = (reason: string) => {
     if (stopping) return;
@@ -83,23 +98,40 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     "projects.list": (params) =>
       store.listProjects({ includeRemoved: params.includeRemoved === true }),
     "projects.get": (params) => store.getProject(String(params.name)),
-    "projects.update": (params) => {
+    "projects.update": (params) => withProjectQueue(String(params.name), () => {
       const name = String(params.name);
       const patch = params.patch as ProjectPatch;
       const project = store.updateProject(name, patch);
       store.appendEvent("project.updated", { id: project.id, name, fields: Object.keys(patch) });
       return project;
-    },
-    "projects.remove": async (params) => {
+    }),
+    "projects.recheck": (params) => withProjectQueue(String(params.name), async () => {
+      const name = String(params.name);
+      const progress: string[] = [];
+      try {
+        const patch = await recheckProject(
+          store.getProject(name),
+          params.change as Change,
+          (message) => progress.push(message),
+        );
+        const project = store.updateProject(name, patch);
+        store.appendEvent("project.updated", { id: project.id, name, fields: Object.keys(patch) });
+        return { project, progress };
+      } catch (err) {
+        if (err instanceof RecheckBlocked) return { blocked: err.message, progress };
+        throw err;
+      }
+    }),
+    "projects.remove": (params) => withProjectQueue(String(params.name), async () => {
       const project = store.removeProject(String(params.name), { force: params.force === true });
       await removeClone(project.clonePath, paths.projects);
       return project;
-    },
-    "projects.add": (params) => {
+    }),
+    "projects.add": (params) => withProjectQueue(String(params.name), () => {
       const project = store.addProject(params as unknown as NewProject);
       store.appendEvent("project.registered", { id: project.id, name: project.name });
       return project;
-    },
+    }),
     stop: (_params, ctx) => {
       ctx.afterReply = () => shutdown("stop command");
       return { stopping: true };
