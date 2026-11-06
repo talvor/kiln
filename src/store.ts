@@ -127,6 +127,58 @@ export const MIGRATIONS: string[] = [
      created_at text not null,
      merged_at text
    ) strict;`,
+  // 6: the shared lifecycle states for Requests, Steps and Assignments; a Request's Playbook,
+  // description, optional tracker item and published ticket; the Steps of a Playbook; and the
+  // role a session plays. SQLite cannot widen a check constraint, so requests and assignments
+  // are rebuilt (their rows are kept; an Assignment that was merged is done).
+  `create table requests_new (
+     id integer primary key,
+     project_id integer not null references projects (id),
+     status text not null default 'active'
+       check (status in ('planned', 'active', 'done', 'failed')),
+     created_at text not null,
+     branch text,
+     worktree_id integer references worktrees (id),
+     playbook text,
+     description text,
+     tracker_item text,
+     ticket_url text,
+     failure text
+   ) strict;
+   insert into requests_new (id, project_id, status, created_at, branch, worktree_id)
+     select id, project_id, status, created_at, branch, worktree_id from requests;
+   drop table requests;
+   alter table requests_new rename to requests;
+   create table assignments_new (
+     id integer primary key references messages (id),
+     request_id integer not null references requests (id),
+     branch text,
+     worktree_id integer references worktrees (id),
+     status text not null default 'active'
+       check (status in ('planned', 'active', 'done', 'failed')),
+     pushed integer not null default 0,
+     created_at text not null,
+     merged_at text
+   ) strict;
+   insert into assignments_new
+     select id, request_id, branch, worktree_id,
+       case status when 'merged' then 'done' else status end, pushed, created_at, merged_at
+     from assignments;
+   drop table assignments;
+   alter table assignments_new rename to assignments;
+   create table steps (
+     id integer primary key,
+     request_id integer not null references requests (id),
+     position integer not null,
+     spec text not null,
+     status text not null default 'planned'
+       check (status in ('planned', 'active', 'done', 'failed')),
+     worker text,
+     message_id integer references messages (id),
+     failure text,
+     unique (request_id, position)
+   ) strict;
+   alter table sessions add column role_name text;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -202,20 +254,66 @@ export const WORKTREE_PORTS = 10;
 export const FIRST_WORKTREE_PORT = 20_000;
 const LAST_WORKTREE_PORT = 60_000;
 
+/** The states a Request, a Step and an Assignment share. */
+export const STATES = ["planned", "active", "done", "failed"] as const;
+export type State = typeof STATES[number];
+
+/** One department step of a Playbook, as it was when the Request began. */
+export interface StepSpec {
+  name: string;
+  department: string;
+  /** The worker role that does the step's work. */
+  worker: string;
+  instructions: string;
+  /** The file the worker commits; the leader's verification looks for it. */
+  artifact: string;
+  /** What Kiln publishes from the artifact once the step is verified. */
+  publish?: "ticket";
+}
 export interface RequestRecord {
   id: number;
   projectId: number;
-  status: "active" | "done";
+  status: State;
   /** The branch the Request's merged Assignments accumulate on; null until it is created. */
   branch: string | null;
   worktreeId: number | null;
+  /** The Playbook the Request follows; null for a Request that is just a branch. */
+  playbook: string | null;
+  description: string | null;
+  /** Where the work came from in the Project's tracker, if anywhere. */
+  trackerItem: string | null;
+  /** The ticket Kiln published for the Request, if its Playbook publishes one. */
+  ticketUrl: string | null;
+  failure: string | null;
+}
+export interface NewPlaybookRun {
+  playbook: string;
+  description: string;
+  trackerItem: string | null;
+  steps: StepSpec[];
+}
+/** A department step of a Request: handed to the department's leader as one assignment. */
+export interface StepRecord {
+  id: number;
+  requestId: number;
+  /** 1-based place in the Playbook. */
+  position: number;
+  spec: StepSpec;
+  status: State;
+  /** The address of the worker session the leader delegates to; set when the step begins. */
+  worker: string | null;
+  /** The assignment Message that handed the step to the leader. */
+  messageId: number | null;
+  failure: string | null;
 }
 export interface AssignmentRecord {
   id: number;
   requestId: number;
   branch: string | null;
   worktreeId: number | null;
-  status: "active" | "merged";
+  status: State;
+  /** When the Assignment was merged into the request branch; null until then. */
+  mergedAt: string | null;
   /** Whether the merge has reached the remote. */
   pushed: boolean;
 }
@@ -242,9 +340,13 @@ export interface SessionRecord {
   department: string | null;
   /** Directory Kiln wakes the agent in. */
   cwd: string;
+  /** The configured role the session plays, whose prompt Kiln wakes it with. */
+  roleName: string | null;
   openedAt: string;
 }
-export type NewSession = Omit<SessionRecord, "openedAt">;
+export type NewSession = Omit<SessionRecord, "openedAt" | "roleName"> & {
+  roleName?: string | null;
+};
 
 /** A Message and what has happened to it since it was sent. */
 export interface MessageRecord {
@@ -334,10 +436,24 @@ export interface Store {
   addRequest(projectId: number): RequestRecord;
   /** Throws UnknownRequestError. */
   getRequest(id: number): RequestRecord;
+  /** Requests in this state, oldest first. */
+  listRequests(status: State): RequestRecord[];
+  /** Make a Request follow a Playbook: record its description and a planned Step for each. */
+  setPlaybook(requestId: number, run: NewPlaybookRun): void;
+  /** Move a Request to a state; `failure` says why when it failed. */
+  setRequestState(id: number, status: State, failure?: string): void;
+  setTicketUrl(id: number, url: string): void;
+  /** The Steps of a Request, in Playbook order. */
+  listSteps(requestId: number): StepRecord[];
+  /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
+  beginStep(id: number, messageId: number, worker: string): void;
+  setStepState(id: number, status: State, failure?: string): void;
   /** Begin an Assignment for a router assignment Message. */
   addAssignment(requestId: number, messageId: number): AssignmentRecord;
   /** Throws UnknownAssignmentError. */
   getAssignment(id: number): AssignmentRecord;
+  listAssignments(requestId: number): AssignmentRecord[];
+  setAssignmentState(id: number, status: State): void;
   /** Reserve a free port block for a new Worktree; throws if none is left. */
   addWorktree(wt: { path: string; branch: string }): WorktreeRecord;
   getWorktree(id: number): WorktreeRecord;
@@ -358,6 +474,8 @@ export interface Store {
   listSessions(): SessionRecord[];
   /** Throws UnknownSessionError. */
   getSession(address: string): SessionRecord;
+  /** Point a session at another directory, e.g. its worker's Assignment Worktree. */
+  setSessionCwd(address: string, cwd: string): void;
   /** Append a Message. Messages are never changed or removed afterwards. */
   appendMessage(message: NewMessage): MessageRecord;
   getMessage(id: number): MessageRecord | undefined;
@@ -425,14 +543,23 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         });
       }
       for (let v = found; v < migrations.length; v++) {
+        // Rebuilding a table means dropping it, which foreign keys forbid while rows refer to
+        // it: so they are off while a migration runs and checked before it commits.
+        db.exec("pragma foreign_keys = off");
         db.exec("begin");
         try {
           db.exec(migrations[v]);
+          const broken = db.prepare("pragma foreign_key_check").all();
+          if (broken.length) {
+            throw new Error(`migration ${v + 1} broke ${broken.length} reference(s)`);
+          }
           db.exec(`pragma user_version = ${v + 1}`);
           db.exec("commit");
         } catch (err) {
           db.exec("rollback");
           throw err;
+        } finally {
+          db.exec("pragma foreign_keys = on");
         }
         opts.log.info("store migrated", { version: v + 1 });
       }
@@ -469,13 +596,14 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       return toRecord(row);
     };
     const countActive = db.prepare(
-      "select count(*) n from requests where project_id = ? and status = 'active'",
+      "select count(*) n from requests where project_id = ? and status in ('planned', 'active')",
     );
     const toSession = (row: Record<string, unknown>): SessionRecord => ({
       address: row.address as string,
       role: row.role as Role,
       department: row.department as string | null,
       cwd: row.cwd as string,
+      roleName: row.role_name as string | null,
       openedAt: row.opened_at as string,
     });
     const toMessage = (row: Record<string, unknown>): MessageRecord => ({
@@ -514,16 +642,32 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
     const toRequest = (row: Record<string, unknown>): RequestRecord => ({
       id: row.id as number,
       projectId: row.project_id as number,
-      status: row.status as "active" | "done",
+      status: row.status as State,
       branch: row.branch as string | null,
       worktreeId: row.worktree_id as number | null,
+      playbook: row.playbook as string | null,
+      description: row.description as string | null,
+      trackerItem: row.tracker_item as string | null,
+      ticketUrl: row.ticket_url as string | null,
+      failure: row.failure as string | null,
+    });
+    const toStep = (row: Record<string, unknown>): StepRecord => ({
+      id: row.id as number,
+      requestId: row.request_id as number,
+      position: row.position as number,
+      spec: JSON.parse(row.spec as string),
+      status: row.status as State,
+      worker: row.worker as string | null,
+      messageId: row.message_id as number | null,
+      failure: row.failure as string | null,
     });
     const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
       id: row.id as number,
       requestId: row.request_id as number,
       branch: row.branch as string | null,
       worktreeId: row.worktree_id as number | null,
-      status: row.status as "active" | "merged",
+      status: row.status as State,
+      mergedAt: row.merged_at as string | null,
       pushed: row.pushed === 1,
     });
     const toWorktree = (row: Record<string, unknown>): WorktreeRecord => ({
@@ -551,6 +695,37 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         return getRequest(Number(lastInsertRowid));
       },
       getRequest,
+      listRequests: (status) =>
+        db.prepare("select * from requests where status = ? order by id").all(status)
+          .map(toRequest),
+      setPlaybook: (requestId, run) =>
+        inTransaction(() => {
+          db.prepare(
+            "update requests set playbook = ?, description = ?, tracker_item = ? where id = ?",
+          ).run(run.playbook, run.description, run.trackerItem, requestId);
+          run.steps.forEach((spec, i) => {
+            db.prepare("insert into steps (request_id, position, spec) values (?, ?, ?)")
+              .run(requestId, i + 1, JSON.stringify(spec));
+          });
+        }),
+      setRequestState: (id, status, failure) => {
+        db.prepare("update requests set status = ?, failure = ? where id = ?")
+          .run(status, failure ?? null, id);
+      },
+      setTicketUrl: (id, url) => {
+        db.prepare("update requests set ticket_url = ? where id = ?").run(url, id);
+      },
+      listSteps: (requestId) =>
+        db.prepare("select * from steps where request_id = ? order by position").all(requestId)
+          .map(toStep),
+      beginStep: (id, messageId, worker) => {
+        db.prepare("update steps set status = 'active', message_id = ?, worker = ? where id = ?")
+          .run(messageId, worker, id);
+      },
+      setStepState: (id, status, failure) => {
+        db.prepare("update steps set status = ?, failure = ? where id = ?")
+          .run(status, failure ?? null, id);
+      },
       addAssignment: (requestId, messageId) =>
         inTransaction(() => {
           getRequest(requestId);
@@ -564,6 +739,12 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           return getAssignment(messageId);
         }),
       getAssignment,
+      listAssignments: (requestId) =>
+        db.prepare("select * from assignments where request_id = ? order by id").all(requestId)
+          .map(toAssignment),
+      setAssignmentState: (id, status) => {
+        db.prepare("update assignments set status = ? where id = ?").run(status, id);
+      },
       addWorktree: (wt) =>
         inTransaction(() => {
           const used = new Set(
@@ -607,8 +788,10 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         db.prepare("delete from assignments where id = ? and branch is null").run(id);
       },
       markMerged: (id) => {
-        db.prepare("update assignments set status = 'merged', merged_at = ? where id = ?")
-          .run(new Date().toISOString(), id);
+        db.prepare(
+          `update assignments set merged_at = ?,
+             status = case status when 'active' then 'done' else status end where id = ?`,
+        ).run(new Date().toISOString(), id);
       },
       markPushed: (id) => {
         db.prepare("update assignments set pushed = 1 where id = ?").run(id);
@@ -617,8 +800,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         const openedAt = new Date().toISOString();
         try {
           db.prepare(
-            "insert into sessions (address, role, department, cwd, opened_at) values (?, ?, ?, ?, ?)",
-          ).run(s.address, s.role, s.department, s.cwd, openedAt);
+            `insert into sessions (address, role, department, cwd, role_name, opened_at)
+             values (?, ?, ?, ?, ?, ?)`,
+          ).run(s.address, s.role, s.department, s.cwd, s.roleName ?? null, openedAt);
         } catch (err) {
           if (/UNIQUE constraint failed/.test((err as Error).message)) {
             throw new DuplicateSessionError(
@@ -631,7 +815,10 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           }
           throw err;
         }
-        return { ...s, openedAt };
+        return { ...s, roleName: s.roleName ?? null, openedAt };
+      },
+      setSessionCwd: (address, cwd) => {
+        db.prepare("update sessions set cwd = ? where address = ?").run(cwd, address);
       },
       listSessions: () =>
         db.prepare("select * from sessions order by opened_at, address").all().map(toSession),

@@ -27,6 +27,8 @@ export interface RouterOptions {
   store: Store;
   log: Logger;
   launch: (req: LaunchRequest) => Promise<LaunchResult>;
+  /** What a configured role is told about its job when it is woken; undefined if unknown. */
+  rolePrompt?: (roleName: string) => Promise<string | undefined>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
   selfCommand: (args: string[]) => { cmd: string; args: string[] };
 }
@@ -297,11 +299,15 @@ export function createRouter(opts: RouterOptions) {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const abortController = new AbortController();
+    const rolePrompt = session.roleName
+      ? await opts.rolePrompt?.(session.roleName).catch(() => undefined)
+      : undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const launched = await Promise.race([
         opts.launch({
-          prompt: `You have ${count} unread message(s) in your Kiln inbox. ` +
+          prompt: (rolePrompt ? `${rolePrompt}\n\n` : "") +
+            `You have ${count} unread message(s) in your Kiln inbox. ` +
             `Call the read_inbox tool now and act on what it returns.`,
           cwd: session.cwd,
           mcpServers: { kiln: { command: server.cmd, args: server.args } },

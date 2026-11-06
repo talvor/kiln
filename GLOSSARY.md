@@ -40,6 +40,18 @@ _Avoid_: task, job
 The ordered list of department steps Kiln follows for one type of request.
 _Avoid_: workflow, pipeline, recipe
 
+**Step**:
+One department's part of a request in its Playbook, handed to that department's leader as a single assignment from the overseer. A step is done when its leader reports it verified.
+_Avoid_: stage, phase, task
+
+**State**:
+Where a request, a step or an assignment is in its life: planned, active, done or failed. All three share the same states.
+_Avoid_: status, phase
+
+**Tracker item**:
+The ticket in a project's tracker that a request came from. A request may have none. A ticket Kiln publishes for a request is a new tracker item.
+_Avoid_: issue link, ticket reference
+
 **Gate**:
 A point in a request where the overseer must bring the user a decision before work can continue.
 _Avoid_: approval step, checkpoint

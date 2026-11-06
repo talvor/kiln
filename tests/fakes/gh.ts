@@ -3,6 +3,8 @@
 //    prints it as JSON.
 //  - `gh api ...` (branch protection) consumes the next reply from api/script.json and replays
 //    its stdout, stderr and exit code.
+//  - `gh issue create ...` consumes the next reply from issue/script.json the same way (the
+//    ticket tracker).
 // Every call is recorded. Once a queue is exhausted its command fails loudly (exit 99).
 import { join } from "node:path";
 
@@ -30,6 +32,33 @@ if (Deno.args[0] === "api") {
   }
   apiScript.next++;
   Deno.writeTextFileSync(apiFile, JSON.stringify(apiScript));
+  if (reply.stdout) await Deno.stdout.write(new TextEncoder().encode(reply.stdout));
+  if (reply.stderr) await Deno.stderr.write(new TextEncoder().encode(reply.stderr));
+  Deno.exit(reply.exit ?? 0);
+}
+
+if (Deno.args[0] === "issue" && Deno.args[1] === "create") {
+  const issueDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "issue");
+  const issueFile = join(issueDir, "script.json");
+  Deno.mkdirSync(issueDir, { recursive: true });
+  Deno.writeTextFileSync(
+    join(issueDir, "calls.jsonl"),
+    JSON.stringify({ args: Deno.args, cwd: Deno.cwd() }) + "\n",
+    { append: true },
+  );
+  let issueScript: { replies: { stdout?: string; stderr?: string; exit?: number }[]; next: number };
+  try {
+    issueScript = JSON.parse(Deno.readTextFileSync(issueFile));
+  } catch {
+    issueScript = { replies: [], next: 0 };
+  }
+  const reply = issueScript.replies[issueScript.next];
+  if (!reply) {
+    console.error("fake gh: no scripted issue reply left");
+    Deno.exit(99);
+  }
+  issueScript.next++;
+  Deno.writeTextFileSync(issueFile, JSON.stringify(issueScript));
   if (reply.stdout) await Deno.stdout.write(new TextEncoder().encode(reply.stdout));
   if (reply.stderr) await Deno.stderr.write(new TextEncoder().encode(reply.stderr));
   Deno.exit(reply.exit ?? 0);

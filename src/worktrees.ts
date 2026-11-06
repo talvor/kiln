@@ -217,11 +217,11 @@ export async function mergeAssignment(
     branch: assignment.branch!,
     requestBranch: request.branch!,
   };
-  if (assignment.status === "merged" && assignment.pushed && assignmentWt.releasedAt) {
+  if (assignment.mergedAt && assignment.pushed && assignmentWt.releasedAt) {
     throw new WorktreeBlocked(`Assignment ${assignmentId} is already merged and pushed.`);
   }
 
-  if (assignment.status === "active") {
+  if (!assignment.mergedAt) {
     const dirty = await git(assignmentWt.path, "status", "--porcelain");
     if (dirty.stdout.trim()) {
       throw new WorktreeBlocked(

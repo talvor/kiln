@@ -31,3 +31,9 @@ Pause, edit commands, re-run the test baseline, change the default branch or rem
 Agents work under sessions (`kiln session open`) and exchange assignments, results, questions and
 answers through a per-session tool server; Kiln nudges agents with unread mail. See
 [the router guide](docs/router.md).
+
+## Requests that follow a Playbook
+
+`kiln request start <project> --playbook diagnose-a-bug --description "..."` starts a Request that
+Kiln walks through step by step, from the overseer to a department's leader and its workers, to a
+published fix ticket. See [the playbook guide](docs/playbooks.md).
