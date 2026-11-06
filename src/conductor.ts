@@ -219,7 +219,7 @@ export function createConductor(opts: ConductorOptions) {
    * new assignment from the overseer, carrying the feedback, for a fresh worker that starts from
    * the rejected branch; past it, the Step fails and the rejection goes up to the Overseer.
    */
-  async function reject(
+  function reject(
     request: RequestRecord,
     step: StepRecord,
     project: ProjectRecord,
