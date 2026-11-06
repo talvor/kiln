@@ -9,6 +9,8 @@ export interface Home {
   env: Record<string, string>;
   dirs: { config: string; data: string; state: string; runtime: string };
   kiln(...args: string[]): Promise<Result>;
+  /** Like kiln(), with text on the command's standard input (default: no input). */
+  kilnWithInput(input: string, ...args: string[]): Promise<Result>;
 }
 export interface Result {
   code: number;
@@ -34,17 +36,32 @@ export async function makeHome(extraEnv: Record<string, string> = {}): Promise<H
     KILN_RUNTIME_DIR: dirs.runtime,
     ...extraEnv,
   };
-  return { root, env, dirs, kiln: (...args) => runKiln(env, args) };
+  return {
+    root,
+    env,
+    dirs,
+    kiln: (...args) => runKiln(env, args),
+    kilnWithInput: (input, ...args) => runKiln(env, args, input),
+  };
 }
 
-export async function runKiln(env: Record<string, string>, args: string[]): Promise<Result> {
-  const out = await new Deno.Command(Deno.execPath(), {
+export async function runKiln(
+  env: Record<string, string>,
+  args: string[],
+  input = "",
+): Promise<Result> {
+  const child = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", MAIN, ...args],
     env,
     clearEnv: true,
+    stdin: "piped",
     stdout: "piped",
     stderr: "piped",
-  }).output();
+  }).spawn();
+  const stdin = child.stdin.getWriter();
+  await stdin.write(new TextEncoder().encode(input)).catch(() => {});
+  await stdin.close().catch(() => {});
+  const out = await child.output();
   const dec = new TextDecoder();
   return { code: out.code, stdout: dec.decode(out.stdout), stderr: dec.decode(out.stderr) };
 }

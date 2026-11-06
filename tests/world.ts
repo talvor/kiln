@@ -12,6 +12,11 @@ export interface PrStatus {
   state: "OPEN" | "MERGED" | "CLOSED";
   checks: "PENDING" | "SUCCESS" | "FAILURE";
 }
+export interface ApiReply {
+  stdout?: string;
+  stderr?: string;
+  exit?: number;
+}
 interface Call {
   args: string[];
   cwd?: string;
@@ -19,7 +24,17 @@ interface Call {
 
 export interface World extends Home {
   /** Bare git repository standing in for the Project's remote (`origin`). */
-  remote: { path: string; branches(): Promise<string[]> };
+  remote: {
+    path: string;
+    branches(): Promise<string[]>;
+    /** From now on the remote can be fetched from but not pushed to. */
+    refusePushes(): Promise<void>;
+  };
+  /** The scripted `gh api`, which Kiln asks about the default branch's protection. */
+  githubApi: {
+    script(replies: ApiReply[]): Promise<void>;
+    calls(): Promise<Call[]>;
+  };
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
@@ -47,12 +62,14 @@ export async function makeWorld(): Promise<World> {
     await Deno.chmod(file, 0o755);
   }
 
+  const gitConfig = join(base.root, "gitconfig");
+  await Deno.writeTextFile(gitConfig, "");
   const env: Record<string, string> = {
     ...base.env,
     PATH: `${bin}:${base.env.PATH}`,
     KILN_FAKE_DIR: fakeDir,
     // Hermetic git: no user config (signing, hooks), fixed identity.
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_AUTHOR_NAME: "Kiln Test",
     GIT_AUTHOR_EMAIL: "test@kiln.invalid",
@@ -100,8 +117,14 @@ export async function makeWorld(): Promise<World> {
     ...base,
     env,
     kiln: (...args) => runKiln(env, args),
+    kilnWithInput: (input, ...args) => runKiln(env, args, input),
     remote: {
       path: remotePath,
+      refusePushes: () =>
+        Deno.writeTextFile(
+          gitConfig,
+          `[url "file:///kiln-test-pushes-refused/"]\n\tpushInsteadOf = ${remotePath}\n`,
+        ),
       branches: async () =>
         (await git(remotePath, "for-each-ref", "--format=%(refname:short)", "refs/heads"))
           .stdout.split("\n").filter(Boolean),
@@ -110,6 +133,10 @@ export async function makeWorld(): Promise<World> {
     launcher: {
       script: (runs) => script("launcher", "runs", runs),
       calls: () => calls("launcher"),
+    },
+    githubApi: {
+      script: (replies) => script("api", "replies", replies),
+      calls: () => calls("api"),
     },
     prStatus: {
       script: (statuses) => script("pr-status", "statuses", statuses),

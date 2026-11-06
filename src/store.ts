@@ -19,6 +19,23 @@ export const MIGRATIONS: string[] = [
      begin select raise(abort, 'events are append-only'); end;
    create trigger events_no_delete before delete on events
      begin select raise(abort, 'events are append-only'); end;`,
+  // 2: registered Projects.
+  `create table projects (
+     id integer primary key,
+     name text not null unique,
+     source text not null,
+     remote_url text not null,
+     clone_path text not null,
+     default_branch text not null,
+     head_commit text not null,
+     setup_command text,
+     test_command text,
+     lint_command text,
+     build_command text,
+     baseline text,
+     warnings text not null default '[]',
+     registered_at text not null
+   ) strict;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -27,6 +44,44 @@ export class StoreTooNewError extends Error {
       `The store is at schema version ${found}, newer than this Kiln supports (${supported}). ` +
         `It was written by a newer Kiln; upgrade Kiln instead of opening it with this version.`,
     );
+  }
+}
+
+/** A Project as registered: where it came from, Kiln's clone, its commands and test baseline. */
+export interface ProjectRecord {
+  id: number;
+  name: string;
+  /** What the user gave Kiln: a path or a URL. */
+  source: string;
+  remoteUrl: string;
+  /** Kiln's own clone of the Project. */
+  clonePath: string;
+  defaultBranch: string;
+  headCommit: string;
+  setupCommand: string | null;
+  testCommand: string | null;
+  lintCommand: string | null;
+  buildCommand: string | null;
+  /** The result of the test command on the clean checkout; null when there is no test command. */
+  baseline: Baseline | null;
+  warnings: string[];
+  registeredAt: string;
+}
+export interface Baseline {
+  passed: boolean;
+  exitCode: number;
+  durationMs: number;
+  /** The commit the baseline was recorded on. */
+  commit: string;
+  /** The end of the test command's output. */
+  outputTail: string;
+  recordedAt: string;
+}
+export type NewProject = Omit<ProjectRecord, "id" | "registeredAt">;
+
+export class DuplicateProjectError extends Error {
+  constructor(name: string) {
+    super(`A project named "${name}" is already registered.`);
   }
 }
 
@@ -41,6 +96,9 @@ export interface Store {
   /** Write a consistent copy of the store into the backups directory; returns its path. */
   backup(label?: string): Promise<string>;
   appendEvent(kind: string, data?: Record<string, unknown>): void;
+  /** Record a Project; throws DuplicateProjectError if the name is taken. */
+  addProject(project: NewProject): ProjectRecord;
+  listProjects(): ProjectRecord[];
   close(): void;
 }
 
@@ -114,7 +172,55 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
     }
 
     const insertEvent = db.prepare("insert into events (ts, kind, data) values (?, ?, ?)");
+    const insertProject = db.prepare(
+      `insert into projects (name, source, remote_url, clone_path, default_branch, head_commit,
+         setup_command, test_command, lint_command, build_command, baseline, warnings, registered_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const toRecord = (row: Record<string, unknown>): ProjectRecord => ({
+      id: row.id as number,
+      name: row.name as string,
+      source: row.source as string,
+      remoteUrl: row.remote_url as string,
+      clonePath: row.clone_path as string,
+      defaultBranch: row.default_branch as string,
+      headCommit: row.head_commit as string,
+      setupCommand: row.setup_command as string | null,
+      testCommand: row.test_command as string | null,
+      lintCommand: row.lint_command as string | null,
+      buildCommand: row.build_command as string | null,
+      baseline: row.baseline ? JSON.parse(row.baseline as string) : null,
+      warnings: JSON.parse(row.warnings as string),
+      registeredAt: row.registered_at as string,
+    });
     return {
+      addProject: (p) => {
+        const registeredAt = new Date().toISOString();
+        try {
+          const { lastInsertRowid } = insertProject.run(
+            p.name,
+            p.source,
+            p.remoteUrl,
+            p.clonePath,
+            p.defaultBranch,
+            p.headCommit,
+            p.setupCommand,
+            p.testCommand,
+            p.lintCommand,
+            p.buildCommand,
+            p.baseline ? JSON.stringify(p.baseline) : null,
+            JSON.stringify(p.warnings),
+            registeredAt,
+          );
+          return { ...p, id: Number(lastInsertRowid), registeredAt };
+        } catch (err) {
+          if (/UNIQUE constraint failed: projects\.name/.test((err as Error).message)) {
+            throw new DuplicateProjectError(p.name);
+          }
+          throw err;
+        }
+      },
+      listProjects: () => db.prepare("select * from projects order by id").all().map(toRecord),
       info: () => ({
         schemaVersion: version(),
         sqliteVersion: db.prepare("select sqlite_version() v").get()!.v as string,
