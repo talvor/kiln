@@ -160,7 +160,7 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
   assertEquals(launched.code, 0, launched.stderr);
   const calls = await world.launcher.calls();
   const call = calls.at(-1)!;
-  assertEquals(call.cwd, a.Worktree);
+  assertEquals(call.cwd, await Deno.realPath(a.Worktree));
   for (
     const key of [
       "KILN_PORT_BASE",
@@ -277,7 +277,7 @@ withWorld("a relative launch cwd uses its worktree environment", async (world) =
   );
   assertEquals(result.code, 0, result.stderr);
   const call = (await world.launcher.calls()).at(-1)!;
-  assertEquals(call.cwd, a.Worktree);
+  assertEquals(call.cwd, await Deno.realPath(a.Worktree));
   for (
     const key of [
       "KILN_PORT_BASE",

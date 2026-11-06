@@ -2,7 +2,7 @@
 // Project's clone: one Worktree per Request (on the request branch, where finished Assignments are
 // merged) and one per Assignment (on its own branch). Each Worktree has its own ports, temporary
 // directory and caches, so concurrent work does not collide.
-import { dirname, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { firstLine, REMOTE_TIMEOUT_MS, run } from "./checks.ts";
 import type { ProjectRecord, Store, WorktreeRecord } from "./store.ts";
 import { WORKTREE_PORTS } from "./store.ts";
@@ -105,9 +105,11 @@ async function createWorktree(
       if (branchCreated) {
         const listed = await git(project.clonePath, "worktree", "list", "--porcelain", "-z");
         if (listed.code !== 0) throw new Error(firstLine(listed.stderr));
+        // Git reports resolved paths (e.g. /private/tmp on macOS).
+        const resolved = join(await Deno.realPath(dirname(path)), basename(path));
         const registered = listed.stdout.split("\0\0").some((record) => {
           const fields = record.split("\0");
-          return fields.includes(`worktree ${path}`) &&
+          return fields.includes(`worktree ${resolved}`) &&
             fields.includes(`branch refs/heads/${branch}`);
         });
         if (registered) {
