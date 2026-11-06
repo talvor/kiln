@@ -16,8 +16,9 @@ comes from the remote's last path segment, without a `.git` suffix.
    outside the clone, directories, and empty files are omitted from the agent's reading list.
    The agent can only use read tools. Kiln shows the commands and asks `Use these commands?`.
    Confirm after reviewing the proposal; with no answer on stdin the answer is no. The commands
-   are not editable yet: decline and fix the project's agent docs, or register once the proposal is
-   right.
+   cannot be edited during registration: decline and fix the project's agent docs, or register
+   once the proposal is right. To change stored commands later, see the
+   [management guide](manage.md#re-check).
 4. Kiln runs any proposed `setup` and `test` commands, in that order, in the clone, and records the
    project.
 
@@ -26,7 +27,8 @@ comes from the remote's last path segment, without a `.git` suffix.
 Registration is **blocked**, and no new project is recorded, when:
 
 - the project has no remote (`origin` for a path), or the remote cannot be cloned or has no commits;
-- the remote name cannot be used as a project name, or that name or clone directory already exists;
+- the remote name cannot be used as a project name, a project that has not been removed already uses
+  that name, or Kiln's clone directory already exists;
 - the clone has no non-empty, regular `AGENTS.md` or `CLAUDE.md` at its root whose real path stays
   inside the clone;
 - the push dry-run fails;

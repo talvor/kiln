@@ -66,7 +66,13 @@ withWorld("a paused project is shown paused until it is resumed", async (world) 
 withWorld("overlapping pause and resume use the latest project state", async (world) => {
   await register(world);
   const marker = join(world.dirs.data, "projects", "remote", "started.txt");
-  const edit = world.kiln("project", "edit", "remote", "--setup", "echo started > started.txt; sleep 2");
+  const edit = world.kiln(
+    "project",
+    "edit",
+    "remote",
+    "--setup",
+    "echo started > started.txt; sleep 2",
+  );
   const deadline = Date.now() + 5000;
   while (!await Deno.stat(marker).then(() => true, () => false)) {
     assert(Date.now() < deadline, "the edit did not begin setup");
@@ -116,8 +122,13 @@ withWorld("overlapping edit and baseline keep the edited test command", async (w
   await register(world);
   const marker = join(world.dirs.data, "projects", "remote", "started.txt");
   const edit = world.kiln(
-    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 1",
-    "--test", "exit 3",
+    "project",
+    "edit",
+    "remote",
+    "--setup",
+    "echo started > started.txt; sleep 1",
+    "--test",
+    "exit 3",
   );
   const deadline = Date.now() + 5000;
   while (!await Deno.stat(marker).then(() => true, () => false)) {
@@ -191,7 +202,10 @@ withWorld("a post-checkout inspection failure restores the recorded branch", asy
   await world.git(world.project.path, "push", "origin", "develop");
   const gitPath = (await world.exec(world.root, "which", "git")).stdout.trim();
   const fakeGit = join(world.root, "fake", "bin", "git");
-  await Deno.writeTextFile(fakeGit, `#!/bin/sh\nif [ "$1" = ls-files ]; then exit 7; fi\nexec "${gitPath}" "$@"\n`);
+  await Deno.writeTextFile(
+    fakeGit,
+    `#!/bin/sh\nif [ "$1" = ls-files ]; then exit 7; fi\nexec "${gitPath}" "$@"\n`,
+  );
   await Deno.chmod(fakeGit, 0o755);
 
   const changed = await world.kiln("project", "default-branch", "remote", "develop");
@@ -238,8 +252,13 @@ withWorld("daemon stop waits past the old timeout for a running re-check", async
   await register(world);
   const marker = join(world.dirs.data, "projects", "remote", "started.txt");
   const edit = world.kiln(
-    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 16",
-    "--test", "exit 3",
+    "project",
+    "edit",
+    "remote",
+    "--setup",
+    "echo started > started.txt; sleep 16",
+    "--test",
+    "exit 3",
   );
   const deadline = Date.now() + 5000;
   while (!await Deno.stat(marker).then(() => true, () => false)) {

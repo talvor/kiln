@@ -67,6 +67,7 @@ Deno.test("stop finishes when a replacement daemon owns the socket", async () =>
             JSON.stringify({ id: request.id, ok: true, result: identity }) + "\n",
           ));
         } catch {
+          // The fake daemon may lose a connection while the CLI probes shutdown.
         } finally {
           conn.close();
         }

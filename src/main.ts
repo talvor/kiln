@@ -180,7 +180,9 @@ async function main(args: string[]): Promise<number> {
       }>(paths, "projects.recheck", { name, change, baselineOnly });
       for (const message of result.progress) console.log(message);
       if (result.blocked) {
-        console.error(`Re-check blocked: ${result.blocked}\nThe project record was not changed. Setup may have left files in Kiln's clone.`);
+        console.error(
+          `Re-check blocked: ${result.blocked}\nThe project record was not changed. Setup may have left files in Kiln's clone.`,
+        );
         return 1;
       }
       const updated = result.project!;

@@ -189,7 +189,9 @@ export async function removeClone(clonePath: string, projectsDir: string): Promi
       }
     }
     throw new Error(
-      `Project record was removed, but its clone at ${clonePath} could not be deleted: ${(err as Error).message}. Remove that directory to reuse the name.`,
+      `Project record was removed, but its clone at ${clonePath} could not be deleted: ${
+        (err as Error).message
+      }. Remove that directory to reuse the name.`,
     );
   }
 }

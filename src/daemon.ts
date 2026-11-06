@@ -105,43 +105,51 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     backup: async () => ({ path: await store.backup() }),
     "projects.list": (params) =>
       store.listProjects({ includeRemoved: params.includeRemoved === true }),
-    "projects.pause": (params) => withProjectQueue(String(params.name), () => {
-      const name = String(params.name);
-      const project = store.getProject(name);
-      const paused = params.paused === true;
-      if (project.paused === paused) return { changed: false };
-      store.updateProject(name, { paused });
-      store.appendEvent("project.updated", { id: project.id, name, fields: ["paused"] });
-      return { changed: true };
-    }),
-    "projects.recheck": (params) => withProjectQueue(String(params.name), async () => {
-      const name = String(params.name);
-      const progress: string[] = [];
-      try {
-        const patch = await recheckProject(
-          store.getProject(name),
-          params.change as Change,
-          (message) => progress.push(message),
-          params.baselineOnly === true,
-        );
-        const project = store.updateProject(name, patch);
-        store.appendEvent("project.updated", { id: project.id, name, fields: Object.keys(patch) });
-        return { project, progress };
-      } catch (err) {
-        if (err instanceof RecheckBlocked) return { blocked: err.message, progress };
-        throw err;
-      }
-    }),
-    "projects.remove": (params) => withProjectQueue(String(params.name), async () => {
-      const project = store.removeProject(String(params.name), { force: params.force === true });
-      await removeClone(project.clonePath, paths.projects);
-      return project;
-    }),
-    "projects.add": (params) => withProjectQueue(String(params.name), () => {
-      const project = store.addProject(params as unknown as NewProject);
-      store.appendEvent("project.registered", { id: project.id, name: project.name });
-      return project;
-    }),
+    "projects.pause": (params) =>
+      withProjectQueue(String(params.name), () => {
+        const name = String(params.name);
+        const project = store.getProject(name);
+        const paused = params.paused === true;
+        if (project.paused === paused) return { changed: false };
+        store.updateProject(name, { paused });
+        store.appendEvent("project.updated", { id: project.id, name, fields: ["paused"] });
+        return { changed: true };
+      }),
+    "projects.recheck": (params) =>
+      withProjectQueue(String(params.name), async () => {
+        const name = String(params.name);
+        const progress: string[] = [];
+        try {
+          const patch = await recheckProject(
+            store.getProject(name),
+            params.change as Change,
+            (message) => progress.push(message),
+            params.baselineOnly === true,
+          );
+          const project = store.updateProject(name, patch);
+          store.appendEvent("project.updated", {
+            id: project.id,
+            name,
+            fields: Object.keys(patch),
+          });
+          return { project, progress };
+        } catch (err) {
+          if (err instanceof RecheckBlocked) return { blocked: err.message, progress };
+          throw err;
+        }
+      }),
+    "projects.remove": (params) =>
+      withProjectQueue(String(params.name), async () => {
+        const project = store.removeProject(String(params.name), { force: params.force === true });
+        await removeClone(project.clonePath, paths.projects);
+        return project;
+      }),
+    "projects.add": (params) =>
+      withProjectQueue(String(params.name), () => {
+        const project = store.addProject(params as unknown as NewProject);
+        store.appendEvent("project.registered", { id: project.id, name: project.name });
+        return project;
+      }),
     stop: (_params, ctx) => {
       ctx.afterReply = () => beginShutdown("stop command");
       return { stopping: true, pid: Deno.pid, startedAt };

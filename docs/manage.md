@@ -1,12 +1,12 @@
 # Managing projects
 
-All commands act on a registered project by name (`kiln project list` shows them).
+Use `kiln project list` to find the names of projects you can manage.
 
 | Command | What it does |
 | --- | --- |
 | `kiln project list [--all]` | Show projects, their state and baseline. `--all` includes removed ones. |
 | `kiln project pause <name>` / `resume <name>` | A paused project takes no new requests. |
-| `kiln project edit <name> [--setup\|--test\|--lint\|--build <cmd>]...` | Change commands (an empty string clears one), then re-check. |
+| `kiln project edit <name> <flag> <cmd> [<flag> <cmd> ...]` | Change one or more commands using `--setup`, `--test`, `--lint`, or `--build` (an empty string clears one), then re-check. |
 | `kiln project baseline <name>` | Re-run the test baseline on the latest default branch. |
 | `kiln project default-branch <name> <branch>` | Switch to another remote branch, then re-check. |
 | `kiln project remove <name> [--force]` | Remove the project and delete Kiln's clone. |
