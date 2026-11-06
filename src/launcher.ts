@@ -22,6 +22,7 @@ export interface LaunchRequest {
   allowedTools?: string[];
   /** Extra settings for this launch, e.g. hooks. */
   settings?: Record<string, unknown>;
+  abortController?: AbortController;
 }
 
 export interface LaunchResult {
@@ -73,6 +74,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       mcpServers: req.mcpServers,
       allowedTools: req.allowedTools,
       settings: req.settings,
+      abortController: req.abortController,
     },
   });
   try {

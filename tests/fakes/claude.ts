@@ -19,6 +19,7 @@ export interface LauncherRun {
   costUsd?: number;
   /** SDK mode: how the run ended; default "success". */
   outcome?: "success" | "error_max_budget_usd" | "error_during_execution";
+  hang?: boolean;
 }
 
 const dir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "launcher");
@@ -73,6 +74,7 @@ async function speakSdkProtocol(run: LauncherRun): Promise<void> {
           JSON.stringify(msg) + "\n",
           { append: true },
         );
+        if (run.hang) await new Promise((resolve) => setTimeout(resolve, 60_000));
         const base = {
           type: "result",
           duration_ms: 1,

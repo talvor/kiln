@@ -17,6 +17,7 @@ import {
 /** A Message is dead-lettered once this many Nudges have gone unanswered. */
 export const MAX_DELIVERIES = 3;
 export const TOOL_NAMES = ["read_inbox", "send", "raise_question"] as const;
+const LAUNCH_TIMEOUT_MS = 30_000;
 
 /** A refusal the sender can act on. */
 export class RouterError extends Error {}
@@ -66,18 +67,25 @@ export function createRouter(opts: RouterOptions) {
     return superior;
   };
 
+  const hasResult = (assignmentId: number): boolean =>
+    store.listMessages({ kind: "result", inReplyTo: assignmentId }).length > 0;
   /** Assignments to `address` nobody has reported on yet. */
   const openAssignments = (address: string): MessageRecord[] =>
     store.listMessages({ to: address, kind: "assignment" }).filter((a) =>
-      !store.listMessages({ kind: "result", inReplyTo: a.id }).length
+      !hasResult(a.id)
     );
   /** Questions from `address` still waiting for an answer. */
-  const openQuestions = (address: string): MessageRecord[] =>
+  const openQuestions = (address: string, assignmentId: number): MessageRecord[] =>
     store.listMessages({ from: address, kind: "question" }).filter((q) =>
+      q.assignmentId === assignmentId && q.deadLetteredAt === null &&
       !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
     );
 
   const append = (m: Parameters<Store["appendMessage"]>[0]): MessageRecord => {
+    if (m.kind === "result" && m.inReplyTo !== undefined && m.inReplyTo !== null &&
+      hasResult(m.inReplyTo)) {
+      throw new RouterError(`assignment ${m.inReplyTo} already has a result`);
+    }
     const sent = store.appendMessage(m);
     store.appendEvent("message.sent", {
       id: sent.id,
@@ -109,6 +117,7 @@ export function createRouter(opts: RouterOptions) {
     kind: MessageKind,
     body: unknown,
     inReplyTo?: number,
+    assignmentId?: number,
   ): MessageRecord {
     const sender = sessionAt(from);
     const recipient = sessionAt(to);
@@ -121,6 +130,13 @@ export function createRouter(opts: RouterOptions) {
     }
     const refusal = refuseRoute(store.listSessions(), sender, recipient, kind);
     if (refusal) throw new RouterError(refusal);
+    if (inReplyTo !== undefined && (!Number.isSafeInteger(inReplyTo) || inReplyTo <= 0)) {
+      throw new RouterError("inReplyTo must be a positive integer");
+    }
+    if (assignmentId !== undefined &&
+      (!Number.isSafeInteger(assignmentId) || assignmentId <= 0)) {
+      throw new RouterError("assignmentId must be a positive integer");
+    }
 
     if (kind === "result" || kind === "answer") {
       const [target, targetKind] = kind === "result"
@@ -136,13 +152,23 @@ export function createRouter(opts: RouterOptions) {
           } ${target} that ${to} sent you (set inReplyTo to its id)`,
         );
       }
-      if (store.listMessages({ kind, inReplyTo: original.id }).length) {
+      if (kind === "answer" && store.listMessages({ kind, inReplyTo: original.id }).length) {
         throw new RouterError(`${target} ${original.id} already has a ${kind}`);
       }
     } else if (inReplyTo !== undefined) {
       throw new RouterError(`a ${kind} cannot reply to another message`);
     }
-    return append({ from, to, kind, body: body as Record<string, unknown>, inReplyTo });
+    if (kind === "question" && assignmentId !== undefined) {
+      const original = store.getMessage(assignmentId);
+      if (!original || original.kind !== "assignment" || original.to !== from ||
+        original.from !== to || original.deadLetteredAt !== null ||
+        hasResult(assignmentId)) {
+        throw new RouterError(`question must concern an open assignment ${to} sent you`);
+      }
+    } else if (kind !== "question" && assignmentId !== undefined) {
+      throw new RouterError(`a ${kind} cannot name an assignmentId`);
+    }
+    return append({ from, to, kind, body: body as Record<string, unknown>, inReplyTo, assignmentId });
   }
 
   return {
@@ -170,10 +196,10 @@ export function createRouter(opts: RouterOptions) {
     send,
 
     /** Ask the sender's direct superior; the answer comes back as an answer Message. */
-    raiseQuestion(from: string, question: unknown, context?: unknown): MessageRecord {
+    raiseQuestion(from: string, question: unknown, context?: unknown, assignmentId?: number): MessageRecord {
       const sender = sessionAt(from);
       const body = context === undefined ? { question } : { question, context };
-      return send(from, superiorOrThrow(sender).address, "question", body);
+      return send(from, superiorOrThrow(sender).address, "question", body, undefined, assignmentId);
     },
 
     /** Hand over what is waiting for `address`, marking it read. */
@@ -184,7 +210,7 @@ export function createRouter(opts: RouterOptions) {
         store.markRead(waiting.map((m) => m.id));
         store.appendEvent("message.read", { address, ids: waiting.map((m) => m.id) });
       }
-      return waiting;
+      return waiting.map((m) => store.getMessage(m.id)!);
     },
 
     /**
@@ -196,7 +222,7 @@ export function createRouter(opts: RouterOptions) {
       sessionAt(address);
       const unread = store.listMessages({ to: address, waiting: true });
       const open = openAssignments(address);
-      const unreported = open.length && !openQuestions(address).length ? open : [];
+      const unreported = open.filter((a) => !openQuestions(address, a.id).length);
       if (!alreadyBlocked) {
         const reasons: string[] = [];
         if (unread.length) {
@@ -207,7 +233,7 @@ export function createRouter(opts: RouterOptions) {
         if (unreported.length) {
           reasons.push(
             `You have not reported on assignment ${unreported.map((a) => a.id).join(", ")}. ` +
-              `Call send with a result (status done or failed), or raise_question if you are stuck.`,
+              `Call send with a result (status done or failed), or raise_question with assignmentId if you are stuck.`,
           );
         }
         if (reasons.length) return { block: true, reason: reasons.join(" ") };
@@ -227,7 +253,9 @@ export function createRouter(opts: RouterOptions) {
       const now = Date.now();
       const result: TickResult = { nudged: [], deadLettered: [] };
       const due = store.listMessages({ waiting: true }).filter((m) =>
-        m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= opts.renudgeAfterMs
+        (m.kind !== "assignment" ||
+          !hasResult(m.id)) &&
+        (m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= opts.renudgeAfterMs)
       );
       const byRecipient = new Map<string, MessageRecord[]>();
       for (const m of due) {
@@ -246,10 +274,17 @@ export function createRouter(opts: RouterOptions) {
         }
       }
       for (const [address, messages] of byRecipient) {
-        store.recordDelivery(messages.map((m) => m.id));
-        store.appendEvent("message.nudged", { to: address, ids: messages.map((m) => m.id) });
-        result.nudged.push({ to: address, messages: messages.length });
-        await nudge(sessionAt(address), messages.length);
+        const current = messages.filter((m) => {
+          const latest = store.getMessage(m.id)!;
+          return latest.readAt === null && latest.deadLetteredAt === null &&
+            (latest.kind !== "assignment" ||
+              !hasResult(latest.id));
+        });
+        if (!current.length) continue;
+        store.recordDelivery(current.map((m) => m.id));
+        store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
+        result.nudged.push({ to: address, messages: current.length });
+        await nudge(sessionAt(address), current.length);
       }
       return result;
     },
@@ -258,8 +293,10 @@ export function createRouter(opts: RouterOptions) {
   async function nudge(session: SessionRecord, count: number): Promise<void> {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
+    const abortController = new AbortController();
+    let timeout: number | undefined;
     try {
-      await opts.launch({
+      await Promise.race([opts.launch({
         prompt: `You have ${count} unread message(s) in your Kiln inbox. ` +
           `Call the read_inbox tool now and act on what it returns.`,
         cwd: session.cwd,
@@ -275,10 +312,18 @@ export function createRouter(opts: RouterOptions) {
             }],
           },
         },
-      });
+        abortController,
+      }), new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          abortController.abort();
+          reject(new Error("launch timed out"));
+        }, LAUNCH_TIMEOUT_MS);
+      })]);
     } catch (err) {
       // The Nudge still counts: a Message nobody can wake anyone for must reach the dead letters.
       log.warn("could not nudge", { address: session.address, err });
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }

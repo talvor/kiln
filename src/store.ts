@@ -89,6 +89,7 @@ export const MIGRATIONS: string[] = [
      kind text not null check (kind in ('assignment', 'result', 'question', 'answer')),
      body text not null,
      in_reply_to integer references messages (id),
+     assignment_id integer references messages (id),
      synthesised integer not null default 0,
      sent_at text not null
    ) strict;
@@ -189,6 +190,8 @@ export interface MessageRecord {
   body: Record<string, unknown>;
   /** The assignment a result answers, or the question an answer answers. */
   inReplyTo: number | null;
+  /** The assignment a question asks about, if any. */
+  assignmentId: number | null;
   /** Written by Kiln itself rather than by the sender. */
   synthesised: boolean;
   sentAt: string;
@@ -200,6 +203,7 @@ export interface MessageRecord {
 }
 export type NewMessage = Pick<MessageRecord, "from" | "to" | "kind" | "body"> & {
   inReplyTo?: number | null;
+  assignmentId?: number | null;
   synthesised?: boolean;
 };
 export interface MessageFilter {
@@ -393,6 +397,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       kind: row.kind as MessageKind,
       body: JSON.parse(row.body as string),
       inReplyTo: row.in_reply_to as number | null,
+      assignmentId: row.assignment_id as number | null,
       synthesised: row.synthesised === 1,
       sentAt: row.sent_at as string,
       readAt: row.read_at as string | null,
@@ -449,14 +454,15 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       appendMessage: (m) =>
         inTransaction(() => {
           const { lastInsertRowid } = db.prepare(
-            `insert into messages (sender, recipient, kind, body, in_reply_to, synthesised, sent_at)
-             values (?, ?, ?, ?, ?, ?, ?)`,
+            `insert into messages (sender, recipient, kind, body, in_reply_to, assignment_id, synthesised, sent_at)
+             values (?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             m.from,
             m.to,
             m.kind,
             JSON.stringify(m.body),
             m.inReplyTo ?? null,
+            m.assignmentId ?? null,
             m.synthesised ? 1 : 0,
             new Date().toISOString(),
           );

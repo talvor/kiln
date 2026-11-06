@@ -14,6 +14,7 @@ export interface Message {
   kind: string;
   body: Record<string, unknown>;
   inReplyTo: number | null;
+  assignmentId: number | null;
   synthesised: boolean;
   readAt: string | null;
   deliveries: number;
@@ -105,8 +106,8 @@ export class Agent {
   }
 
   /** send, expecting it to work; returns the sent message. */
-  async send(to: string, kind: string, body: unknown, inReplyTo?: number): Promise<Message> {
-    const out = await this.call("send", { to, kind, body, inReplyTo });
+  async send(to: string, kind: string, body: unknown, inReplyTo?: number, assignmentId?: number): Promise<Message> {
+    const out = await this.call("send", { to, kind, body, inReplyTo, assignmentId });
     assertEquals(out.isError, false, out.text);
     return out.data.sent;
   }
@@ -144,21 +145,6 @@ export async function openTeam(world: World): Promise<void> {
     const r = await world.kiln("session", "open", ...args, "--cwd", world.project.path);
     assertEquals(r.code, 0, r.stderr);
   }
-}
-
-export async function messages(world: World, ...filter: string[]): Promise<Message[]> {
-  const r = await world.kiln("messages", ...filter, "--json");
-  assertEquals(r.code, 0, r.stderr);
-  return JSON.parse(r.stdout);
-}
-
-export async function tick(world: World): Promise<{
-  nudged: { to: string; messages: number }[];
-  deadLettered: number[];
-}> {
-  const r = await world.kiln("router", "tick", "--json");
-  assertEquals(r.code, 0, r.stderr);
-  return JSON.parse(r.stdout);
 }
 
 /** Run the agent's Stop hook the way Claude Code does. Returns the hook's decision, if any. */

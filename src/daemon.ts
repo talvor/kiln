@@ -83,18 +83,15 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log,
     launch,
     selfCommand,
-    renudgeAfterMs: envMs("KILN_RENUDGE_AFTER_MS", 60_000),
+    renudgeAfterMs: 60_000,
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated.
   let pass: Promise<TickResult> | undefined;
   const deliver = (): Promise<TickResult> => pass ??= router.tick().finally(() => pass = undefined);
-  const tickMs = envMs("KILN_ROUTER_TICK_MS", 2_000);
-  const ticker = tickMs > 0
-    ? setInterval(
-      () => deliver().catch((err) => log.error("delivery pass failed", { err })),
-      tickMs,
-    )
-    : undefined;
+  const ticker = setInterval(
+    () => deliver().catch((err) => log.error("delivery pass failed", { err })),
+    2_000,
+  );
 
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
@@ -179,28 +176,20 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         return project;
       }),
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),
-    "sessions.list": () => store.listSessions(),
     "messages.send": (params) =>
       router.send(
         String(params.from),
         String(params.to),
         params.kind as MessageKind,
         params.body,
-        params.inReplyTo === undefined || params.inReplyTo === null
-          ? undefined
-          : Number(params.inReplyTo),
+        params.inReplyTo as number | undefined,
+        params.assignmentId as number | undefined,
       ),
     "messages.raise": (params) =>
-      router.raiseQuestion(String(params.from), params.question, params.context ?? undefined),
+      router.raiseQuestion(String(params.from), params.question, params.context, params.assignmentId as number | undefined),
     "messages.read": (params) => router.readInbox(String(params.address)),
-    "messages.list": (params) =>
-      store.listMessages({
-        to: params.to === undefined ? undefined : String(params.to),
-        from: params.from === undefined ? undefined : String(params.from),
-      }),
     "router.stopCheck": (params) =>
       router.checkStop(String(params.address), params.alreadyBlocked === true),
-    "router.tick": () => deliver(),
     stop: (_params, ctx) => {
       ctx.afterReply = () => beginShutdown("stop command");
       return { stopping: true, pid: Deno.pid, startedAt };
@@ -287,11 +276,6 @@ async function serve(
 const FRESH_SOCKET_MS = 2000;
 
 /** A duration in milliseconds from the environment; falls back when unset or malformed. */
-function envMs(name: string, fallback: number): number {
-  const n = Number(Deno.env.get(name));
-  return Deno.env.get(name) !== undefined && Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Bind the daemon socket; returns undefined if a live daemon already owns it. */

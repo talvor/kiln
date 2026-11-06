@@ -1,5 +1,5 @@
 // The per-session Kiln tool server: an MCP server over stdio that one agent connects to.
-// It is bound to the agent's address when it starts, so an agent can only ever act as itself.
+// It uses the agent's address when it starts.
 // It holds no state: every call goes to the daemon, which owns the Messages.
 import { call, ensureDaemon } from "./client.ts";
 import { VERSION } from "./daemon.ts";
@@ -21,7 +21,8 @@ const TOOLS = [
     description: "Send a message to a direct report (assignment, answer) or your direct " +
       "superior (result, question). Kiln refuses any other route. " +
       "assignment body: {title, instructions}. result body: {status: done|failed, summary}, " +
-      "inReplyTo the assignment's id. question body: {question, context?}. " +
+      "inReplyTo the assignment's id. question body: {question, context?}, " +
+      "assignmentId when asking about an assignment. " +
       "answer body: {answer}, inReplyTo the question's id.",
     inputSchema: {
       type: "object",
@@ -30,6 +31,7 @@ const TOOLS = [
         kind: { type: "string", enum: ["assignment", "result", "question", "answer"] },
         body: { type: "object", description: "The message content for this kind" },
         inReplyTo: { type: "integer", description: "Id of the message this one answers" },
+        assignmentId: { type: "integer", description: "Assignment this question concerns" },
       },
       required: ["to", "kind", "body"],
       additionalProperties: false,
@@ -41,7 +43,11 @@ const TOOLS = [
       "Their answer arrives in your inbox.",
     inputSchema: {
       type: "object",
-      properties: { question: str("The question"), context: str("What they need to know") },
+      properties: {
+        question: str("The question"),
+        context: str("What they need to know"),
+        assignmentId: { type: "integer", description: "Assignment this question concerns" },
+      },
       required: ["question"],
       additionalProperties: false,
     },
@@ -55,6 +61,7 @@ const view = (m: MessageRecord) => ({
   kind: m.kind,
   body: m.body,
   inReplyTo: m.inReplyTo,
+  assignmentId: m.assignmentId,
   synthesised: m.synthesised,
   sentAt: m.sentAt,
 });
@@ -63,8 +70,9 @@ async function callTool(
   paths: KilnPaths,
   address: string,
   name: string,
-  args: Record<string, unknown>,
+  rawArgs: unknown,
 ): Promise<unknown> {
+  const args = validateArgs(name, rawArgs);
   await ensureDaemon(paths);
   switch (name) {
     case "read_inbox":
@@ -78,6 +86,7 @@ async function callTool(
             kind: args.kind as MessageKind,
             body: args.body,
             inReplyTo: args.inReplyTo,
+            assignmentId: args.assignmentId,
           }),
         ),
       };
@@ -88,12 +97,42 @@ async function callTool(
             from: address,
             question: args.question,
             context: args.context,
+            assignmentId: args.assignmentId,
           }),
         ),
       };
     default:
       throw new Error(`unknown tool "${name}"`);
   }
+}
+
+function validateArgs(name: string, value: unknown): Record<string, unknown> {
+  const fields: Record<string, string> = name === "read_inbox"
+    ? {}
+    : name === "send"
+    ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
+    : name === "raise_question"
+    ? { question: "string", context: "string", assignmentId: "integer" }
+    : (() => { throw new Error(`unknown tool "${name}"`); })();
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("tool arguments must be an object");
+  }
+  const args = value as Record<string, unknown>;
+  for (const [field, item] of Object.entries(args)) {
+    const type = fields[field];
+    if (!type) throw new Error(`unknown argument "${field}"`);
+    if (type === "integer" ? !Number.isSafeInteger(item) || (item as number) <= 0
+      : type === "object" ? typeof item !== "object" || item === null || Array.isArray(item)
+      : type === "kind" ? typeof item !== "string" || !["assignment", "result", "question", "answer"].includes(item)
+      : typeof item !== "string") {
+      throw new Error(`invalid argument "${field}"`);
+    }
+  }
+  for (const field of name === "send" ? ["to", "kind", "body"]
+    : name === "raise_question" ? ["question"] : []) {
+    if (!(field in args)) throw new Error(`missing argument "${field}"`);
+  }
+  return args;
 }
 
 /** Serve the tools to one agent until it closes our standard input. */
@@ -134,7 +173,7 @@ export async function runToolServer(paths: KilnPaths, address: string): Promise<
             paths,
             address,
             name,
-            (req.params?.arguments ?? {}) as Record<string, unknown>,
+            req.params?.arguments ?? {},
           );
           await reply(req.id, { content: [{ type: "text", text: JSON.stringify(result) }] });
         } catch (err) {
