@@ -26,6 +26,10 @@ const PROJECT_USAGE = `Usage:
   kiln project baseline <name>
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
+const REQUEST_USAGE = "Usage: kiln request start <project>";
+const ASSIGNMENT_USAGE = `Usage:
+  kiln assignment start <request-id>
+  kiln assignment merge <assignment-id>`;
 const SESSION_USAGE =
   "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
 const USAGE = `kiln ${VERSION}
@@ -39,6 +43,12 @@ Usage:
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln project list|pause|resume|edit|baseline|default-branch|remove ...
                          Manage registered projects (see \`kiln project\`)
+  kiln request start <project>
+                         Start a request: a request branch in its own worktree
+  kiln assignment start <request-id>
+                         Start an assignment: its own branch and worktree off the request branch
+  kiln assignment merge <assignment-id>
+                         Merge a verified assignment into its request branch and push it
   kiln session open ...
                          Open the address an agent works under (see \`kiln session\`)
   kiln tool-server --address <address>
@@ -79,6 +89,13 @@ async function main(args: string[]): Promise<number> {
       return await launchCommand(args.slice(1));
     case "project":
       return await projectCommand(sub, args.slice(2));
+    case "request":
+      return await worktreeCommand(sub === "start" ? "requests.start" : "", args.slice(2));
+    case "assignment":
+      return await worktreeCommand(
+        sub === "start" ? "assignments.start" : sub === "merge" ? "assignments.merge" : "",
+        args.slice(2),
+      );
     case "session":
       return await sessionCommand(sub, args.slice(2));
     case "tool-server": {
@@ -93,6 +110,52 @@ async function main(args: string[]): Promise<number> {
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
+  }
+
+  async function worktreeCommand(method: string, rest: string[]): Promise<number> {
+    const usage = cmd === "request" ? REQUEST_USAGE : ASSIGNMENT_USAGE;
+    if (!method || rest.length !== 1 || rest[0].startsWith("-")) {
+      console.error(usage);
+      return 2;
+    }
+    const target = method === "requests.start"
+      ? { project: rest[0] }
+      : method === "assignments.start"
+      ? { requestId: Number(rest[0]) }
+      : { id: Number(rest[0]) };
+    if (method !== "requests.start" && !/^\d+$/.test(rest[0])) {
+      console.error(usage);
+      return 2;
+    }
+    await ensureDaemon(paths);
+    try {
+      const r = await call<{
+        requestId?: number;
+        assignmentId?: number;
+        path?: string;
+        branch: string;
+        requestBranch?: string;
+        env?: Record<string, string>;
+      }>(paths, method, target);
+      if (method === "assignments.merge") {
+        console.log(
+          `Merged ${r.branch} into ${r.requestBranch} and pushed ${r.requestBranch}.`,
+        );
+        return 0;
+      }
+      console.log(
+        method === "requests.start"
+          ? `Started request ${r.requestId} on ${rest[0]}.`
+          : `Started assignment ${r.assignmentId} of request ${r.requestId}.`,
+      );
+      console.log(`Branch: ${r.branch}`);
+      console.log(`Worktree: ${r.path}`);
+      for (const [key, value] of Object.entries(r.env!)) console.log(`${key}=${value}`);
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
   }
 
   async function sessionCommand(sub: string | undefined, rest: string[]): Promise<number> {

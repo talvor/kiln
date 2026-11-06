@@ -5,6 +5,7 @@ import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
+import { mergeAssignment, startAssignment, startRequest, WorktreeBlocked } from "./worktrees.ts";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import {
   type MessageKind,
@@ -174,6 +175,27 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "requests.start": (params) =>
+      withProjectQueue(
+        String(params.project),
+        () => startRequest(store, store.getProject(String(params.project)), paths.worktrees),
+      ),
+    "assignments.start": (params) => {
+      const request = store.getRequest(Number(params.requestId));
+      const project = store.listProjects().find((p) => p.id === request.projectId);
+      if (!project) throw new WorktreeBlocked("The request's project has been removed.");
+      return withProjectQueue(
+        project.name,
+        () => startAssignment(store, project, request.id, paths.worktrees),
+      );
+    },
+    "assignments.merge": (params) => {
+      const assignment = store.getAssignment(Number(params.id));
+      const request = store.getRequest(assignment.requestId);
+      const project = store.listProjects().find((p) => p.id === request.projectId);
+      if (!project) throw new WorktreeBlocked("The request's project has been removed.");
+      return withProjectQueue(project.name, () => mergeAssignment(store, project, assignment.id));
+    },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),
     "messages.send": (params) =>
       router.send(
