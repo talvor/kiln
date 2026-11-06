@@ -417,11 +417,3 @@ export function createConductor(opts: ConductorOptions) {
     },
   };
 }
-
-async function hasContent(path: string): Promise<boolean> {
-  try {
-    return (await Deno.stat(path)).isFile && (await Deno.readTextFile(path)).trim().length > 0;
-  } catch {
-    return false;
-  }
-}
