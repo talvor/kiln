@@ -1,6 +1,8 @@
 import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { launch } from "./launcher.ts";
+import { createConductor } from "./conductor.ts";
+import { loadConfig } from "./playbooks.ts";
 import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
@@ -93,11 +95,21 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       const wt = store.findLiveWorktree(resolve(req.cwd));
       return launch({ ...req, env: wt ? infoOf(wt).env : undefined });
     },
+    rolePrompt: async (name) => (await loadConfig(paths.config)).roles.get(name)?.prompt,
     selfCommand,
+  });
+  const conductor = createConductor({
+    store,
+    log,
+    router,
+    loadConfig: () => loadConfig(paths.config),
+    worktreesDir: paths.worktrees,
+    withProject: withProjectQueue,
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated.
   let pass: Promise<void> | undefined;
-  const deliver = (): Promise<void> => pass ??= router.tick().finally(() => pass = undefined);
+  const deliver = (): Promise<void> =>
+    pass ??= router.tick().then(() => conductor.react()).finally(() => pass = undefined);
   const ticker = setInterval(
     () => deliver().catch((err) => log.error("delivery pass failed", { err })),
     2_000,
@@ -111,6 +123,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log.info("daemon stopping", { reason });
     clearInterval(ticker);
     await pass?.catch(() => {});
+    await conductor.idle();
     while (projectQueues.size || projectReplies.size) {
       await Promise.all([...projectQueues.values(), ...projectReplies]);
     }
@@ -186,10 +199,18 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         return project;
       }),
     "requests.start": (params) =>
-      withProjectQueue(
-        String(params.project),
-        () => startRequest(store, store.getProject(String(params.project)), paths.worktrees),
-      ),
+      params.playbook === undefined
+        ? withProjectQueue(
+          String(params.project),
+          () => startRequest(store, store.getProject(String(params.project)), paths.worktrees),
+        )
+        : conductor.startRequest({
+          project: String(params.project),
+          playbook: String(params.playbook),
+          description: String(params.description),
+          trackerItem: typeof params.trackerItem === "string" ? params.trackerItem : null,
+        }),
+    "requests.status": (params) => requestStatus(store, Number(params.id)),
     "assignments.start": (params) => {
       const request = store.getRequest(Number(params.requestId));
       const project = store.listProjects().find((p) => p.id === request.projectId);
@@ -212,15 +233,18 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       return wt ? infoOf(wt).env : {};
     },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),
-    "messages.send": (params) =>
-      router.send(
+    "messages.send": async (params) => {
+      const sent = router.send(
         String(params.from),
         String(params.to),
         params.kind as MessageKind,
         params.body,
         params.inReplyTo as number | undefined,
         params.assignmentId as number | undefined,
-      ),
+      );
+      await conductor.react();
+      return sent;
+    },
     "messages.raise": (params) =>
       router.raiseQuestion(
         String(params.from),
@@ -238,6 +262,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   };
 
   store.appendEvent("daemon.started", { pid: Deno.pid, version: VERSION });
+  conductor.react().catch((err) => log.error("startup pass failed", { err }));
   log.info("daemon started", { pid: Deno.pid, version: VERSION, socket: paths.socket });
 
   while (!stopping) {
@@ -254,6 +279,43 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     serve(conn, handlers, log, projectReplies);
   }
   if (shutdownTask) await shutdownTask;
+}
+
+/** A Request with its Steps and their Assignments, as `kiln request status` shows it. */
+function requestStatus(store: Store, id: number) {
+  const request = store.getRequest(id);
+  const project = store.listProjects({ includeRemoved: true }).find((p) =>
+    p.id === request.projectId
+  );
+  const assignments = store.listAssignments(id);
+  return {
+    id,
+    project: project?.name,
+    status: request.status,
+    playbook: request.playbook,
+    description: request.description,
+    trackerItem: request.trackerItem,
+    branch: request.branch,
+    ticketUrl: request.ticketUrl,
+    failure: request.failure,
+    steps: store.listSteps(id).map((step) => ({
+      position: step.position,
+      name: step.spec.name,
+      department: step.spec.department,
+      status: step.status,
+      failure: step.failure,
+      assignments: assignments
+        .filter((a) => store.getMessage(a.id)?.to === step.worker)
+        .map((a) => ({
+          id: a.id,
+          worker: step.worker,
+          status: a.status,
+          branch: a.branch,
+          worktree: a.worktreeId === null ? null : store.getWorktree(a.worktreeId).path,
+          merged: a.mergedAt !== null,
+        })),
+    })),
+  };
 }
 
 interface Context {

@@ -36,6 +36,12 @@ export interface World extends Home {
     script(replies: ApiReply[]): Promise<void>;
     calls(): Promise<Call[]>;
   };
+  /** The scripted `gh issue create`, which Kiln publishes tickets through. */
+  tracker: {
+    script(replies: ApiReply[]): Promise<void>;
+    /** The tickets Kiln published, in order. */
+    issues(): Promise<{ title: string; body: string; cwd?: string }[]>;
+  };
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
@@ -158,6 +164,14 @@ export async function makeWorld(): Promise<World> {
     githubApi: {
       script: (replies) => script("api", "replies", replies),
       calls: () => calls("api"),
+    },
+    tracker: {
+      script: (replies) => script("issue", "replies", replies),
+      issues: async () =>
+        (await calls("issue")).map((call) => {
+          const flag = (name: string) => call.args[call.args.indexOf(name) + 1];
+          return { title: flag("--title"), body: flag("--body"), cwd: call.cwd };
+        }),
     },
     prStatus: {
       script: (statuses) => script("pr-status", "statuses", statuses),

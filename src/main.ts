@@ -26,7 +26,9 @@ const PROJECT_USAGE = `Usage:
   kiln project baseline <name>
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
-const REQUEST_USAGE = "Usage: kiln request start <project>";
+const REQUEST_USAGE = `Usage:
+  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>]]
+  kiln request status <request-id> [--json]`;
 const ASSIGNMENT_USAGE = `Usage:
   kiln assignment start <request-id> <assignment-message-id>
   kiln assignment merge <assignment-id>`;
@@ -43,8 +45,11 @@ Usage:
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln project list|pause|resume|edit|baseline|default-branch|remove ...
                          Manage registered projects (see \`kiln project\`)
-  kiln request start <project>
-                         Start a request: a request branch in its own worktree
+  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>]]
+                         Start a request: a request branch in its own worktree, and with a
+                         playbook, the steps Kiln walks through for it
+  kiln request status <request-id> [--json]
+                         Show a request, its steps and their assignments
   kiln assignment start <request-id> <assignment-message-id>
                          Start an assignment: its own branch and worktree off the request branch
   kiln assignment merge <assignment-id>
@@ -90,7 +95,9 @@ async function main(args: string[]): Promise<number> {
     case "project":
       return await projectCommand(sub, args.slice(2));
     case "request":
-      return await worktreeCommand(sub === "start" ? "requests.start" : "", args.slice(2));
+      return sub === "status" || (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
+        ? await requestCommand(sub, args.slice(2))
+        : await worktreeCommand(sub === "start" ? "requests.start" : "", args.slice(2));
     case "assignment":
       return await worktreeCommand(
         sub === "start" ? "assignments.start" : sub === "merge" ? "assignments.merge" : "",
@@ -152,6 +159,55 @@ async function main(args: string[]): Promise<number> {
       console.log(`Branch: ${r.branch}`);
       console.log(`Worktree: ${r.path}`);
       for (const [key, value] of Object.entries(r.env!)) console.log(`${key}=${value}`);
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
+  }
+
+  async function requestCommand(sub: string, rest: string[]): Promise<number> {
+    const usage = () => {
+      console.error(REQUEST_USAGE);
+      return 2;
+    };
+    const [target, ...flags] = rest;
+    if (!target || target.startsWith("-")) return usage();
+    if (sub === "status") {
+      if (!/^\d+$/.test(target) || flags.some((f) => f !== "--json")) return usage();
+      await ensureDaemon(paths);
+      try {
+        const r = await call<RequestStatus>(paths, "requests.status", { id: Number(target) });
+        console.log(flags.length ? JSON.stringify(r) : describeRequest(r));
+        return 0;
+      } catch (err) {
+        console.error((err as Error).message);
+        return 1;
+      }
+    }
+    const values: Record<string, string> = {};
+    for (let i = 0; i < flags.length; i += 2) {
+      if (!["--playbook", "--description", "--tracker-item"].includes(flags[i])) return usage();
+      if (flags[i + 1] === undefined || values[flags[i]] !== undefined) return usage();
+      values[flags[i]] = flags[i + 1];
+    }
+    if (!values["--playbook"] || !values["--description"]?.trim()) return usage();
+    if ("--tracker-item" in values && !values["--tracker-item"].trim()) return usage();
+    await ensureDaemon(paths);
+    try {
+      const r = await call<{ requestId: number; branch: string; path: string }>(
+        paths,
+        "requests.start",
+        {
+          project: target,
+          playbook: values["--playbook"],
+          description: values["--description"],
+          trackerItem: values["--tracker-item"],
+        },
+      );
+      console.log(`Started request ${r.requestId} on ${target}, playbook ${values["--playbook"]}.`);
+      console.log(`Branch: ${r.branch}`);
+      console.log(`Worktree: ${r.path}`);
       return 0;
     } catch (err) {
       console.error((err as Error).message);
@@ -498,6 +554,52 @@ function describeBaseline(p: { baseline: ProjectRecord["baseline"] }, registerin
   return `Test baseline: FAILING (exit ${b.exitCode}); ${
     registering ? "the project is registered with" : "the project has"
   } its tests already red.`;
+}
+
+interface RequestStatus {
+  id: number;
+  project: string;
+  status: string;
+  playbook: string | null;
+  description: string | null;
+  trackerItem: string | null;
+  branch: string | null;
+  ticketUrl: string | null;
+  failure: string | null;
+  steps: {
+    position: number;
+    name: string;
+    department: string;
+    status: string;
+    failure: string | null;
+    assignments: {
+      id: number;
+      worker: string;
+      status: string;
+      branch: string;
+      worktree: string | null;
+      merged: boolean;
+    }[];
+  }[];
+}
+
+function describeRequest(r: RequestStatus): string {
+  const lines = [`Request ${r.id} on ${r.project}: ${r.status}`];
+  if (r.playbook) lines.push(`Playbook: ${r.playbook}`);
+  if (r.description) lines.push(`Description: ${r.description}`);
+  if (r.trackerItem) lines.push(`Tracker item: ${r.trackerItem}`);
+  if (r.branch) lines.push(`Branch: ${r.branch}`);
+  for (const s of r.steps) {
+    lines.push(`Step ${s.position} ${s.name} (${s.department}): ${s.status}`);
+    for (const a of s.assignments) {
+      lines.push(
+        `  Assignment ${a.id} (${a.worker}): ${a.status}${a.merged ? ", merged" : ""}, ${a.branch}`,
+      );
+    }
+  }
+  if (r.ticketUrl) lines.push(`Ticket: ${r.ticketUrl}`);
+  if (r.failure) lines.push(`Failure: ${r.failure}`);
+  return lines.join("\n");
 }
 
 function describeProject(p: ProjectRecord): string {
