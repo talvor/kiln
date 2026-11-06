@@ -375,7 +375,10 @@ withWorld("a project cannot be registered twice under one name", async (world) =
   await addAgentDocs(world);
   await world.githubApi.script([PROTECTED]);
   await world.launcher.script([proposal(FULL)]);
-  assertEquals((await world.kilnWithInput("y\n", "project", "register", world.project.path)).code, 0);
+  assertEquals(
+    (await world.kilnWithInput("y\n", "project", "register", world.project.path)).code,
+    0,
+  );
 
   const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(again.code, 1);

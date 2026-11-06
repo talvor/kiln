@@ -206,11 +206,32 @@ async function defaultBranchOf(clonePath: string): Promise<string> {
 }
 
 const MANIFEST_NAMES = new Set([
-  "package.json", "deno.json", "deno.jsonc", "Cargo.toml", "go.mod", "pyproject.toml",
-  "setup.py", "requirements.txt", "Pipfile", "Gemfile", "Rakefile", "Makefile",
-  "GNUmakefile", "Justfile", "Taskfile.yml", "Taskfile.yaml", "pom.xml", "build.gradle",
-  "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "CMakeLists.txt",
-  "meson.build", "composer.json", "mix.exs", "pubspec.yaml",
+  "package.json",
+  "deno.json",
+  "deno.jsonc",
+  "Cargo.toml",
+  "go.mod",
+  "pyproject.toml",
+  "setup.py",
+  "requirements.txt",
+  "Pipfile",
+  "Gemfile",
+  "Rakefile",
+  "Makefile",
+  "GNUmakefile",
+  "Justfile",
+  "Taskfile.yml",
+  "Taskfile.yaml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "CMakeLists.txt",
+  "meson.build",
+  "composer.json",
+  "mix.exs",
+  "pubspec.yaml",
 ]);
 
 function isOnboardingFile(file: string): boolean {
@@ -218,7 +239,8 @@ function isOnboardingFile(file: string): boolean {
   return file === "AGENTS.md" || file === "CLAUDE.md" || MANIFEST_NAMES.has(name) ||
     /\.csproj$|\.sln$/.test(name) ||
     /^\.github\/workflows\/[^/]+$/.test(file) ||
-    /^(\.circleci\/config\.ya?ml|\.gitlab-ci\.ya?ml|\.travis\.yml|Jenkinsfile|azure-pipelines\.ya?ml|bitbucket-pipelines\.yml)$/.test(file);
+    /^(\.circleci\/config\.ya?ml|\.gitlab-ci\.ya?ml|\.travis\.yml|Jenkinsfile|azure-pipelines\.ya?ml|bitbucket-pipelines\.yml)$/
+      .test(file);
 }
 
 async function readableOnboardingFiles(clonePath: string): Promise<string[]> {
@@ -342,7 +364,11 @@ async function run(cmd: string, args: string[], cwd?: string): Promise<Output> {
   };
 }
 
-async function shell(command: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
+async function shell(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ code: number; output: string }> {
   const child = new Deno.Command("sh", {
     args: ["-c", `exec 2>&1; ${command}`],
     cwd,
@@ -357,7 +383,9 @@ async function shell(command: string, cwd: string, timeoutMs: number): Promise<{
     try {
       Deno.kill(-child.pid, "SIGKILL");
     } catch {
-      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      try {
+        child.kill("SIGKILL");
+      } catch { /* already exited */ }
     }
   }, timeoutMs);
   let bytes = new Uint8Array();

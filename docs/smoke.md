@@ -29,4 +29,5 @@ API call can slightly exceed it. Actual charges depend on the calls made.
 given by `--cwd`. `--max-budget-usd` can lower the SDK budget but never raise it; `--json` prints
 the result and cost as JSON. The launcher sets `acceptEdits` so Claude may edit files without
 approval. SDK setting sources are disabled, so project settings, hooks, MCP servers, allow rules,
-and `CLAUDE.md` guidance are not loaded. Deliberate project guidance is planned for a later ticket.
+and `CLAUDE.md` guidance are not loaded. See [the registration guide](register.md) for the separate
+onboarding process.
