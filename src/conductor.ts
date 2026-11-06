@@ -172,7 +172,8 @@ export function createConductor(opts: ConductorOptions) {
     const known = new Set(store.listAssignments(request.id).map((a) => a.id));
     // A retry's worker starts from the branch of the work that was rejected.
     const rejected = step.retries
-      ? assignmentsOf(request, step).filter((a) => a.branch).at(-1)?.branch
+      ? assignmentsOf(request, step).filter((a) => a.branch && !sameWorker(step, a)).at(-1)
+        ?.branch
       : undefined;
     const leader = store.listSessions().find((s) =>
       s.role === "leader" && s.department === step.spec.department
