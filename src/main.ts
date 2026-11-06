@@ -28,7 +28,7 @@ const PROJECT_USAGE = `Usage:
   kiln project remove <name> [--force]`;
 const REQUEST_USAGE = "Usage: kiln request start <project>";
 const ASSIGNMENT_USAGE = `Usage:
-  kiln assignment start <request-id>
+  kiln assignment start <request-id> <assignment-message-id>
   kiln assignment merge <assignment-id>`;
 const SESSION_USAGE =
   "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
@@ -45,7 +45,7 @@ Usage:
                          Manage registered projects (see \`kiln project\`)
   kiln request start <project>
                          Start a request: a request branch in its own worktree
-  kiln assignment start <request-id>
+  kiln assignment start <request-id> <assignment-message-id>
                          Start an assignment: its own branch and worktree off the request branch
   kiln assignment merge <assignment-id>
                          Merge a verified assignment into its request branch and push it
@@ -114,16 +114,17 @@ async function main(args: string[]): Promise<number> {
 
   async function worktreeCommand(method: string, rest: string[]): Promise<number> {
     const usage = cmd === "request" ? REQUEST_USAGE : ASSIGNMENT_USAGE;
-    if (!method || rest.length !== 1 || rest[0].startsWith("-")) {
+    const expected = method === "assignments.start" ? 2 : 1;
+    if (!method || rest.length !== expected || rest.some((arg) => arg.startsWith("-"))) {
       console.error(usage);
       return 2;
     }
     const target = method === "requests.start"
       ? { project: rest[0] }
       : method === "assignments.start"
-      ? { requestId: Number(rest[0]) }
+      ? { requestId: Number(rest[0]), assignmentId: Number(rest[1]) }
       : { id: Number(rest[0]) };
-    if (method !== "requests.start" && !/^\d+$/.test(rest[0])) {
+    if (method !== "requests.start" && !rest.every((arg) => /^\d+$/.test(arg))) {
       console.error(usage);
       return 2;
     }
@@ -414,7 +415,9 @@ async function main(args: string[]): Promise<number> {
       return 2;
     }
     try {
-      const result = await launch({ prompt, cwd, maxBudgetUsd });
+      await ensureDaemon(paths);
+      const env = await call<Record<string, string>>(paths, "worktrees.environment", { path: cwd });
+      const result = await launch({ prompt, cwd, maxBudgetUsd, env });
       if (asJson) console.log(JSON.stringify(result));
       else if (result.ok) console.log(result.text);
       else console.error(`claude stopped: ${result.outcome}: ${result.text}`);

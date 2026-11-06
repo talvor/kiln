@@ -4,6 +4,7 @@
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
 import { join, relative } from "@std/path";
 import { withWorld, type World } from "./world.ts";
+import { asAgent, assignment, openTeam } from "./router_helpers.ts";
 
 const COMMANDS = { setup: null, test: null, lint: null, build: null };
 
@@ -16,6 +17,7 @@ async function register(world: World) {
   await world.launcher.script([{ result: JSON.stringify(COMMANDS) }]);
   const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
+  await openTeam(world);
 }
 
 /** The `KEY=value` and `Label: value` lines a start command printed. */
@@ -33,10 +35,16 @@ async function startRequest(world: World) {
   assertEquals(r.code, 0, r.stderr);
   return fields(r.stdout);
 }
-async function startAssignment(world: World, requestId: number) {
-  const r = await world.kiln("assignment", "start", String(requestId));
+async function startAssignment(world: World, requestId: number): Promise<Record<string, string>> {
+  const message = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
+  await asAgent(world, "dev-1", (agent) => agent.inbox());
+  const r = await world.kiln("assignment", "start", String(requestId), String(message.id));
   assertEquals(r.code, 0, r.stderr);
-  return fields(r.stdout);
+  return { ...fields(r.stdout), assignmentId: String(message.id) };
 }
 
 /** The worker: the scripted launcher writes files in the Worktree, then the work is committed. */
@@ -146,11 +154,73 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
     }
   }
 
+  await world.launcher.script([{ result: "environment applied" }]);
+  const launched = await world.kiln("launch", "check environment", "--cwd", a.Worktree);
+  assertEquals(launched.code, 0, launched.stderr);
+  const calls = await world.launcher.calls();
+  const call = calls.at(-1)!;
+  assertEquals(call.cwd, a.Worktree);
+  for (const key of ["KILN_PORT_BASE", "KILN_PORT_COUNT", "TMPDIR", "XDG_CACHE_HOME", "npm_config_cache"]) {
+    assertEquals(call.env?.[key], a[key], key);
+  }
+
   // Finishing an Assignment gives its ports back for the next one.
   await work(world, a.Worktree, { "a.txt": "a\n" });
   assertEquals((await world.kiln("assignment", "merge", "1")).code, 0);
   const c = await startAssignment(world, 1);
   assertEquals(c.KILN_PORT_BASE, a.KILN_PORT_BASE);
+});
+
+withWorld("an Assignment uses its router Message ID across start and merge", async (world) => {
+  await register(world);
+  await startRequest(world);
+  const skipped = await asAgent(world, "dev-lead", (agent) =>
+    agent.send("dev-1", "assignment", assignment));
+  await asAgent(world, "dev-1", (agent) => agent.inbox());
+  const started = await startAssignment(world, 1);
+  assertEquals(Number(started.assignmentId), skipped.id + 1);
+  assertEquals(started.Branch, `kiln/request-1-assignment-${started.assignmentId}`);
+  await work(world, started.Worktree, { "identity.txt": "message id\n" });
+  const merged = await world.kiln("assignment", "merge", String(started.assignmentId));
+  assertEquals(merged.code, 0, merged.stderr);
+  assertEquals(await remoteFile(world, "kiln/request-1", "identity.txt"), "message id\n");
+});
+
+withWorld("a locked Assignment keeps its ports until cleanup succeeds", async (world) => {
+  await register(world);
+  await startRequest(world);
+  const a = await startAssignment(world, 1);
+  await work(world, a.Worktree, { "locked.txt": "done\n" });
+  const clone = join(world.dirs.data, "projects", "remote");
+  await world.git(clone, "worktree", "lock", a.Worktree);
+  const failed = await world.kiln("assignment", "merge", String(a.assignmentId));
+  assertEquals(failed.code, 1);
+  assertStringIncludes(failed.stderr, "could not be removed");
+  assertEquals(await remoteFile(world, "kiln/request-1", "locked.txt"), "done\n");
+  const b = await startAssignment(world, 1);
+  assertNotEquals(b.KILN_PORT_BASE, a.KILN_PORT_BASE);
+  await world.git(clone, "worktree", "unlock", a.Worktree);
+  const retried = await world.kiln("assignment", "merge", String(a.assignmentId));
+  assertEquals(retried.code, 0, retried.stderr);
+  const c = await startAssignment(world, 1);
+  assertEquals(c.KILN_PORT_BASE, a.KILN_PORT_BASE);
+});
+
+withWorld("a failed worktree add leaves its branch and path reusable", async (world) => {
+  await register(world);
+  const realGit = (await world.exec(world.root, "sh", "-c", "command -v git")).stdout.trim();
+  const fakeGit = join(world.root, "fake", "bin", "git");
+  await Deno.writeTextFile(
+    fakeGit,
+    `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = add ]; then\n  "${realGit}" "$@" || exit $?\n  exit 1\nfi\nexec "${realGit}" "$@"\n`,
+  );
+  await Deno.chmod(fakeGit, 0o755);
+  const failed = await world.kiln("request", "start", "remote");
+  assertEquals(failed.code, 1);
+  await Deno.remove(fakeGit);
+  const retried = await startRequest(world);
+  assertEquals(retried.Branch, "kiln/request-1");
+  assertEquals(retried.KILN_PORT_BASE, "20000");
 });
 
 withWorld(
@@ -214,7 +284,7 @@ withWorld("requests and assignments are refused when they cannot start", async (
     (await world.kiln("request", "start", "nope")).stderr,
     'No project named "nope"',
   );
-  assertStringIncludes((await world.kiln("assignment", "start", "9")).stderr, "No request 9");
+  assertStringIncludes((await world.kiln("assignment", "start", "9", "9")).stderr, "No request 9");
   assertStringIncludes((await world.kiln("assignment", "merge", "9")).stderr, "No assignment 9");
 
   await world.kiln("project", "pause", "remote");

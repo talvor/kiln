@@ -31,7 +31,7 @@ export interface MergedAssignment {
   requestBranch: string;
 }
 
-function infoOf(wt: WorktreeRecord): WorktreeInfo {
+export function infoOf(wt: WorktreeRecord): WorktreeInfo {
   const support = `${wt.path}.kiln`;
   return {
     path: wt.path,
@@ -78,12 +78,35 @@ async function createWorktree(
     }
     return wt;
   } catch (err) {
-    store.releaseWorktree(wt.id);
-    await Deno.remove(`${path}.kiln`, { recursive: true }).catch(() => {});
-    await git(project.clonePath, "worktree", "prune");
+    try {
+      const removed = await git(project.clonePath, "worktree", "remove", "--force", path);
+      if (removed.code !== 0) {
+        await Deno.remove(path, { recursive: true }).catch((failure) => {
+          if (!(failure instanceof Deno.errors.NotFound)) throw failure;
+        });
+      }
+      const pruned = await git(project.clonePath, "worktree", "prune");
+      if (pruned.code !== 0) throw new Error(firstLine(pruned.stderr));
+      const branchRef = `refs/heads/${branch}`;
+      const exists = await git(project.clonePath, "show-ref", "--verify", branchRef);
+      if (exists.code === 0) {
+        const deleted = await git(project.clonePath, "branch", "-D", branch);
+        if (deleted.code !== 0) throw new Error(firstLine(deleted.stderr));
+      }
+      await Deno.remove(`${path}.kiln`, { recursive: true }).catch((failure) => {
+        if (!(failure instanceof Deno.errors.NotFound)) throw failure;
+      });
+      store.releaseWorktree(wt.id);
+    } catch (failure) {
+      throw new WorktreeCleanupFailed(
+        `Cannot clean up failed worktree ${path}: ${(failure as Error).message}`,
+      );
+    }
     throw err;
   }
 }
+
+class WorktreeCleanupFailed extends WorktreeBlocked {}
 
 /** Start a Request: a request branch off the Project's default branch, in its own Worktree. */
 export async function startRequest(
@@ -111,7 +134,7 @@ export async function startRequest(
     store.attachRequest(request.id, branch, wt.id);
     return { requestId: request.id, ...infoOf(wt) };
   } catch (err) {
-    store.discardRequest(request.id);
+    if (!(err instanceof WorktreeCleanupFailed)) store.discardRequest(request.id);
     throw err;
   }
 }
@@ -121,26 +144,27 @@ export async function startAssignment(
   store: Store,
   project: ProjectRecord,
   requestId: number,
+  assignmentId: number,
   worktreesDir: string,
 ): Promise<StartedAssignment> {
   const request = store.getRequest(requestId);
   if (request.status !== "active" || !request.branch) {
     throw new WorktreeBlocked(`Request ${requestId} is not active.`);
   }
-  const assignment = store.addAssignment(requestId);
-  const branch = `kiln/request-${requestId}-assignment-${assignment.number}`;
+  const assignment = store.addAssignment(requestId, assignmentId);
+  const branch = `kiln/request-${requestId}-assignment-${assignment.id}`;
   try {
     const wt = await createWorktree(
       store,
       project,
-      join(worktreesDir, project.name, `request-${requestId}-assignment-${assignment.number}`),
+      join(worktreesDir, project.name, `request-${requestId}-assignment-${assignment.id}`),
       branch,
       request.branch,
     );
     store.attachAssignment(assignment.id, branch, wt.id);
     return { assignmentId: assignment.id, requestId, ...infoOf(wt) };
   } catch (err) {
-    store.discardAssignment(assignment.id);
+    if (!(err instanceof WorktreeCleanupFailed)) store.discardAssignment(assignment.id);
     throw err;
   }
 }
@@ -163,7 +187,7 @@ export async function mergeAssignment(
     branch: assignment.branch!,
     requestBranch: request.branch!,
   };
-  if (assignment.status === "merged" && assignment.pushed) {
+  if (assignment.status === "merged" && assignment.pushed && assignmentWt.releasedAt) {
     throw new WorktreeBlocked(`Assignment ${assignmentId} is already merged and pushed.`);
   }
 
@@ -179,7 +203,7 @@ export async function mergeAssignment(
       "merge",
       "--no-ff",
       "-m",
-      `Merge assignment ${assignment.number} of request ${request.id}`,
+      `Merge assignment ${assignment.id} of request ${request.id}`,
       assignment.branch!,
     );
     if (merged.code !== 0) {
@@ -192,26 +216,42 @@ export async function mergeAssignment(
     store.markMerged(assignmentId);
   }
 
-  const pushed = await git(
-    requestWt.path,
-    "push",
-    "origin",
-    `${request.branch!}:${request.branch!}`,
-  );
-  if (pushed.code !== 0) {
-    throw new WorktreeBlocked(
-      `Assignment ${assignmentId} is merged into ${request.branch} but pushing it to ` +
-        `${project.remoteUrl} failed: ${
-          firstLine(pushed.stderr)
-        }. Run the merge again to retry the push.`,
+  if (!assignment.pushed) {
+    const pushed = await git(
+      requestWt.path,
+      "push",
+      "origin",
+      `${request.branch!}:${request.branch!}`,
     );
+    if (pushed.code !== 0) {
+      throw new WorktreeBlocked(
+        `Assignment ${assignmentId} is merged into ${request.branch} but pushing it to ` +
+          `${project.remoteUrl} failed: ${firstLine(pushed.stderr)}. Run the merge again to retry the push.`,
+      );
+    }
+    store.markPushed(assignmentId);
+    store.appendEvent("assignment.merged", { id: assignmentId, request: request.id });
   }
-  store.markPushed(assignmentId);
-  store.appendEvent("assignment.merged", { id: assignmentId, request: request.id });
-
-  // The Assignment's work is on the request branch now; give its Worktree and ports back.
-  await git(project.clonePath, "worktree", "remove", "--force", assignmentWt.path);
-  await Deno.remove(`${assignmentWt.path}.kiln`, { recursive: true }).catch(() => {});
+  const pathExists = await Deno.stat(assignmentWt.path).then(() => true, (failure) => {
+    if (failure instanceof Deno.errors.NotFound) return false;
+    throw failure;
+  });
+  if (pathExists) {
+    const removed = await git(project.clonePath, "worktree", "remove", "--force", assignmentWt.path);
+    if (removed.code !== 0) {
+      throw new WorktreeBlocked(
+        `Assignment ${assignmentId} was pushed but its worktree could not be removed: ${firstLine(removed.stderr)}. Run the merge again to retry cleanup.`,
+      );
+    }
+  } else {
+    const pruned = await git(project.clonePath, "worktree", "prune");
+    if (pruned.code !== 0) {
+      throw new WorktreeBlocked(`Cannot finish worktree cleanup: ${firstLine(pruned.stderr)}`);
+    }
+  }
+  await Deno.remove(`${assignmentWt.path}.kiln`, { recursive: true }).catch((failure) => {
+    if (!(failure instanceof Deno.errors.NotFound)) throw failure;
+  });
   store.releaseWorktree(assignmentWt.id);
   return result;
 }

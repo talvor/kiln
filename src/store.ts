@@ -118,16 +118,14 @@ export const MIGRATIONS: string[] = [
    alter table requests add column branch text;
    alter table requests add column worktree_id integer references worktrees (id);
    create table assignments (
-     id integer primary key,
+     id integer primary key references messages (id),
      request_id integer not null references requests (id),
-     number integer not null,
      branch text,
      worktree_id integer references worktrees (id),
      status text not null default 'active' check (status in ('active', 'merged')),
      pushed integer not null default 0,
      created_at text not null,
-     merged_at text,
-     unique (request_id, number)
+     merged_at text
    ) strict;`,
 ];
 
@@ -215,8 +213,6 @@ export interface RequestRecord {
 export interface AssignmentRecord {
   id: number;
   requestId: number;
-  /** Counted per Request, from 1. */
-  number: number;
   branch: string | null;
   worktreeId: number | null;
   status: "active" | "merged";
@@ -338,13 +334,14 @@ export interface Store {
   addRequest(projectId: number): RequestRecord;
   /** Throws UnknownRequestError. */
   getRequest(id: number): RequestRecord;
-  /** Begin an Assignment of a Request, numbered after the Request's earlier ones. */
-  addAssignment(requestId: number): AssignmentRecord;
+  /** Begin an Assignment for a router assignment Message. */
+  addAssignment(requestId: number, messageId: number): AssignmentRecord;
   /** Throws UnknownAssignmentError. */
   getAssignment(id: number): AssignmentRecord;
   /** Reserve a free port block for a new Worktree; throws if none is left. */
   addWorktree(wt: { path: string; branch: string }): WorktreeRecord;
   getWorktree(id: number): WorktreeRecord;
+  findLiveWorktree(path: string): WorktreeRecord | undefined;
   /** Give back a Worktree's ports. */
   releaseWorktree(id: number): void;
   /** Record the branch and Worktree a Request or Assignment works on. */
@@ -524,7 +521,6 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
     const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
       id: row.id as number,
       requestId: row.request_id as number,
-      number: row.number as number,
       branch: row.branch as string | null,
       worktreeId: row.worktree_id as number | null,
       status: row.status as "active" | "merged",
@@ -555,19 +551,17 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         return getRequest(Number(lastInsertRowid));
       },
       getRequest,
-      addAssignment: (requestId) =>
+      addAssignment: (requestId, messageId) =>
         inTransaction(() => {
           getRequest(requestId);
-          const next = Number(
-            db.prepare(
-              "select coalesce(max(number), 0) + 1 n from assignments where request_id = ?",
-            )
-              .get(requestId)!.n,
-          );
-          const { lastInsertRowid } = db.prepare(
-            "insert into assignments (request_id, number, created_at) values (?, ?, ?)",
-          ).run(requestId, next, new Date().toISOString());
-          return getAssignment(Number(lastInsertRowid));
+          const message = getMessage(messageId);
+          if (!message || message.kind !== "assignment") {
+            throw new UnknownAssignmentError(messageId);
+          }
+          db.prepare(
+            "insert into assignments (id, request_id, created_at) values (?, ?, ?)",
+          ).run(messageId, requestId, new Date().toISOString());
+          return getAssignment(messageId);
         }),
       getAssignment,
       addWorktree: (wt) =>
@@ -589,6 +583,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           );
         }),
       getWorktree: (id) => toWorktree(db.prepare("select * from worktrees where id = ?").get(id)!),
+      findLiveWorktree: (path) => {
+        const row = db.prepare("select * from worktrees where path = ? and released_at is null")
+          .get(path);
+        return row ? toWorktree(row) : undefined;
+      },
       releaseWorktree: (id) => {
         db.prepare("update worktrees set released_at = ? where id = ? and released_at is null")
           .run(new Date().toISOString(), id);
