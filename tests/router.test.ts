@@ -339,6 +339,15 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
     40_000,
   );
   assertEquals(prompts.length, 2);
-  const [timedOut] = await asAgent(world, "dev-1", (agent) => agent.inbox());
-  assertEquals(timedOut.deliveries, 0);
+  // Which recipient is woken first is not fixed: the one that got the hang stays undelivered,
+  // and the other is still nudged.
+  const deliveries = await waitFor(
+    async () =>
+      (await Promise.all(
+        ["dev-1", "dev-2"].map((name) => asAgent(world, name, (agent) => agent.inbox())),
+      )).map(([m]) => m.deliveries).sort(),
+    (counts) => counts[1] === 1,
+    10_000,
+  );
+  assertEquals(deliveries, [0, 1]);
 });
