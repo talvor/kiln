@@ -97,11 +97,8 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
   }
   if (raw.projects !== undefined) {
     limits.projects = new Map();
-    for (
-      const [name, value] of Object.entries(
-        only('"projects"', raw.projects, Object.keys(raw.projects as Obj)),
-      )
-    ) {
+    if (!isObject(raw.projects)) throw fail('"projects" must be an object');
+    for (const [name, value] of Object.entries(raw.projects)) {
       const p = only(`"projects.${name}"`, value, ["ceiling", "maxActive"]);
       const ceiling: Ceiling = {};
       if (p.ceiling !== undefined) {
