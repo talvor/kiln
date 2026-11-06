@@ -12,8 +12,7 @@ import type { ProjectRecord } from "./store.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
-const REGISTER_USAGE =
-  "Usage: kiln project register <path-or-url> [--name <name>]";
+const REGISTER_USAGE = "Usage: kiln project register <path-or-url>";
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -21,7 +20,7 @@ Usage:
   kiln backup            Write a safe copy of the store and print its path
   kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]
                          Run Claude once on a prompt in a directory (default: here)
-  kiln project register <path-or-url> [--name <name>]
+  kiln project register <path-or-url>
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln --version
 
@@ -63,29 +62,14 @@ async function main(args: string[]): Promise<number> {
   }
 
   async function registerCommand(rest: string[]): Promise<number> {
-    let name: string | undefined;
-    const positional: string[] = [];
-    for (let i = 0; i < rest.length; i++) {
-      const arg = rest[i];
-      if (arg === "--name") {
-        name = rest[++i];
-        if (!name || name.startsWith("--")) {
-          console.error(REGISTER_USAGE);
-          return 2;
-        }
-      } else if (arg.startsWith("-")) {
-        console.error(REGISTER_USAGE);
-        return 2;
-      } else positional.push(arg);
-    }
-    if (positional.length !== 1) {
+    if (rest.length !== 1 || rest[0].startsWith("-")) {
       console.error(REGISTER_USAGE);
       return 2;
     }
     await ensureDaemon(paths);
     const existing = await call<ProjectRecord[]>(paths, "projects.list");
     try {
-      const project = await registerProject(positional[0], { name }, {
+      const project = await registerProject(rest[0], {
         projectsDir: paths.projects,
         existingNames: existing.map((p) => p.name),
         launch,

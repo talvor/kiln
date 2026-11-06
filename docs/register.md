@@ -1,20 +1,22 @@
 # Registering a project
 
 ```sh
-kiln project register <path-or-url> [--name <name>]
+kiln project register <path-or-url>
 ```
 
 A **path** is a local checkout; Kiln reads its `origin` remote. A **URL** is cloned directly. Either
 way Kiln makes its own clone of the remote under its data directory (`projects/<name>`); it never
 works in your checkout, and commits that were never pushed are not in Kiln's clone. The name
-defaults to the remote's last path segment; `--name` overrides it.
+comes from the remote's last path segment.
 
 ## Steps
 
 1. Clone the remote.
 2. Check the project (blocks below), including a `git push --dry-run` to a throwaway branch name.
-3. An onboarding agent (the launcher, working in Kiln's clone) reads the project and proposes
-   `setup`, `test`, `lint` and `build` commands. Kiln shows them and asks `Use these commands?`.
+3. An onboarding agent (the launcher, working in Kiln's clone) reads the available agent docs,
+   manifests, and CI files and proposes `setup`, `test`, `lint` and `build` commands. Files linked
+   outside the clone, directories, and empty files are omitted from the agent's reading list.
+   Kiln shows the commands and asks `Use these commands?`.
    Confirm after reviewing the proposal; with no answer on stdin the answer is no. The commands
    are not editable yet: decline and fix the project's agent docs, or register once the proposal is
    right.
@@ -34,8 +36,9 @@ Registration is **blocked**, and nothing is kept, when:
 
 Registration **warns** and goes ahead when:
 
-- the default branch is not protected, or protection cannot be checked
-  (`gh api repos/{owner}/{repo}/branches/<branch>/protection`; rulesets are not consulted);
+- branch protection cannot be confirmed
+  (`gh api repos/{owner}/{repo}/branches/<branch>/protection`; a 404 is inconclusive and rulesets
+  are not consulted);
 - there is no lint command, no build command or no test command.
 
 ## Test baseline

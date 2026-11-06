@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { type ApiReply, withWorld, type World } from "./world.ts";
 
 const PROTECTED: ApiReply = { stdout: "{}\n" };
-const UNPROTECTED: ApiReply = { exit: 1, stderr: "gh: Branch not protected (HTTP 404)\n" };
+const INCONCLUSIVE: ApiReply = { exit: 1, stderr: "gh: Branch not protected (HTTP 404)\n" };
 
 const FULL = {
   setup: "echo prepared > prepared.txt",
@@ -86,6 +86,7 @@ withWorld(
     assertEquals(row.lint_command, FULL.lint);
     assertEquals(row.build_command, FULL.build);
     assertEquals(row.warnings, "[]");
+    assertEquals(JSON.parse(row.baseline as string).passed, true);
   },
 );
 
@@ -95,15 +96,15 @@ withWorld("registering by URL clones from that URL", async (world) => {
   await world.launcher.script([proposal(FULL)]);
 
   const url = `file://${world.remote.path}`;
-  const r = await world.kilnWithInput("y\n", "project", "register", url, "--name", "by-url");
+  const r = await world.kilnWithInput("y\n", "project", "register", url);
   assertEquals(r.code, 0, r.stderr);
 
   const [row] = await registeredProjects(world);
-  assertEquals(row.name, "by-url");
+  assertEquals(row.name, "remote");
   assertEquals(row.source, url);
   assertEquals(row.remote_url, url);
   assertEquals(
-    (await world.git(cloneOf(world, "by-url"), "remote", "get-url", "origin")).stdout.trim(),
+    (await world.git(cloneOf(world, "remote"), "remote", "get-url", "origin")).stdout.trim(),
     url,
   );
 });
@@ -245,33 +246,46 @@ withWorld("an incomplete command proposal blocks registration", async (world) =>
   await assertNothingRegistered(world);
 });
 
-withWorld("onboarding changes are removed before confirmed commands run", async (world) => {
+withWorld("onboarding names only readable project files", async (world) => {
   await addAgentDocs(world);
-  await Deno.writeTextFile(join(world.project.path, ".gitignore"), ".env\n");
+  await Deno.writeTextFile(join(world.project.path, "package.json"), "{}\n");
+  const privateFile = join(world.root, "private-notes.md");
+  await Deno.writeTextFile(privateFile, "private notes\n");
+  await Deno.symlink(privateFile, join(world.project.path, "pyproject.toml"));
+  const workflows = join(world.project.path, ".github", "workflows");
+  await Deno.mkdir(workflows, { recursive: true });
+  await Deno.symlink(privateFile, join(workflows, "build.yml"));
+  await Deno.writeTextFile(join(workflows, "safe.yml"), "name: Safe\n");
+  await Deno.mkdir(join(world.project.path, "Makefile"));
+  await Deno.writeTextFile(join(world.project.path, "Makefile", "note"), "directory\n");
   await world.git(world.project.path, "add", ".");
-  await world.git(world.project.path, "commit", "-m", "Ignore local env");
+  await world.git(world.project.path, "commit", "-m", "Add onboarding files");
   await world.git(world.project.path, "push", "origin", "main");
   await world.githubApi.script([PROTECTED]);
-  await world.launcher.script([{
-    ...proposal({ ...FULL, setup: "test ! -e .env" }),
-    writeFiles: { ".env": "unexpected\n" },
-  }]);
+  await world.launcher.script([proposal(FULL)]);
 
   const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
-  await assertNotExists(join(cloneOf(world, "remote"), ".env"));
+  const prompt = await Deno.readTextFile(join(world.root, "fake", "launcher", "prompts.jsonl"));
+  for (const name of ["AGENTS.md", "package.json", "safe.yml"]) {
+    assertStringIncludes(prompt, name);
+  }
+  for (const name of ["pyproject.toml", "build.yml", "Makefile"]) {
+    assert(!prompt.includes(name), `${name} must not be offered to onboarding`);
+  }
 });
 
-withWorld("an unprotected default branch and a missing lint or build only warn", async (world) => {
+withWorld("a 404 protection lookup and missing lint or build warn", async (world) => {
   await addAgentDocs(world);
-  await world.githubApi.script([UNPROTECTED]);
+  await world.githubApi.script([INCONCLUSIVE]);
   await world.launcher.script([
     proposal({ setup: null, test: "echo ok", lint: null, build: null }),
   ]);
 
   const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
-  assertStringIncludes(r.stdout, `warning: The default branch "main" is not protected`);
+  assertStringIncludes(r.stdout, `warning: Could not confirm branch protection for "main"`);
+  assert(!r.stdout.includes("is not protected"), r.stdout);
   assertStringIncludes(r.stdout, "warning: No lint command");
   assertStringIncludes(r.stdout, "warning: No build command");
 
@@ -288,15 +302,28 @@ withWorld("a default branch whose protection cannot be checked is a warning", as
 
   const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
-  assertStringIncludes(r.stdout, `warning: Could not check whether "main" is protected`);
+  assertStringIncludes(r.stdout, `warning: Could not confirm branch protection for "main"`);
+});
+
+withWorld("branch protection checks encode a slash in the branch name", async (world) => {
+  await addAgentDocs(world);
+  await world.git(world.project.path, "checkout", "-b", "release/2026");
+  await world.git(world.project.path, "push", "origin", "release/2026");
+  await world.git(world.remote.path, "symbolic-ref", "HEAD", "refs/heads/release/2026");
+  await world.githubApi.script([PROTECTED]);
+  await world.launcher.script([proposal(FULL)]);
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 0, r.stderr);
+  const [call] = await world.githubApi.calls();
+  assertEquals(call.args, ["api", "repos/{owner}/{repo}/branches/release%2F2026/protection"]);
 });
 
 withWorld("registration records the test baseline, even a failing one", async (world) => {
   await addAgentDocs(world);
-  await world.githubApi.script([PROTECTED, PROTECTED]);
+  await world.githubApi.script([PROTECTED]);
   await world.launcher.script([
     proposal({ ...FULL, test: "echo 3 passed; echo 1 failed >&2; exit 1" }),
-    proposal(FULL),
   ]);
 
   const failing = await world.kilnWithInput("y\n", "project", "register", world.project.path);
@@ -312,19 +339,6 @@ withWorld("registration records the test baseline, even a failing one", async (w
     failed.commit,
     (await world.git(world.project.path, "rev-parse", "HEAD")).stdout.trim(),
   );
-
-  const passing = await world.kilnWithInput(
-    "y\n",
-    "project",
-    "register",
-    world.project.path,
-    "--name",
-    "second",
-  );
-  assertEquals(passing.code, 0, passing.stderr);
-  assertStringIncludes(passing.stdout, "Test baseline: passing.");
-  const [, second] = await registeredProjects(world);
-  assertEquals(JSON.parse(second.baseline as string).passed, true);
 });
 
 withWorld("the test baseline retains the ordered, bounded end of output", async (world) => {
@@ -375,7 +389,7 @@ withWorld("the source must be a directory or a git URL", async (world) => {
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "neither a directory nor a git URL");
   assertEquals((await world.kiln("project", "register")).code, 2);
-  for (const flag of ["--yes", "-y", "--json"]) {
+  for (const flag of ["--yes", "-y", "--json", "--name"]) {
     const option = await world.kiln("project", "register", world.project.path, flag);
     assertEquals(option.code, 2);
   }

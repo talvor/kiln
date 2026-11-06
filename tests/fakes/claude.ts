@@ -68,6 +68,11 @@ async function speakSdkProtocol(run: LauncherRun): Promise<void> {
           response: { subtype: "success", request_id: msg.request_id, response: {} },
         });
       } else if (msg.type === "user") {
+        Deno.writeTextFileSync(
+          join(dir, "prompts.jsonl"),
+          JSON.stringify(msg) + "\n",
+          { append: true },
+        );
         const base = {
           type: "result",
           duration_ms: 1,

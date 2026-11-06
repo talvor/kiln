@@ -1,7 +1,7 @@
 // Registering a Project: Kiln takes its own clone, checks the Project can be worked on, has an
 // onboarding agent propose its commands, and records them with the test baseline once the user
 // confirms. Problems that make a Project unworkable block registration; the rest are warnings.
-import { isAbsolute, join, relative, resolve } from "@std/path";
+import { basename, isAbsolute, join, relative, resolve } from "@std/path";
 import type { LaunchRequest, LaunchResult } from "./launcher.ts";
 import type { Baseline, NewProject } from "./store.ts";
 
@@ -34,10 +34,6 @@ export interface RegisterDeps {
   progress(message: string): void;
 }
 
-export interface RegisterOptions {
-  name?: string;
-}
-
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 const TEST_TIMEOUT_MS = 30 * 60_000;
 const OUTPUT_TAIL_BYTES = 4000;
@@ -46,14 +42,12 @@ const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export async function registerProject(
   source: string,
-  opts: RegisterOptions,
   deps: RegisterDeps,
 ): Promise<NewProject> {
-  const { remoteUrl, name: derivedName } = await resolveSource(source);
-  const name = opts.name ?? derivedName;
+  const { remoteUrl, name } = await resolveSource(source);
   if (!NAME_PATTERN.test(name)) {
     throw new RegistrationBlocked(
-      `"${name}" is not a usable project name. Pass one with --name (letters, digits, ".", "_", "-").`,
+      `"${name}" is not a usable project name. The remote name must start with a letter or digit and contain only letters, digits, ".", "_", or "-".`,
     );
   }
   if (deps.existingNames.includes(name)) {
@@ -66,7 +60,7 @@ export async function registerProject(
   } catch (err) {
     if (!(err instanceof Deno.errors.AlreadyExists)) throw err;
     throw new RegistrationBlocked(
-      `${clonePath} already exists; remove it or register under another --name.`,
+      `${clonePath} already exists; remove it or use a remote with another name.`,
     );
   }
   let recording = false;
@@ -102,7 +96,8 @@ async function onboard(
   const headCommit = head.stdout.trim();
   const defaultBranch = await defaultBranchOf(clonePath);
 
-  if (!await hasAgentDocs(clonePath)) {
+  const onboardingFiles = await readableOnboardingFiles(clonePath);
+  if (!onboardingFiles.some((file) => file === "AGENTS.md" || file === "CLAUDE.md")) {
     throw new RegistrationBlocked(
       "The project has no agent docs. Add an AGENTS.md or CLAUDE.md at its root " +
         "(and push it) so agents know how to work in it.",
@@ -122,12 +117,7 @@ async function onboard(
   if (protection) warnings.push(protection);
 
   deps.progress("Asking the onboarding agent for the project's commands");
-  const commands = await proposeCommands(clonePath, deps);
-  const reset = await git("reset", "--hard", "--quiet");
-  const clean = await git("clean", "-fdxq");
-  if (reset.code !== 0 || clean.code !== 0) {
-    throw new RegistrationBlocked("Could not restore the clone after onboarding.");
-  }
+  const commands = await proposeCommands(clonePath, onboardingFiles, deps);
 
   if (!await deps.confirm(commands)) throw new RegistrationDeclined();
 
@@ -215,44 +205,63 @@ async function defaultBranchOf(clonePath: string): Promise<string> {
   return (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], clonePath)).stdout.trim();
 }
 
-async function hasAgentDocs(clonePath: string): Promise<boolean> {
+const MANIFEST_NAMES = new Set([
+  "package.json", "deno.json", "deno.jsonc", "Cargo.toml", "go.mod", "pyproject.toml",
+  "setup.py", "requirements.txt", "Pipfile", "Gemfile", "Rakefile", "Makefile",
+  "GNUmakefile", "Justfile", "Taskfile.yml", "Taskfile.yaml", "pom.xml", "build.gradle",
+  "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "CMakeLists.txt",
+  "meson.build", "composer.json", "mix.exs", "pubspec.yaml",
+]);
+
+function isOnboardingFile(file: string): boolean {
+  const name = basename(file);
+  return file === "AGENTS.md" || file === "CLAUDE.md" || MANIFEST_NAMES.has(name) ||
+    /\.csproj$|\.sln$/.test(name) ||
+    /^\.github\/workflows\/[^/]+$/.test(file) ||
+    /^(\.circleci\/config\.ya?ml|\.gitlab-ci\.ya?ml|\.travis\.yml|Jenkinsfile|azure-pipelines\.ya?ml|bitbucket-pipelines\.yml)$/.test(file);
+}
+
+async function readableOnboardingFiles(clonePath: string): Promise<string[]> {
+  const tracked = await run("git", ["ls-files", "-z"], clonePath);
+  if (tracked.code !== 0) throw new RegistrationBlocked("Could not list files for onboarding.");
   const root = await Deno.realPath(clonePath);
-  for (const file of ["AGENTS.md", "CLAUDE.md"]) {
+  const files: string[] = [];
+  for (const file of tracked.stdout.split("\0").filter(Boolean)) {
+    if (!isOnboardingFile(file)) continue;
     try {
       const path = await Deno.realPath(join(clonePath, file));
       const within = relative(root, path);
       if (within.split(/[\\/]/)[0] !== ".." && !isAbsolute(within)) {
         const info = await Deno.stat(path);
-        if (info.isFile && info.size > 0) return true;
+        if (info.isFile && info.size > 0) files.push(file);
       }
     } catch { /* absent */ }
   }
-  return false;
+  return files;
 }
 
-/** A warning if the default branch is unprotected or its protection cannot be checked. */
 async function branchProtection(clonePath: string, branch: string): Promise<string | null> {
   let result: { code: number; stdout: string; stderr: string };
   try {
     result = await run(
       "gh",
-      ["api", `repos/{owner}/{repo}/branches/${branch}/protection`],
+      ["api", `repos/{owner}/{repo}/branches/${encodeURIComponent(branch)}/protection`],
       clonePath,
     );
   } catch {
-    return `Could not check whether "${branch}" is protected: the gh command is not available.`;
+    return `Could not confirm branch protection for "${branch}": the gh command is not available.`;
   }
   if (result.code === 0) return null;
-  if (/404|not protected/i.test(result.stderr)) {
-    return `The default branch "${branch}" is not protected: anyone with access can push to it directly.`;
+  if (/404/.test(result.stderr)) {
+    return `Could not confirm branch protection for "${branch}": API returned 404.`;
   }
-  return `Could not check whether "${branch}" is protected: ${firstLine(result.stderr)}`;
+  return `Could not confirm branch protection for "${branch}": ${firstLine(result.stderr)}`;
 }
 
 const ONBOARDING_PROMPT =
-  `You are onboarding a code project into a factory that will do work on it. Read this \
-project's agent docs (AGENTS.md or CLAUDE.md), its package or build manifests, and its CI \
-configuration. Do not modify, create or delete any file, and do not run any command.
+  `You are onboarding a code project into a factory that will do work on it. Read only the \
+listed project files. Do not inspect other paths, modify, create or delete any file, or run any \
+command.
 
 Reply with only a JSON object, no other text, naming the shell commands to run from the project \
 root:
@@ -264,8 +273,13 @@ root:
 - build: build the project, or null if it has no build.
 Use null for any command the project does not have. Do not invent commands.`;
 
-async function proposeCommands(clonePath: string, deps: RegisterDeps): Promise<Commands> {
-  const result = await deps.launch({ prompt: ONBOARDING_PROMPT, cwd: clonePath, readOnly: true });
+async function proposeCommands(
+  clonePath: string,
+  files: string[],
+  deps: RegisterDeps,
+): Promise<Commands> {
+  const prompt = `${ONBOARDING_PROMPT}\n\nProject files: ${JSON.stringify(files)}`;
+  const result = await deps.launch({ prompt, cwd: clonePath, readOnly: true });
   if (!result.ok) {
     throw new RegistrationBlocked(
       `The onboarding agent did not finish (${result.outcome}): ${result.text}`,
