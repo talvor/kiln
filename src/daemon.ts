@@ -1,7 +1,7 @@
 import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { launch } from "./launcher.ts";
-import { createRouter, type TickResult } from "./router.ts";
+import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
@@ -83,11 +83,10 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log,
     launch,
     selfCommand,
-    renudgeAfterMs: 60_000,
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated.
-  let pass: Promise<TickResult> | undefined;
-  const deliver = (): Promise<TickResult> => pass ??= router.tick().finally(() => pass = undefined);
+  let pass: Promise<void> | undefined;
+  const deliver = (): Promise<void> => pass ??= router.tick().finally(() => pass = undefined);
   const ticker = setInterval(
     () => deliver().catch((err) => log.error("delivery pass failed", { err })),
     2_000,

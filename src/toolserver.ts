@@ -120,7 +120,7 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
   const args = value as Record<string, unknown>;
   for (const [field, item] of Object.entries(args)) {
     const type = fields[field];
-    if (!type) throw new Error(`unknown argument "${field}"`);
+    if (!Object.hasOwn(fields, field)) throw new Error(`unknown argument "${field}"`);
     if (type === "integer" ? !Number.isSafeInteger(item) || (item as number) <= 0
       : type === "object" ? typeof item !== "object" || item === null || Array.isArray(item)
       : type === "kind" ? typeof item !== "string" || !["assignment", "result", "question", "answer"].includes(item)
@@ -130,7 +130,7 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
   }
   for (const field of name === "send" ? ["to", "kind", "body"]
     : name === "raise_question" ? ["question"] : []) {
-    if (!(field in args)) throw new Error(`missing argument "${field}"`);
+    if (!Object.hasOwn(args, field)) throw new Error(`missing argument "${field}"`);
   }
   return args;
 }

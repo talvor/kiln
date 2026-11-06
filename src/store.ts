@@ -211,7 +211,7 @@ export interface MessageFilter {
   from?: string;
   kind?: MessageKind;
   inReplyTo?: number;
-  /** Not yet read and not dead-lettered: what an agent still has to pick up. */
+  /** Not yet read, dead-lettered, or completed: what an agent still has to pick up. */
   waiting?: boolean;
 }
 
@@ -477,7 +477,14 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         if (f.from !== undefined) (where.push("m.sender = ?"), values.push(f.from));
         if (f.kind !== undefined) (where.push("m.kind = ?"), values.push(f.kind));
         if (f.inReplyTo !== undefined) (where.push("m.in_reply_to = ?"), values.push(f.inReplyTo));
-        if (f.waiting) where.push("s.read_at is null and s.dead_lettered_at is null");
+        if (f.waiting) {
+          where.push(
+            `s.read_at is null and s.dead_lettered_at is null and
+             (m.kind != 'assignment' or not exists (
+               select 1 from messages r where r.kind = 'result' and r.in_reply_to = m.id
+             ))`,
+          );
+        }
         return db.prepare(
           `${messageSelect} ${where.length ? `where ${where.join(" and ")}` : ""} order by m.id`,
         ).all(...values).map(toMessage);

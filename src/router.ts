@@ -18,6 +18,7 @@ import {
 export const MAX_DELIVERIES = 3;
 export const TOOL_NAMES = ["read_inbox", "send", "raise_question"] as const;
 const LAUNCH_TIMEOUT_MS = 30_000;
+const RENUDGE_AFTER_MS = 60_000;
 
 /** A refusal the sender can act on. */
 export class RouterError extends Error {}
@@ -28,13 +29,6 @@ export interface RouterOptions {
   launch: (req: LaunchRequest) => Promise<LaunchResult>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
   selfCommand: (args: string[]) => { cmd: string; args: string[] };
-  /** How long a Nudge may go unanswered before Kiln sends another. */
-  renudgeAfterMs: number;
-}
-
-export interface TickResult {
-  nudged: { to: string; messages: number }[];
-  deadLettered: number[];
 }
 
 export interface StopVerdict {
@@ -249,20 +243,16 @@ export function createRouter(opts: RouterOptions) {
      * Nudge has gone unanswered for long enough, and dead-letters Messages nudged
      * MAX_DELIVERIES times without being read.
      */
-    async tick(): Promise<TickResult> {
+    async tick(): Promise<void> {
       const now = Date.now();
-      const result: TickResult = { nudged: [], deadLettered: [] };
       const due = store.listMessages({ waiting: true }).filter((m) =>
-        (m.kind !== "assignment" ||
-          !hasResult(m.id)) &&
-        (m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= opts.renudgeAfterMs)
+        m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= RENUDGE_AFTER_MS
       );
       const byRecipient = new Map<string, MessageRecord[]>();
       for (const m of due) {
         if (m.deliveries >= MAX_DELIVERIES) {
           store.deadLetter(m.id);
           store.appendEvent("message.dead_lettered", { id: m.id, to: m.to, kind: m.kind });
-          result.deadLettered.push(m.id);
           if (m.kind === "assignment") {
             synthesiseFailure(
               m,
@@ -274,19 +264,13 @@ export function createRouter(opts: RouterOptions) {
         }
       }
       for (const [address, messages] of byRecipient) {
-        const current = messages.filter((m) => {
-          const latest = store.getMessage(m.id)!;
-          return latest.readAt === null && latest.deadLetteredAt === null &&
-            (latest.kind !== "assignment" ||
-              !hasResult(latest.id));
-        });
+        const waiting = new Set(store.listMessages({ to: address, waiting: true }).map((m) => m.id));
+        const current = messages.filter((m) => waiting.has(m.id));
         if (!current.length) continue;
         store.recordDelivery(current.map((m) => m.id));
         store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
-        result.nudged.push({ to: address, messages: current.length });
         await nudge(sessionAt(address), current.length);
       }
-      return result;
     },
   };
 

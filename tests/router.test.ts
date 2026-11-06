@@ -45,6 +45,12 @@ withWorld("routes and message schemas are enforced", async (world) => {
     agent.call("send", { to: "dev-1", kind: "assignment", body: { ...assignment, extra: 1 } }));
   assert(badBody.isError);
   assertStringIncludes(badBody.text, 'unknown field "extra"');
+  const inheritedName = await asAgent(world, "dev-lead", (agent) =>
+    agent.call("send", {
+      to: "dev-1", kind: "assignment", body: { ...assignment, constructor: "unexpected" },
+    }));
+  assert(inheritedName.isError);
+  assertStringIncludes(inheritedName.text, 'unknown field "constructor"');
 
   const job = await asAgent(world, "dev-lead", (agent) =>
     agent.send("dev-1", "assignment", assignment));
@@ -60,7 +66,9 @@ withWorld("routes and message schemas are enforced", async (world) => {
     });
     assert(duplicate.isError);
     assertStringIncludes(duplicate.text, "already has a result");
+    assertEquals(await agent.inbox(), []);
   });
+  assertEquals(await stopHook(world, "dev-1"), null);
 });
 
 withWorld("MCP rejects malformed and extra tool arguments", async (world) => {
@@ -70,10 +78,13 @@ withWorld("MCP rejects malformed and extra tool arguments", async (world) => {
   await asAgent(world, "dev-1", async (agent) => {
     for (const [name, args] of [
       ["read_inbox", { extra: true }],
+      ["read_inbox", { constructor: "unexpected" }],
       ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: String(job.id) }],
       ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: true }],
       ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: job.id, extra: true }],
+      ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: job.id, constructor: "unexpected" }],
       ["raise_question", { question: "x", extra: true }],
+      ["raise_question", { question: "x", constructor: "unexpected" }],
     ] as const) {
       const out = await agent.call(name, args);
       assert(out.isError, name);
@@ -134,6 +145,8 @@ withWorld("repeated Stop cannot duplicate a synthesised result or redeliver work
   assertEquals(await stopHook(world, "dev-1", true), null);
   const [failure] = await asAgent(world, "dev-lead", (agent) => agent.inbox());
   assertEquals([failure.kind, failure.inReplyTo, failure.synthesised], ["result", job.id, true]);
+  assertEquals(await asAgent(world, "dev-1", (agent) => agent.inbox()), []);
+  assertEquals(await stopHook(world, "dev-1"), null);
   await new Promise((resolve) => setTimeout(resolve, 2_500));
   assertEquals(await world.launcher.calls(), []);
   assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);

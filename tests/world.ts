@@ -51,8 +51,8 @@ export interface World extends Home {
   git(cwd: string, ...args: string[]): Promise<Result>;
 }
 
-export async function makeWorld(extraEnv: Record<string, string> = {}): Promise<World> {
-  const base = await makeHome(extraEnv);
+export async function makeWorld(): Promise<World> {
+  const base = await makeHome();
   const fakeDir = join(base.root, "fake");
   const bin = join(fakeDir, "bin");
   await Deno.mkdir(bin, { recursive: true });
@@ -171,10 +171,9 @@ export async function makeWorld(extraEnv: Record<string, string> = {}): Promise<
 export function withWorld(
   name: string,
   body: (world: World) => Promise<void>,
-  extraEnv: Record<string, string> = {},
 ): void {
   Deno.test(name, async () => {
-    const world = await makeWorld(extraEnv);
+    const world = await makeWorld();
     try {
       await body(world);
     } finally {

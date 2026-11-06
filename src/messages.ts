@@ -26,7 +26,7 @@ export function validateBody(kind: MessageKind, body: unknown): string[] {
   const fields = body as Record<string, unknown>;
   const problems: string[] = [];
   for (const name of Object.keys(fields)) {
-    if (!(name in schema)) problems.push(`unknown field "${name}"`);
+    if (!Object.hasOwn(schema, name)) problems.push(`unknown field "${name}"`);
   }
   for (const [name, field] of Object.entries(schema)) {
     const value = fields[name];
