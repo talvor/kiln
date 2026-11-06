@@ -73,7 +73,7 @@ withWorld(
       const clone = join(world.dirs.data, "projects", "remote");
       assert(relative(clone, wt).startsWith(".."), `${wt} is inside the clone`);
       assert(
-        relative(world.dirs.data, wt).startsWith("worktrees"),
+        relative(await Deno.realPath(world.dirs.data), wt).startsWith("worktrees"),
         `${wt} is not under worktrees/`,
       );
       assertEquals(
@@ -268,7 +268,7 @@ withWorld("a relative launch cwd uses its worktree environment", async (world) =
   await startRequest(world);
   const a = await startAssignment(world, 1);
   await world.launcher.script([{ result: "done" }]);
-  const cwd = relative(world.root, a.Worktree);
+  const cwd = relative(await Deno.realPath(world.root), a.Worktree);
   const result = await runKiln(
     world.env,
     ["launch", "check environment", "--cwd", cwd],
