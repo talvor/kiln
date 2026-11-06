@@ -4,8 +4,7 @@
 // opt-in. Run it with `KILN_SMOKE=1 deno task smoke` (see docs/smoke.md).
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { MAX_LAUNCH_USD } from "../../src/launcher.ts";
-import { makeHome } from "../helpers.ts";
+import { makeHome, runKiln } from "../helpers.ts";
 
 const enabled = Deno.env.get("KILN_SMOKE") === "1";
 
@@ -21,7 +20,8 @@ function smoke(
       try {
         const dir = join(home.root, "work");
         await Deno.mkdir(dir);
-        await body(dir, home.kiln);
+        const env = { ...Deno.env.toObject(), ...home.env, HOME: Deno.env.get("HOME") ?? home.root };
+        await body(dir, (...args) => runKiln(env, args));
       } finally {
         await Deno.remove(home.root, { recursive: true });
       }
@@ -36,7 +36,7 @@ smoke("the installed claude is found and reports a version", async () => {
   assert(/\d+\.\d+\.\d+/.test(new TextDecoder().decode(out.stdout)));
 });
 
-smoke("a launch edits files in the working directory within the spend cap", async (dir, kiln) => {
+smoke("a launch edits files in the working directory", async (dir, kiln) => {
   const out = await kiln(
     "launch",
     "Create a file named hello.txt containing exactly the word hello. Then reply 'done'.",
@@ -48,7 +48,7 @@ smoke("a launch edits files in the working directory within the spend cap", asyn
   const result = JSON.parse(out.stdout);
   assertEquals(result.ok, true);
   assertEquals(result.model, "haiku");
-  assert(result.costUsd > 0 && result.costUsd <= MAX_LAUNCH_USD, `cost ${result.costUsd}`);
+  assert(result.costUsd > 0, `cost ${result.costUsd}`);
   assertStringIncludes((await Deno.readTextFile(join(dir, "hello.txt"))).toLowerCase(), "hello");
 });
 

@@ -1,12 +1,12 @@
 // The launcher: how Kiln starts Claude on a piece of work. It drives the installed `claude`
 // through the Claude Agent SDK, on a cheap model and under a spend cap.
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { join } from "@std/path";
+import { resolve } from "@std/path";
 import { delimiter } from "node:path";
 
 /** Workers run on the cheapest model: cost matters more than depth for launcher-level work. */
 export const LAUNCHER_MODEL = "haiku";
-/** Most a single launch may spend, in USD. The SDK stops the run once it is exceeded. */
+/** SDK budget per launch, in USD; a completed call can exceed it slightly. */
 export const MAX_LAUNCH_USD = 0.25;
 
 export interface LaunchRequest {
@@ -36,11 +36,14 @@ export class ClaudeNotInstalled extends Error {
 }
 
 /** Find the installed `claude` executable on PATH. */
-export function findClaude(pathVar = Deno.env.get("PATH") ?? ""): string {
-  for (const dir of pathVar.split(delimiter).filter(Boolean)) {
-    const candidate = join(dir, "claude");
+function findClaude(): string {
+  for (const dir of (Deno.env.get("PATH") ?? "").split(delimiter).filter(Boolean)) {
+    const candidate = resolve(dir, "claude");
     try {
-      if (Deno.statSync(candidate).isFile) return candidate;
+      const info = Deno.statSync(candidate);
+      if (info.isFile && info.mode !== null && (info.mode & 0o111) !== 0) {
+        return Deno.realPathSync(candidate);
+      }
     } catch { /* not here */ }
   }
   throw new ClaudeNotInstalled();
@@ -59,6 +62,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       // Unattended: file edits in the Project are allowed, anything riskier is refused.
       permissionMode: "acceptEdits",
       persistSession: false,
+      settingSources: [],
     },
   });
   try {

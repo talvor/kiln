@@ -48,15 +48,27 @@ async function main(args: string[]): Promise<number> {
   }
 
   async function launchCommand(rest: string[]): Promise<number> {
-    const flag = (name: string) => {
-      const i = rest.indexOf(name);
-      return i >= 0 ? rest.splice(i, 2)[1] : undefined;
-    };
-    const cwd = flag("--cwd") ?? Deno.cwd();
-    const budget = flag("--max-budget-usd");
-    const asJson = rest.includes("--json");
-    const prompt = rest.filter((a) => a !== "--json").join(" ");
-    const maxBudgetUsd = budget === undefined ? undefined : Number(budget);
+    let cwd = Deno.cwd();
+    let maxBudgetUsd: number | undefined;
+    let asJson = false;
+    const promptParts: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--json") {
+        asJson = true;
+      } else if (arg === "--cwd" || arg === "--max-budget-usd") {
+        const value = rest[++i];
+        if (!value || value.startsWith("--")) {
+          console.error(LAUNCH_USAGE);
+          return 2;
+        }
+        if (arg === "--cwd") cwd = value;
+        else maxBudgetUsd = Number(value);
+      } else {
+        promptParts.push(arg);
+      }
+    }
+    const prompt = promptParts.join(" ");
     if (!prompt || (maxBudgetUsd !== undefined && !(maxBudgetUsd > 0))) {
       console.error(LAUNCH_USAGE);
       return 2;

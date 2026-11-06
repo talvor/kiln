@@ -2,7 +2,7 @@
 // where `claude` is the scripted fake that speaks the Claude Agent SDK's protocol.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runKiln } from "./helpers.ts";
-import { join } from "@std/path";
+import { join, relative } from "@std/path";
 import { withWorld } from "./world.ts";
 
 withWorld("kiln launch runs Claude in the Project and reports the answer", async (world) => {
@@ -36,6 +36,7 @@ withWorld("kiln launch uses a cheap model under a spend cap", async (world) => {
   const [call] = await world.launcher.calls();
   assert(call.args.includes("--model=haiku"), call.args.join(" "));
   assert(call.args.includes("--max-budget-usd=0.25"), call.args.join(" "));
+  assert(call.args.includes("--setting-sources="), call.args.join(" "));
 });
 
 withWorld("a cap lower than the default is honoured, a higher one is not", async (world) => {
@@ -66,4 +67,35 @@ withWorld("kiln launch needs a prompt", async (world) => {
   const out = await world.kiln("launch");
   assertEquals(out.code, 2);
   assertStringIncludes(out.stderr, "Usage: kiln launch");
+});
+
+withWorld("kiln launch rejects missing flag values before starting Claude", async (world) => {
+  for (const flag of ["--cwd", "--max-budget-usd"]) {
+    for (const args of [["launch", "hi", flag], ["launch", "hi", flag, "--json"]]) {
+      const out = await world.kiln(...args);
+      assertEquals(out.code, 2, out.stderr);
+      assertStringIncludes(out.stderr, "Usage: kiln launch");
+    }
+  }
+  assertEquals(await world.launcher.calls(), []);
+});
+
+withWorld("kiln launch finds an executable from relative PATH", async (world) => {
+  await world.launcher.script([{ result: "ok" }]);
+  const bin = join(world.root, "fake", "bin");
+  const env = { ...world.env, PATH: relative(Deno.cwd(), bin) };
+  const out = await runKiln(env, ["launch", "hi", "--cwd", world.project.path]);
+  assertEquals(out.code, 0, out.stderr);
+  assertEquals((await world.launcher.calls()).length, 1);
+});
+
+withWorld("kiln launch skips a non-executable PATH match", async (world) => {
+  await world.launcher.script([{ result: "ok" }]);
+  const shadow = join(world.root, "shadow");
+  await Deno.mkdir(shadow);
+  await Deno.writeTextFile(join(shadow, "claude"), "not executable");
+  const env = { ...world.env, PATH: `${shadow}:${join(world.root, "fake", "bin")}` };
+  const out = await runKiln(env, ["launch", "hi"]);
+  assertEquals(out.code, 0, out.stderr);
+  assertEquals((await world.launcher.calls()).length, 1);
 });
