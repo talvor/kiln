@@ -13,6 +13,7 @@ export interface LaunchRequest {
   prompt: string;
   /** Directory Claude works in: a Project checkout. */
   cwd: string;
+  env?: Record<string, string>;
   readOnly?: boolean;
   /** Override the spend cap for this launch (USD); never raises it above MAX_LAUNCH_USD. */
   maxBudgetUsd?: number;
@@ -64,6 +65,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
     prompt: req.prompt,
     options: {
       cwd: req.cwd,
+      env: req.env ? { ...Deno.env.toObject(), ...req.env } : undefined,
       model: LAUNCHER_MODEL,
       maxBudgetUsd,
       pathToClaudeCodeExecutable: findClaude(),

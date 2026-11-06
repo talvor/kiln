@@ -104,6 +104,29 @@ export const MIGRATIONS: string[] = [
      last_delivery_at text,
      dead_lettered_at text
    ) strict;`,
+  // 5: Worktrees (checkouts outside the Project's clone, each with its own ports), the branch of
+  // each Request, and Assignments with their own branch and Worktree.
+  `create table worktrees (
+     id integer primary key,
+     path text not null,
+     branch text not null,
+     port_base integer not null,
+     created_at text not null,
+     released_at text
+   ) strict;
+   create unique index worktrees_live_ports on worktrees (port_base) where released_at is null;
+   alter table requests add column branch text;
+   alter table requests add column worktree_id integer references worktrees (id);
+   create table assignments (
+     id integer primary key references messages (id),
+     request_id integer not null references requests (id),
+     branch text,
+     worktree_id integer references worktrees (id),
+     status text not null default 'active' check (status in ('active', 'merged')),
+     pushed integer not null default 0,
+     created_at text not null,
+     merged_at text
+   ) strict;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -165,6 +188,48 @@ export type ProjectPatch = Partial<
     | "warnings"
   >
 >;
+
+/** A checkout of a Project outside its clone, with the ports it may use. */
+export interface WorktreeRecord {
+  id: number;
+  path: string;
+  branch: string;
+  /** First of the WORKTREE_PORTS consecutive ports reserved for this Worktree. */
+  portBase: number;
+  releasedAt: string | null;
+}
+export const WORKTREE_PORTS = 10;
+export const FIRST_WORKTREE_PORT = 20_000;
+const LAST_WORKTREE_PORT = 60_000;
+
+export interface RequestRecord {
+  id: number;
+  projectId: number;
+  status: "active" | "done";
+  /** The branch the Request's merged Assignments accumulate on; null until it is created. */
+  branch: string | null;
+  worktreeId: number | null;
+}
+export interface AssignmentRecord {
+  id: number;
+  requestId: number;
+  branch: string | null;
+  worktreeId: number | null;
+  status: "active" | "merged";
+  /** Whether the merge has reached the remote. */
+  pushed: boolean;
+}
+
+export class UnknownRequestError extends Error {
+  constructor(id: number) {
+    super(`No request ${id} exists.`);
+  }
+}
+export class UnknownAssignmentError extends Error {
+  constructor(id: number) {
+    super(`No assignment ${id} exists.`);
+  }
+}
 
 export type Role = "overseer" | "leader" | "worker";
 export type MessageKind = "assignment" | "result" | "question" | "answer";
@@ -265,6 +330,29 @@ export interface Store {
   updateProject(name: string, patch: ProjectPatch): ProjectRecord;
   /** Remove a Project, keeping its record and history; refuse active Requests unless forced. */
   removeProject(name: string, opts?: { force?: boolean }): ProjectRecord;
+  /** Begin a Request on a Project (no branch or Worktree yet). */
+  addRequest(projectId: number): RequestRecord;
+  /** Throws UnknownRequestError. */
+  getRequest(id: number): RequestRecord;
+  /** Begin an Assignment for a router assignment Message. */
+  addAssignment(requestId: number, messageId: number): AssignmentRecord;
+  /** Throws UnknownAssignmentError. */
+  getAssignment(id: number): AssignmentRecord;
+  /** Reserve a free port block for a new Worktree; throws if none is left. */
+  addWorktree(wt: { path: string; branch: string }): WorktreeRecord;
+  getWorktree(id: number): WorktreeRecord;
+  findLiveWorktree(path: string): WorktreeRecord | undefined;
+  /** Give back a Worktree's ports. */
+  releaseWorktree(id: number): void;
+  /** Record the branch and Worktree a Request or Assignment works on. */
+  attachRequest(id: number, branch: string, worktreeId: number): void;
+  attachAssignment(id: number, branch: string, worktreeId: number): void;
+  /** Forget a Request or Assignment whose branch could not be created. */
+  discardRequest(id: number): void;
+  discardAssignment(id: number): void;
+  /** Record that an Assignment was merged into its Request's branch. */
+  markMerged(assignmentId: number): void;
+  markPushed(assignmentId: number): void;
   /** Open a session; throws DuplicateSessionError if its address, or its seat, is taken. */
   addSession(session: NewSession): SessionRecord;
   listSessions(): SessionRecord[];
@@ -423,7 +511,108 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       const row = db.prepare(`${messageSelect} where m.id = ?`).get(id);
       return row ? toMessage(row) : undefined;
     };
+    const toRequest = (row: Record<string, unknown>): RequestRecord => ({
+      id: row.id as number,
+      projectId: row.project_id as number,
+      status: row.status as "active" | "done",
+      branch: row.branch as string | null,
+      worktreeId: row.worktree_id as number | null,
+    });
+    const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
+      id: row.id as number,
+      requestId: row.request_id as number,
+      branch: row.branch as string | null,
+      worktreeId: row.worktree_id as number | null,
+      status: row.status as "active" | "merged",
+      pushed: row.pushed === 1,
+    });
+    const toWorktree = (row: Record<string, unknown>): WorktreeRecord => ({
+      id: row.id as number,
+      path: row.path as string,
+      branch: row.branch as string,
+      portBase: row.port_base as number,
+      releasedAt: row.released_at as string | null,
+    });
+    const getRequest = (id: number): RequestRecord => {
+      const row = db.prepare("select * from requests where id = ?").get(id);
+      if (!row) throw new UnknownRequestError(id);
+      return toRequest(row);
+    };
+    const getAssignment = (id: number): AssignmentRecord => {
+      const row = db.prepare("select * from assignments where id = ?").get(id);
+      if (!row) throw new UnknownAssignmentError(id);
+      return toAssignment(row);
+    };
     return {
+      addRequest: (projectId) => {
+        const { lastInsertRowid } = db.prepare(
+          "insert into requests (project_id, created_at) values (?, ?)",
+        ).run(projectId, new Date().toISOString());
+        return getRequest(Number(lastInsertRowid));
+      },
+      getRequest,
+      addAssignment: (requestId, messageId) =>
+        inTransaction(() => {
+          getRequest(requestId);
+          const message = getMessage(messageId);
+          if (!message || message.kind !== "assignment") {
+            throw new UnknownAssignmentError(messageId);
+          }
+          db.prepare(
+            "insert into assignments (id, request_id, created_at) values (?, ?, ?)",
+          ).run(messageId, requestId, new Date().toISOString());
+          return getAssignment(messageId);
+        }),
+      getAssignment,
+      addWorktree: (wt) =>
+        inTransaction(() => {
+          const used = new Set(
+            db.prepare("select port_base from worktrees where released_at is null").all()
+              .map((r) => r.port_base as number),
+          );
+          let base = FIRST_WORKTREE_PORT;
+          while (used.has(base)) base += WORKTREE_PORTS;
+          if (base + WORKTREE_PORTS > LAST_WORKTREE_PORT) {
+            throw new Error("No free port block is left for a new worktree.");
+          }
+          const { lastInsertRowid } = db.prepare(
+            "insert into worktrees (path, branch, port_base, created_at) values (?, ?, ?, ?)",
+          ).run(wt.path, wt.branch, base, new Date().toISOString());
+          return toWorktree(
+            db.prepare("select * from worktrees where id = ?").get(Number(lastInsertRowid))!,
+          );
+        }),
+      getWorktree: (id) => toWorktree(db.prepare("select * from worktrees where id = ?").get(id)!),
+      findLiveWorktree: (path) => {
+        const row = db.prepare("select * from worktrees where path = ? and released_at is null")
+          .get(path);
+        return row ? toWorktree(row) : undefined;
+      },
+      releaseWorktree: (id) => {
+        db.prepare("update worktrees set released_at = ? where id = ? and released_at is null")
+          .run(new Date().toISOString(), id);
+      },
+      attachRequest: (id, branch, worktreeId) => {
+        db.prepare("update requests set branch = ?, worktree_id = ? where id = ?")
+          .run(branch, worktreeId, id);
+      },
+      attachAssignment: (id, branch, worktreeId) => {
+        db.prepare("update assignments set branch = ?, worktree_id = ? where id = ?")
+          .run(branch, worktreeId, id);
+      },
+      discardRequest: (id) => {
+        db.prepare("delete from requests where id = ? and branch is null").run(id);
+      },
+      discardAssignment: (id) => {
+        db.prepare("delete from assignments where id = ? and branch is null").run(id);
+      },
+      markMerged: (id) => {
+        db.prepare("update assignments set status = 'merged', merged_at = ? where id = ?")
+          .run(new Date().toISOString(), id);
+      },
+      markPushed: (id) => {
+        db.prepare("update assignments set pushed = 1 where id = ?").run(id);
+      },
       addSession: (s) => {
         const openedAt = new Date().toISOString();
         try {

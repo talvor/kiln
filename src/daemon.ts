@@ -5,6 +5,14 @@ import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
+import {
+  infoOf,
+  mergeAssignment,
+  startAssignment,
+  startRequest,
+  WorktreeBlocked,
+} from "./worktrees.ts";
+import { resolve } from "@std/path";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import {
   type MessageKind,
@@ -81,7 +89,10 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const router = createRouter({
     store,
     log,
-    launch,
+    launch: (req) => {
+      const wt = store.findLiveWorktree(resolve(req.cwd));
+      return launch({ ...req, env: wt ? infoOf(wt).env : undefined });
+    },
     selfCommand,
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated.
@@ -174,6 +185,32 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "requests.start": (params) =>
+      withProjectQueue(
+        String(params.project),
+        () => startRequest(store, store.getProject(String(params.project)), paths.worktrees),
+      ),
+    "assignments.start": (params) => {
+      const request = store.getRequest(Number(params.requestId));
+      const project = store.listProjects().find((p) => p.id === request.projectId);
+      if (!project) throw new WorktreeBlocked("The request's project has been removed.");
+      return withProjectQueue(
+        project.name,
+        () =>
+          startAssignment(store, project, request.id, Number(params.assignmentId), paths.worktrees),
+      );
+    },
+    "assignments.merge": (params) => {
+      const assignment = store.getAssignment(Number(params.id));
+      const request = store.getRequest(assignment.requestId);
+      const project = store.listProjects().find((p) => p.id === request.projectId);
+      if (!project) throw new WorktreeBlocked("The request's project has been removed.");
+      return withProjectQueue(project.name, () => mergeAssignment(store, project, assignment.id));
+    },
+    "worktrees.environment": (params) => {
+      const wt = store.findLiveWorktree(resolve(String(params.path)));
+      return wt ? infoOf(wt).env : {};
+    },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),
     "messages.send": (params) =>
       router.send(

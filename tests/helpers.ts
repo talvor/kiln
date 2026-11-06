@@ -49,9 +49,11 @@ export async function runKiln(
   env: Record<string, string>,
   args: string[],
   input = "",
+  cwd?: string,
 ): Promise<Result> {
   const child = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", MAIN, ...args],
+    cwd,
     env,
     clearEnv: true,
     stdin: "piped",

@@ -20,6 +20,7 @@ export interface ApiReply {
 interface Call {
   args: string[];
   cwd?: string;
+  env?: Record<string, string | undefined>;
 }
 
 export interface World extends Home {

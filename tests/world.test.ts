@@ -18,6 +18,7 @@ withWorld("a running Kiln can do a piece of work against the fake world", async 
   assertEquals(await world.launcher.calls(), [{
     args: ["-p", "add a greeting"],
     cwd: await Deno.realPath(world.project.path),
+    env: {},
   }]);
 
   // The work reaches the bare remote.
