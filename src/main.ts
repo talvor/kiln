@@ -2,6 +2,7 @@ import { call, DaemonNotRunning, ensureDaemon, isRunning, stopDaemon } from "./c
 import { ClaudeNotInstalled, launch } from "./launcher.ts";
 import { type DaemonStatus, runDaemon, VERSION } from "./daemon.ts";
 import { resolvePaths } from "./paths.ts";
+import { resolve } from "@std/path";
 import {
   type Commands,
   registerProject,
@@ -9,7 +10,9 @@ import {
   RegistrationDeclined,
 } from "./register.ts";
 import type { Change } from "./manage.ts";
+import { runToolServer } from "./toolserver.ts";
 import type { ProjectRecord } from "./store.ts";
+import type { StopVerdict } from "./router.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -23,6 +26,8 @@ const PROJECT_USAGE = `Usage:
   kiln project baseline <name>
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
+const SESSION_USAGE =
+  "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -34,6 +39,12 @@ Usage:
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln project list|pause|resume|edit|baseline|default-branch|remove ...
                          Manage registered projects (see \`kiln project\`)
+  kiln session open ...
+                         Open the address an agent works under (see \`kiln session\`)
+  kiln tool-server --address <address>
+                         Serve one agent's Kiln tools over MCP on stdio (read_inbox, send, raise_question)
+  kiln hook stop --address <address>
+                         The Stop hook for an agent: reads the hook's JSON on stdin
   kiln --version
 
 Any command that needs the daemon starts it if it is not running.`;
@@ -51,6 +62,8 @@ async function main(args: string[]): Promise<number> {
     return cmd ? 0 : 2;
   }
 
+  if (cmd === "hook") return await hookCommand(sub, args.slice(2));
+
   const paths = resolvePaths();
 
   switch (cmd) {
@@ -66,9 +79,81 @@ async function main(args: string[]): Promise<number> {
       return await launchCommand(args.slice(1));
     case "project":
       return await projectCommand(sub, args.slice(2));
+    case "session":
+      return await sessionCommand(sub, args.slice(2));
+    case "tool-server": {
+      const address = flagValue(args.slice(1), "--address");
+      if (!address) {
+        console.error("Usage: kiln tool-server --address <address>");
+        return 2;
+      }
+      await runToolServer(paths, address);
+      return 0;
+    }
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
+  }
+
+  async function sessionCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    const usage = () => {
+      console.error(SESSION_USAGE);
+      return 2;
+    };
+    if (sub !== "open") return usage();
+    const [address, ...flags] = rest;
+    if (!address || address.startsWith("-") || flags.length % 2) return usage();
+    const values: Record<string, string> = {};
+    for (let i = 0; i < flags.length; i += 2) {
+      if (!["--role", "--department", "--cwd"].includes(flags[i])) return usage();
+      values[flags[i]] = flags[i + 1];
+    }
+    if (!values["--role"]) return usage();
+    await ensureDaemon(paths);
+    try {
+      await call(paths, "sessions.open", {
+        address,
+        role: values["--role"],
+        department: values["--department"] ?? null,
+        cwd: resolve(values["--cwd"] ?? Deno.cwd()),
+      });
+    } catch (err) {
+      console.error(`Cannot open session: ${(err as Error).message}`);
+      return 1;
+    }
+    console.log(`Opened ${values["--role"]} session "${address}".`);
+    return 0;
+  }
+
+  /** Hook commands for an agent's Claude session; they speak Claude Code's hook protocol. */
+  async function hookCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    const address = flagValue(rest, "--address");
+    if (sub !== "stop" || !address) {
+      console.error("Usage: kiln hook stop --address <address>");
+      return 2;
+    }
+    let input: { stop_hook_active?: boolean } = {};
+    try {
+      input = JSON.parse(await new Response(Deno.stdin.readable).text() || "{}");
+    } catch { /* an unreadable hook payload counts as a first attempt */ }
+    try {
+      const hookPaths = resolvePaths();
+      await ensureDaemon(hookPaths);
+      const verdict = await call<StopVerdict>(hookPaths, "router.stopCheck", {
+        address,
+        alreadyBlocked: input.stop_hook_active === true,
+      });
+      if (verdict.block) {
+        console.log(JSON.stringify({ decision: "block", reason: verdict.reason }));
+      }
+      return 0;
+    } catch (err) {
+      console.log(JSON.stringify({
+        decision: "block",
+        reason: `Kiln could not check pending work: ${(err as Error).message}`,
+      }));
+      return 0;
+    }
   }
 
   async function projectCommand(sub: string | undefined, rest: string[]): Promise<number> {
@@ -332,6 +417,12 @@ async function main(args: string[]): Promise<number> {
         return 2;
     }
   }
+}
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  const value = i >= 0 ? args[i + 1] : undefined;
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 function describeBaseline(p: { baseline: ProjectRecord["baseline"] }, registering = false): string {

@@ -70,14 +70,15 @@ export async function isRunning(paths: KilnPaths): Promise<boolean> {
   }
 }
 
-/** How to launch this program again as the daemon: works from source and when compiled. */
-function daemonCommand(): { cmd: string; args: string[] } {
+/** How to run `kiln <args>` again as a separate process: works from source and when compiled. */
+export function selfCommand(args: string[]): { cmd: string; args: string[] } {
   const exe = Deno.execPath();
   const isDeno = /(^|[\\/])deno(\.exe)?$/.test(exe);
   return isDeno
-    ? { cmd: exe, args: ["run", "-A", fromFileUrl(Deno.mainModule), "daemon", "run"] }
-    : { cmd: exe, args: ["daemon", "run"] };
+    ? { cmd: exe, args: ["run", "-A", fromFileUrl(Deno.mainModule), ...args] }
+    : { cmd: exe, args };
 }
+const daemonCommand = () => selfCommand(["daemon", "run"]);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const STOP_TIMEOUT_MS = 60_000;

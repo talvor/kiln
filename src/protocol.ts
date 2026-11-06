@@ -9,7 +9,9 @@ export type Response =
   | { id: number; ok: true; result: unknown }
   | { id: number; ok: false; error: string };
 
-export async function* readLines(conn: Deno.Conn): AsyncGenerator<string> {
+export async function* readLines(
+  conn: { readable: ReadableStream<Uint8Array> },
+): AsyncGenerator<string> {
   const dec = new TextDecoder();
   let buf = "";
   for await (const chunk of conn.readable) {

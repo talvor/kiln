@@ -1,10 +1,18 @@
 import denoJson from "../deno.json" with { type: "json" };
-import { canConnect, closeQuietly } from "./client.ts";
+import { canConnect, closeQuietly, selfCommand } from "./client.ts";
+import { launch } from "./launcher.ts";
+import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
-import { type NewProject, openStore, type Store } from "./store.ts";
+import {
+  type MessageKind,
+  type NewProject,
+  type NewSession,
+  openStore,
+  type Store,
+} from "./store.ts";
 
 export const VERSION: string = denoJson.version;
 
@@ -70,12 +78,28 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }
   };
 
+  const router = createRouter({
+    store,
+    log,
+    launch,
+    selfCommand,
+  });
+  // Delivery passes never overlap: a pass in flight is joined, not repeated.
+  let pass: Promise<void> | undefined;
+  const deliver = (): Promise<void> => pass ??= router.tick().finally(() => pass = undefined);
+  const ticker = setInterval(
+    () => deliver().catch((err) => log.error("delivery pass failed", { err })),
+    2_000,
+  );
+
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   const shutdown = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log.info("daemon stopping", { reason });
+    clearInterval(ticker);
+    await pass?.catch(() => {});
     while (projectQueues.size || projectReplies.size) {
       await Promise.all([...projectQueues.values(), ...projectReplies]);
     }
@@ -150,6 +174,26 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "sessions.open": (params) => router.openSession(params as unknown as NewSession),
+    "messages.send": (params) =>
+      router.send(
+        String(params.from),
+        String(params.to),
+        params.kind as MessageKind,
+        params.body,
+        params.inReplyTo as number | undefined,
+        params.assignmentId as number | undefined,
+      ),
+    "messages.raise": (params) =>
+      router.raiseQuestion(
+        String(params.from),
+        params.question,
+        params.context,
+        params.assignmentId as number | undefined,
+      ),
+    "messages.read": (params) => router.readInbox(String(params.address)),
+    "router.stopCheck": (params) =>
+      router.checkStop(String(params.address), params.alreadyBlocked === true),
     stop: (_params, ctx) => {
       ctx.afterReply = () => beginShutdown("stop command");
       return { stopping: true, pid: Deno.pid, startedAt };

@@ -55,3 +55,15 @@ _Avoid_: mailbox, queue, channel
 **Nudge**:
 A short prompt from Kiln that wakes an agent so it reads its inbox.
 _Avoid_: ping, wake-up call, notification
+
+**Message**:
+One piece of mail between two agents: an assignment, a result, a question or an answer. Messages are never changed or removed once sent; what happens to them afterwards (read, nudged, dead-lettered) is recorded beside them.
+_Avoid_: email, ticket, event
+
+**Route**:
+The one path a Message may take: assignments and answers go down to a direct report, results and questions go up to the sender's direct superior (worker to its department's leader, leader to the overseer). Any other path is refused.
+_Avoid_: channel, permission
+
+**Dead letter**:
+A Message nobody read after three Nudges. Kiln stops waking anyone for it; a dead-lettered assignment is reported back to its sender as a failed result written by Kiln.
+_Avoid_: lost message, expired message

@@ -38,7 +38,12 @@ export interface World extends Home {
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
-  launcher: { script(runs: LauncherRun[]): Promise<void>; calls(): Promise<Call[]> };
+  launcher: {
+    script(runs: LauncherRun[]): Promise<void>;
+    calls(): Promise<Call[]>;
+    /** The prompts Claude was given, in order (SDK launches only). */
+    prompts(): Promise<string[]>;
+  };
   /** The scripted PR-status command: statuses are consumed in order. */
   prStatus: { script(statuses: PrStatus[]): Promise<void>; calls(): Promise<Call[]> };
   /** Run a command the way the daemon would: in the world's environment. */
@@ -133,6 +138,21 @@ export async function makeWorld(): Promise<World> {
     launcher: {
       script: (runs) => script("launcher", "runs", runs),
       calls: () => calls("launcher"),
+      prompts: async () => {
+        const file = join(fakeDir, "launcher", "prompts.jsonl");
+        let text = "";
+        try {
+          text = await Deno.readTextFile(file);
+        } catch (err) {
+          if (!(err instanceof Deno.errors.NotFound)) throw err;
+        }
+        return text.split("\n").filter(Boolean).map((line) => {
+          const { content } = JSON.parse(line).message;
+          return typeof content === "string"
+            ? content
+            : content.map((b: { text?: string }) => b.text ?? "").join("");
+        });
+      },
     },
     githubApi: {
       script: (replies) => script("api", "replies", replies),
@@ -148,7 +168,10 @@ export async function makeWorld(): Promise<World> {
 }
 
 /** Run a test body against a fresh world; always stops the daemon and removes the world. */
-export function withWorld(name: string, body: (world: World) => Promise<void>): void {
+export function withWorld(
+  name: string,
+  body: (world: World) => Promise<void>,
+): void {
   Deno.test(name, async () => {
     const world = await makeWorld();
     try {

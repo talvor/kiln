@@ -25,3 +25,9 @@ Run `deno task kiln project register <path-or-url>` to register a project. See
 
 Pause, edit commands, re-run the test baseline, change the default branch or remove a project with
 `deno task kiln project ...`. See [the management guide](docs/manage.md).
+
+## Messages between agents
+
+Agents work under sessions (`kiln session open`) and exchange assignments, results, questions and
+answers through a per-session tool server; Kiln nudges agents with unread mail. See
+[the router guide](docs/router.md).
