@@ -59,7 +59,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       model: LAUNCHER_MODEL,
       maxBudgetUsd,
       pathToClaudeCodeExecutable: findClaude(),
-      // Unattended: file edits in the Project are allowed, anything riskier is refused.
+      // Unattended: allow file edits without approval; exclude project-supplied settings below.
       permissionMode: "acceptEdits",
       persistSession: false,
       settingSources: [],

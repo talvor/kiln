@@ -11,22 +11,22 @@ Claude-facing assumptions that only the real, installed `claude` can confirm:
 ## Running it
 
 ```sh
-KILN_SMOKE=1 deno task smoke
+deno task smoke
 ```
 
-Without `KILN_SMOKE=1` every smoke test is ignored and makes no Claude call. The suite lives in
-`tests/smoke/claude_smoke.ts`, which `deno task test` does not discover.
+The task sets `KILN_SMOKE=1`. When running `tests/smoke/claude_smoke.ts` directly, that variable
+must be set or every smoke test is ignored. `deno task test` does not discover the smoke file.
 
 ## What it costs
 
 Launches use the `haiku` model with an SDK budget of $0.25 per launch. The suite makes two live
 launches; the second has a $0.0001 budget. The SDK stops when the budget is exceeded, but a completed
-API call can slightly exceed it. A normal run costs a cent or two.
+API call can slightly exceed it. Actual charges depend on the calls made.
 
 ## The launcher
 
-`kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]` runs Claude once in a directory.
-`--max-budget-usd` can lower the cap but never raise it. Claude may edit files freely
-(`acceptEdits`); anything requiring approval is refused, because nobody is there to approve it.
-SDK setting sources are disabled, so project settings, hooks, MCP servers, allow rules, and
-`CLAUDE.md` guidance are not loaded. Deliberate project guidance is planned for a later ticket.
+[`kiln launch`](../README.md#launch) runs Claude once in the current directory, or in the directory
+given by `--cwd`. `--max-budget-usd` can lower the SDK budget but never raise it; `--json` prints
+the result and cost as JSON. The launcher sets `acceptEdits` so Claude may edit files without
+approval. SDK setting sources are disabled, so project settings, hooks, MCP servers, allow rules,
+and `CLAUDE.md` guidance are not loaded. Deliberate project guidance is planned for a later ticket.

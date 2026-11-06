@@ -20,7 +20,11 @@ function smoke(
       try {
         const dir = join(home.root, "work");
         await Deno.mkdir(dir);
-        const env = { ...Deno.env.toObject(), ...home.env, HOME: Deno.env.get("HOME") ?? home.root };
+        const env = {
+          ...Deno.env.toObject(),
+          ...home.env,
+          HOME: Deno.env.get("HOME") ?? home.root,
+        };
         await body(dir, (...args) => runKiln(env, args));
       } finally {
         await Deno.remove(home.root, { recursive: true });
