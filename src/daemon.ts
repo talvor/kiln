@@ -3,6 +3,7 @@ import { canConnect, closeQuietly } from "./client.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
+import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import { type NewProject, openStore, type Store } from "./store.ts";
 
 export const VERSION: string = denoJson.version;
@@ -53,11 +54,31 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     store: store.info(),
   });
 
+  const projectQueues = new Map<string, Promise<void>>();
+  const projectReplies = new Set<Promise<void>>();
+  const withProjectQueue = async <T>(name: string, work: () => Promise<T> | T): Promise<T> => {
+    const previous = projectQueues.get(name);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => release = resolve);
+    projectQueues.set(name, current);
+    if (previous) await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (projectQueues.get(name) === current) projectQueues.delete(name);
+    }
+  };
+
   let stopping = false;
-  const shutdown = (reason: string) => {
+  let shutdownTask: Promise<void> | undefined;
+  const shutdown = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log.info("daemon stopping", { reason });
+    while (projectQueues.size || projectReplies.size) {
+      await Promise.all([...projectQueues.values(), ...projectReplies]);
+    }
     try {
       store.appendEvent("daemon.stopped", { reason });
     } catch (err) {
@@ -71,23 +92,67 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log.info("daemon stopped");
     Deno.exit(0);
   };
-  Deno.addSignalListener("SIGTERM", () => shutdown("SIGTERM"));
+  const beginShutdown = (reason: string) => {
+    shutdownTask ??= shutdown(reason);
+  };
+  Deno.addSignalListener("SIGTERM", () => beginShutdown("SIGTERM"));
   // The daemon outlives the terminal that started it: ignore its interrupts and hangups.
   for (const sig of ["SIGINT", "SIGHUP"] as const) Deno.addSignalListener(sig, () => {});
 
   const handlers: Record<string, Handler> = {
-    ping: () => ({ pid: Deno.pid }),
+    ping: () => ({ pid: Deno.pid, startedAt }),
     status,
     backup: async () => ({ path: await store.backup() }),
-    "projects.list": () => store.listProjects(),
-    "projects.add": (params) => {
-      const project = store.addProject(params as unknown as NewProject);
-      store.appendEvent("project.registered", { id: project.id, name: project.name });
-      return project;
-    },
+    "projects.list": (params) =>
+      store.listProjects({ includeRemoved: params.includeRemoved === true }),
+    "projects.pause": (params) =>
+      withProjectQueue(String(params.name), () => {
+        const name = String(params.name);
+        const project = store.getProject(name);
+        const paused = params.paused === true;
+        if (project.paused === paused) return { changed: false };
+        store.updateProject(name, { paused });
+        store.appendEvent("project.updated", { id: project.id, name, fields: ["paused"] });
+        return { changed: true };
+      }),
+    "projects.recheck": (params) =>
+      withProjectQueue(String(params.name), async () => {
+        const name = String(params.name);
+        const progress: string[] = [];
+        try {
+          const patch = await recheckProject(
+            store.getProject(name),
+            params.change as Change,
+            (message) => progress.push(message),
+            params.baselineOnly === true,
+          );
+          const project = store.updateProject(name, patch);
+          store.appendEvent("project.updated", {
+            id: project.id,
+            name,
+            fields: Object.keys(patch),
+          });
+          return { project, progress };
+        } catch (err) {
+          if (err instanceof RecheckBlocked) return { blocked: err.message, progress };
+          throw err;
+        }
+      }),
+    "projects.remove": (params) =>
+      withProjectQueue(String(params.name), async () => {
+        const project = store.removeProject(String(params.name), { force: params.force === true });
+        await removeClone(project.clonePath, paths.projects);
+        return project;
+      }),
+    "projects.add": (params) =>
+      withProjectQueue(String(params.name), () => {
+        const project = store.addProject(params as unknown as NewProject);
+        store.appendEvent("project.registered", { id: project.id, name: project.name });
+        return project;
+      }),
     stop: (_params, ctx) => {
-      ctx.afterReply = () => shutdown("stop command");
-      return { stopping: true };
+      ctx.afterReply = () => beginShutdown("stop command");
+      return { stopping: true, pid: Deno.pid, startedAt };
     },
   };
 
@@ -105,8 +170,9 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       await sleep(10);
       continue;
     }
-    serve(conn, handlers, log);
+    serve(conn, handlers, log, projectReplies);
   }
+  if (shutdownTask) await shutdownTask;
 }
 
 interface Context {
@@ -119,7 +185,9 @@ async function serve(
   conn: Deno.Conn,
   handlers: Record<string, Handler>,
   log: Logger,
+  projectReplies: Set<Promise<void>>,
 ): Promise<void> {
+  const pendingProjectReplies: Array<{ reply: Promise<void>; release: () => void }> = [];
   try {
     for await (const line of readLines(conn)) {
       let req: Request;
@@ -132,6 +200,13 @@ async function serve(
       }
       const handler = handlers[req.method];
       const ctx: Context = {};
+      let replyWritten: (() => void) | undefined;
+      let reply: Promise<void> | undefined;
+      if (req.method.startsWith("projects.")) {
+        reply = new Promise<void>((resolve) => replyWritten = resolve);
+        projectReplies.add(reply);
+        pendingProjectReplies.push({ reply, release: replyWritten! });
+      }
       if (!handler) {
         res = { id: req.id, ok: false, error: `unknown method: ${req.method}` };
       } else {
@@ -150,6 +225,10 @@ async function serve(
     log.warn("connection error", { err });
   } finally {
     closeQuietly(conn);
+    for (const pending of pendingProjectReplies) {
+      pending.release();
+      projectReplies.delete(pending.reply);
+    }
   }
 }
 

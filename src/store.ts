@@ -36,6 +36,40 @@ export const MIGRATIONS: string[] = [
      warnings text not null default '[]',
      registered_at text not null
    ) strict;`,
+  // 3: managing Projects: pause, soft removal (history is kept; the name is freed for a new
+  // registration), and Requests, so removal can tell whether work is still active.
+  `create table projects_new (
+     id integer primary key,
+     name text not null,
+     source text not null,
+     remote_url text not null,
+     clone_path text not null,
+     default_branch text not null,
+     head_commit text not null,
+     setup_command text,
+     test_command text,
+     lint_command text,
+     build_command text,
+     baseline text,
+     warnings text not null default '[]',
+     registered_at text not null,
+     paused integer not null default 0,
+     removed_at text
+   ) strict;
+   insert into projects_new (id, name, source, remote_url, clone_path, default_branch, head_commit,
+       setup_command, test_command, lint_command, build_command, baseline, warnings, registered_at)
+     select id, name, source, remote_url, clone_path, default_branch, head_commit,
+       setup_command, test_command, lint_command, build_command, baseline, warnings, registered_at
+     from projects;
+   drop table projects;
+   alter table projects_new rename to projects;
+   create unique index projects_active_name on projects (name) where removed_at is null;
+   create table requests (
+     id integer primary key,
+     project_id integer not null references projects (id),
+     status text not null default 'active' check (status in ('active', 'done')),
+     created_at text not null
+   ) strict;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -66,6 +100,10 @@ export interface ProjectRecord {
   baseline: Baseline | null;
   warnings: string[];
   registeredAt: string;
+  /** A paused Project accepts no new Requests. */
+  paused: boolean;
+  /** Set when the Project was removed; its record and history stay. */
+  removedAt: string | null;
 }
 export interface Baseline {
   passed: boolean;
@@ -77,7 +115,38 @@ export interface Baseline {
   outputTail: string;
   recordedAt: string;
 }
-export type NewProject = Omit<ProjectRecord, "id" | "registeredAt">;
+export type NewProject = Omit<ProjectRecord, "id" | "registeredAt" | "paused" | "removedAt">;
+/** What can change on a registered Project. */
+export type ProjectPatch = Partial<
+  Pick<
+    ProjectRecord,
+    | "paused"
+    | "defaultBranch"
+    | "headCommit"
+    | "setupCommand"
+    | "testCommand"
+    | "lintCommand"
+    | "buildCommand"
+    | "baseline"
+    | "warnings"
+  >
+>;
+
+export class UnknownProjectError extends Error {
+  constructor(name: string) {
+    super(`No project named "${name}" is registered.`);
+  }
+}
+
+/** Removal refused: the Project still has active Requests. */
+export class ActiveRequestsError extends Error {
+  constructor(name: string, readonly count: number) {
+    super(
+      `"${name}" has ${count} active request${count === 1 ? "" : "s"}; ` +
+        `finish them or remove the project with --force.`,
+    );
+  }
+}
 
 export class DuplicateProjectError extends Error {
   constructor(name: string) {
@@ -98,7 +167,14 @@ export interface Store {
   appendEvent(kind: string, data?: Record<string, unknown>): void;
   /** Record a Project; throws DuplicateProjectError if the name is taken. */
   addProject(project: NewProject): ProjectRecord;
-  listProjects(): ProjectRecord[];
+  /** Registered Projects; removed ones only when asked for. */
+  listProjects(opts?: { includeRemoved?: boolean }): ProjectRecord[];
+  /** The registered (not removed) Project with this name; throws UnknownProjectError. */
+  getProject(name: string): ProjectRecord;
+  /** Change a Project; throws UnknownProjectError. */
+  updateProject(name: string, patch: ProjectPatch): ProjectRecord;
+  /** Remove a Project, keeping its record and history; refuse active Requests unless forced. */
+  removeProject(name: string, opts?: { force?: boolean }): ProjectRecord;
   close(): void;
 }
 
@@ -192,7 +268,18 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       baseline: row.baseline ? JSON.parse(row.baseline as string) : null,
       warnings: JSON.parse(row.warnings as string),
       registeredAt: row.registered_at as string,
+      paused: row.paused === 1,
+      removedAt: row.removed_at as string | null,
     });
+    const selectActive = db.prepare("select * from projects where name = ? and removed_at is null");
+    const getProject = (name: string): ProjectRecord => {
+      const row = selectActive.get(name);
+      if (!row) throw new UnknownProjectError(name);
+      return toRecord(row);
+    };
+    const countActive = db.prepare(
+      "select count(*) n from requests where project_id = ? and status = 'active'",
+    );
     return {
       addProject: (p) => {
         const registeredAt = new Date().toISOString();
@@ -212,15 +299,82 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
             JSON.stringify(p.warnings),
             registeredAt,
           );
-          return { ...p, id: Number(lastInsertRowid), registeredAt };
+          return {
+            ...p,
+            id: Number(lastInsertRowid),
+            registeredAt,
+            paused: false,
+            removedAt: null,
+          };
         } catch (err) {
-          if (/UNIQUE constraint failed: projects\.name/.test((err as Error).message)) {
+          if (/UNIQUE constraint failed/.test((err as Error).message)) {
             throw new DuplicateProjectError(p.name);
           }
           throw err;
         }
       },
-      listProjects: () => db.prepare("select * from projects order by id").all().map(toRecord),
+      listProjects: (o) =>
+        db.prepare(
+          `select * from projects ${
+            o?.includeRemoved ? "" : "where removed_at is null "
+          }order by id`,
+        ).all().map(toRecord),
+      getProject,
+      updateProject: (name, patch) => {
+        const project = getProject(name);
+        const columns: Record<keyof ProjectPatch, string> = {
+          paused: "paused",
+          defaultBranch: "default_branch",
+          headCommit: "head_commit",
+          setupCommand: "setup_command",
+          testCommand: "test_command",
+          lintCommand: "lint_command",
+          buildCommand: "build_command",
+          baseline: "baseline",
+          warnings: "warnings",
+        };
+        const sets: string[] = [];
+        const values: (string | number | null)[] = [];
+        for (const key of Object.keys(patch) as (keyof ProjectPatch)[]) {
+          if (!(key in columns) || patch[key] === undefined) continue;
+          const value = patch[key];
+          sets.push(`${columns[key]} = ?`);
+          values.push(
+            key === "paused"
+              ? (value ? 1 : 0)
+              : key === "baseline" || key === "warnings"
+              ? (value === null ? null : JSON.stringify(value))
+              : value as string | null,
+          );
+        }
+        if (sets.length) {
+          db.prepare(`update projects set ${sets.join(", ")} where id = ?`).run(
+            ...values,
+            project.id,
+          );
+        }
+        return getProject(name);
+      },
+      removeProject: (name, o) => {
+        const project = getProject(name);
+        const active = Number(countActive.get(project.id)!.n);
+        if (active > 0 && !o?.force) throw new ActiveRequestsError(name, active);
+        const removedAt = new Date().toISOString();
+        db.exec("begin");
+        try {
+          db.prepare("update projects set removed_at = ? where id = ?").run(removedAt, project.id);
+          insertEvent.run(
+            removedAt,
+            "project.removed",
+            JSON.stringify({ id: project.id, name, forced: !!o?.force }),
+          );
+          db.exec("commit");
+        } catch (err) {
+          db.exec("rollback");
+          throw err;
+        }
+        return { ...project, removedAt };
+      },
       info: () => ({
         schemaVersion: version(),
         sqliteVersion: db.prepare("select sqlite_version() v").get()!.v as string,

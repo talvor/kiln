@@ -8,11 +8,21 @@ import {
   RegistrationBlocked,
   RegistrationDeclined,
 } from "./register.ts";
+import type { Change } from "./manage.ts";
 import type { ProjectRecord } from "./store.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
 const REGISTER_USAGE = "Usage: kiln project register <path-or-url>";
+const PROJECT_USAGE = `Usage:
+  kiln project register <path-or-url>
+  kiln project list [--all]
+  kiln project pause <name>
+  kiln project resume <name>
+  kiln project edit <name> [--setup <cmd>] [--test <cmd>] [--lint <cmd>] [--build <cmd>]
+  kiln project baseline <name>
+  kiln project default-branch <name> <branch>
+  kiln project remove <name> [--force]`;
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -22,6 +32,8 @@ Usage:
                          Run Claude once on a prompt in a directory (default: here)
   kiln project register <path-or-url>
                          Register a project: Kiln clones it, checks it, and records its commands
+  kiln project list|pause|resume|edit|baseline|default-branch|remove ...
+                         Manage registered projects (see \`kiln project\`)
   kiln --version
 
 Any command that needs the daemon starts it if it is not running.`;
@@ -53,12 +65,135 @@ async function main(args: string[]): Promise<number> {
     case "launch":
       return await launchCommand(args.slice(1));
     case "project":
-      if (sub === "register") return await registerCommand(args.slice(2));
-      console.error(REGISTER_USAGE);
-      return 2;
+      return await projectCommand(sub, args.slice(2));
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
+  }
+
+  async function projectCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    const usage = () => {
+      console.error(PROJECT_USAGE);
+      return 2;
+    };
+    const flagsOnly = (allowed: string[]) => rest.slice(1).every((a) => allowed.includes(a));
+    switch (sub) {
+      case "register":
+        return await registerCommand(rest);
+      case "list": {
+        if (rest.length > 1 || (rest[0] && rest[0] !== "--all")) return usage();
+        await ensureDaemon(paths);
+        const projects = await call<ProjectRecord[]>(paths, "projects.list", {
+          includeRemoved: rest[0] === "--all",
+        });
+        if (!projects.length) console.log("No projects registered.");
+        for (const p of projects) console.log(describeProject(p));
+        return 0;
+      }
+      case "pause":
+      case "resume": {
+        if (rest.length !== 1 || rest[0].startsWith("-")) return usage();
+        const paused = sub === "pause";
+        const name = rest[0];
+        await ensureDaemon(paths);
+        try {
+          const { changed } = await call<{ changed: boolean }>(paths, "projects.pause", {
+            name,
+            paused,
+          });
+          console.log(
+            changed
+              ? paused
+                ? `Paused ${name}: it takes no new requests until you resume it.`
+                : `Resumed ${name}.`
+              : `${name} is already ${paused ? "paused" : "active"}.`,
+          );
+          return 0;
+        } catch (err) {
+          console.error((err as Error).message);
+          return 1;
+        }
+      }
+      case "edit": {
+        const change: Change = {};
+        const fields: Record<string, keyof Change> = {
+          "--setup": "setupCommand",
+          "--test": "testCommand",
+          "--lint": "lintCommand",
+          "--build": "buildCommand",
+        };
+        const [name, ...flags] = rest;
+        if (!name || name.startsWith("-") || !flags.length) return usage();
+        for (let i = 0; i < flags.length; i += 2) {
+          const field = fields[flags[i]];
+          const value = flags[i + 1];
+          if (!field || value === undefined) return usage();
+          // An empty command clears it.
+          (change as Record<string, string | null>)[field] = value.trim() || null;
+        }
+        return await recheckAndRecord(name, change, "Edited");
+      }
+      case "baseline": {
+        if (rest.length !== 1 || rest[0].startsWith("-")) return usage();
+        return await recheckAndRecord(rest[0], {}, "Re-ran the baseline of", true);
+      }
+      case "default-branch": {
+        if (rest.length !== 2 || rest.some((a) => a.startsWith("-"))) return usage();
+        return await recheckAndRecord(
+          rest[0],
+          { defaultBranch: rest[1] },
+          "Changed the default branch of",
+        );
+      }
+      case "remove": {
+        if (!rest.length || rest[0].startsWith("-") || !flagsOnly(["--force"])) return usage();
+        const force = rest.includes("--force");
+        await ensureDaemon(paths);
+        try {
+          await call(paths, "projects.remove", { name: rest[0], force });
+        } catch (err) {
+          console.error(`Cannot remove: ${(err as Error).message}`);
+          return 1;
+        }
+        console.log(
+          `Removed ${rest[0]}. Its clone is deleted; its history is kept.`,
+        );
+        return 0;
+      }
+      default:
+        return usage();
+    }
+  }
+
+  async function recheckAndRecord(
+    name: string,
+    change: Change,
+    done: string,
+    baselineOnly = false,
+  ): Promise<number> {
+    try {
+      await ensureDaemon(paths);
+      const result = await call<{
+        project?: ProjectRecord;
+        progress: string[];
+        blocked?: string;
+      }>(paths, "projects.recheck", { name, change, baselineOnly });
+      for (const message of result.progress) console.log(message);
+      if (result.blocked) {
+        console.error(
+          `Re-check blocked: ${result.blocked}\nThe project record was not changed. Setup may have left files in Kiln's clone.`,
+        );
+        return 1;
+      }
+      const updated = result.project!;
+      for (const w of updated.warnings) console.log(`warning: ${w}`);
+      console.log(describeBaseline(updated));
+      console.log(`${done} ${name}.`);
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
   }
 
   async function registerCommand(rest: string[]): Promise<number> {
@@ -84,16 +219,7 @@ async function main(args: string[]): Promise<number> {
         },
       });
       for (const w of project.warnings) console.log(`warning: ${w}`);
-      const b = project.baseline;
-      if (b) {
-        console.log(
-          b.passed
-            ? "Test baseline: passing."
-            : `Test baseline: FAILING (exit ${b.exitCode}); the project is registered with its tests already red.`,
-        );
-      } else {
-        console.log("Test baseline: not recorded (no test command).");
-      }
+      console.log(describeBaseline(project, true));
       console.log(`Registered ${project.name} (clone: ${project.clonePath})`);
       return 0;
     } catch (err) {
@@ -206,6 +332,23 @@ async function main(args: string[]): Promise<number> {
         return 2;
     }
   }
+}
+
+function describeBaseline(p: { baseline: ProjectRecord["baseline"] }, registering = false): string {
+  const b = p.baseline;
+  if (!b) return "Test baseline: not recorded (no test command).";
+  if (b.passed) return "Test baseline: passing.";
+  return `Test baseline: FAILING (exit ${b.exitCode}); ${
+    registering ? "the project is registered with" : "the project has"
+  } its tests already red.`;
+}
+
+function describeProject(p: ProjectRecord): string {
+  const state = p.removedAt ? "removed" : p.paused ? "paused" : "active";
+  const b = p.baseline
+    ? (p.baseline.passed ? "baseline passing" : "baseline FAILING")
+    : "no baseline";
+  return `${p.name}  ${state}  ${p.defaultBranch}@${p.headCommit.slice(0, 7)}  ${b}`;
 }
 
 function describeCommands(c: Commands): string {

@@ -2,7 +2,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@st
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import denoJson from "../deno.json" with { type: "json" };
-import { runKiln, status, withHome } from "./helpers.ts";
+import { makeHome, runKiln, status, withHome } from "./helpers.ts";
 
 withHome("daemon starts, reports status, and stops", async (home) => {
   assertEquals((await status(home)).code, 3, "stopped daemon reports exit code 3");
@@ -35,6 +35,62 @@ withHome("restart replaces the daemon process", async (home) => {
   assertNotEquals(after, before);
 });
 
+Deno.test("stop finishes when a replacement daemon owns the socket", async () => {
+  const home = await makeHome();
+  await Deno.mkdir(home.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(home.dirs.runtime, "kiln.sock") });
+  const seen: string[] = [];
+  const serving = (async () => {
+    while (true) {
+      let conn: Deno.Conn;
+      try {
+        conn = await listener.accept();
+      } catch {
+        return;
+      }
+      void (async () => {
+        try {
+          const bytes = new Uint8Array(1024);
+          const decoder = new TextDecoder();
+          let input = "";
+          while (!input.includes("\n")) {
+            const size = await conn.read(bytes);
+            if (size === null) return;
+            input += decoder.decode(bytes.subarray(0, size), { stream: true });
+          }
+          const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+          seen.push(request.method);
+          const identity = request.method === "stop"
+            ? { pid: 101, startedAt: "old" }
+            : { pid: 102, startedAt: "new" };
+          await conn.write(new TextEncoder().encode(
+            JSON.stringify({ id: request.id, ok: true, result: identity }) + "\n",
+          ));
+        } catch {
+          // The fake daemon may lose a connection while the CLI probes shutdown.
+        } finally {
+          conn.close();
+        }
+      })();
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      home.kiln("daemon", "stop"),
+      new Promise<null>((resolve) => timer = setTimeout(() => resolve(null), 3000)),
+    ]);
+    assert(result, "stop kept waiting for the replacement daemon");
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(seen.slice(0, 2), ["stop", "ping"]);
+  } finally {
+    clearTimeout(timer);
+    listener.close();
+    await serving;
+    await Deno.remove(home.root, { recursive: true });
+  }
+});
+
 withHome("the first command that needs the daemon starts it", async (home) => {
   assertEquals((await status(home)).code, 3);
   const r = await home.kiln("backup");
@@ -54,7 +110,7 @@ withHome("the store is SQLite in WAL mode at the current schema version", async 
   await home.kiln("daemon", "start");
   const info = (await status(home)).info;
   assertEquals(info.store.journalMode, "wal");
-  assertEquals(info.store.schemaVersion, 2);
+  assertEquals(info.store.schemaVersion, 3);
   assert(/^3\.\d+\.\d+/.test(info.store.sqliteVersion));
 });
 
@@ -65,7 +121,7 @@ withHome("kiln backup writes a consistent copy of the store", async (home) => {
   assert(path.startsWith(home.dirs.data), "backup lives in the data location");
   const copy = new DatabaseSync(path, { readOnly: true });
   try {
-    assertEquals(copy.prepare("pragma user_version").get()!.user_version, 2);
+    assertEquals(copy.prepare("pragma user_version").get()!.user_version, 3);
     assertEquals(copy.prepare("pragma integrity_check").get()!.integrity_check, "ok");
   } finally {
     copy.close();
@@ -81,7 +137,7 @@ withHome("an older store is backed up and then migrated when the daemon starts",
 
   const r = await home.kiln("daemon", "start");
   assertEquals(r.code, 0, r.stderr);
-  assertEquals((await status(home)).info.store.schemaVersion, 2);
+  assertEquals((await status(home)).info.store.schemaVersion, 3);
 
   const backups = [...Deno.readDirSync(join(home.dirs.data, "backups"))].map((e) => e.name);
   assertEquals(backups.length, 1);
