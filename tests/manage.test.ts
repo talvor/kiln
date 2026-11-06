@@ -253,6 +253,33 @@ withWorld("daemon stop waits past the old timeout for a running re-check", async
   assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline FAILING");
 });
 
+withWorld("a stalled fetch releases the project and lets the daemon stop", async (world) => {
+  await register(world);
+  const before = (await world.kiln("project", "list")).stdout;
+  const gitPath = (await world.exec(world.root, "which", "git")).stdout.trim();
+  const marker = join(world.root, "fetch-started");
+  const fakeGit = join(world.root, "fake", "bin", "git");
+  await Deno.writeTextFile(
+    fakeGit,
+    `#!/bin/sh\nif [ "$1" = fetch ]; then touch "${marker}"; sleep 45; fi\nexec "${gitPath}" "$@"\n`,
+  );
+  await Deno.chmod(fakeGit, 0o755);
+
+  const baseline = world.kiln("project", "baseline", "remote");
+  const deadline = Date.now() + 5000;
+  while (!await Deno.stat(marker).then(() => true, () => false)) {
+    assert(Date.now() < deadline, "the fetch did not start");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const stop = world.kiln("daemon", "stop");
+  const [blocked, stopped] = await Promise.all([baseline, stop]);
+  assertEquals(blocked.code, 1);
+  assertStringIncludes(blocked.stderr, "Cannot fetch");
+  assertStringIncludes(blocked.stderr, "timed out after 30 seconds");
+  assertEquals(stopped.code, 0, stopped.stderr);
+  assertEquals((await world.kiln("project", "list")).stdout, before);
+});
+
 withWorld("repo files may suggest commands but never grant power", async (world) => {
   await register(world);
   // The repository now claims commands, and instructs agents to run something.

@@ -7,6 +7,7 @@ import {
   commandWarnings,
   firstLine,
   PUSH_CHECK_REF,
+  REMOTE_TIMEOUT_MS,
   run,
   SETUP_TIMEOUT_MS,
   shell,
@@ -76,7 +77,7 @@ async function recheck(
   const git = (...args: string[]) => run("git", args, clone);
 
   progress(`Fetching ${project.remoteUrl}`);
-  const fetch = await git("fetch", "--prune", "origin");
+  const fetch = await run("git", ["fetch", "--prune", "origin"], clone, REMOTE_TIMEOUT_MS);
   if (fetch.code !== 0) {
     throw new RecheckBlocked(`Cannot fetch ${project.remoteUrl}: ${firstLine(fetch.stderr)}`);
   }
@@ -108,7 +109,12 @@ async function recheck(
     }
 
     progress("Checking that Kiln can push to the remote");
-    const push = await git("push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`);
+    const push = await run(
+      "git",
+      ["push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`],
+      clone,
+      REMOTE_TIMEOUT_MS,
+    );
     if (push.code !== 0) {
       throw new RecheckBlocked(
         `A push dry-run to ${project.remoteUrl} failed: ${firstLine(push.stderr)}`,

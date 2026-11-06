@@ -80,6 +80,7 @@ function daemonCommand(): { cmd: string; args: string[] } {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const STOP_TIMEOUT_MS = 60_000;
 
 /** Make sure a daemon is running, starting one if needed. Returns whether it was started now. */
 export async function ensureDaemon(paths: KilnPaths, timeoutMs = 15_000): Promise<boolean> {
@@ -118,13 +119,20 @@ export async function stopDaemon(paths: KilnPaths): Promise<boolean> {
     if (err instanceof DaemonNotRunning) return false;
     throw err;
   }
-  while (true) {
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
     try {
-      const running = await call<{ pid: number; startedAt: string }>(paths, "ping", {}, 3000);
+      const running = await call<{ pid: number; startedAt: string }>(
+        paths,
+        "ping",
+        {},
+        Math.min(3000, deadline - Date.now()),
+      );
       if (running.pid !== stopped.pid || running.startedAt !== stopped.startedAt) return true;
     } catch (err) {
       if (err instanceof DaemonNotRunning) return true;
     }
     await sleep(50);
   }
+  throw new Error("The daemon did not stop within 60 seconds; it may still be finishing work.");
 }

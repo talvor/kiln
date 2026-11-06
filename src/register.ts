@@ -8,6 +8,7 @@ import {
   defaultBranchOf,
   firstLine,
   PUSH_CHECK_REF,
+  REMOTE_TIMEOUT_MS,
   run,
   SETUP_TIMEOUT_MS,
   shell,
@@ -91,7 +92,7 @@ async function onboard(
   deps: RegisterDeps,
 ): Promise<NewProject> {
   deps.progress(`Cloning ${remoteUrl}`);
-  const clone = await run("git", ["clone", remoteUrl, clonePath]);
+  const clone = await run("git", ["clone", remoteUrl, clonePath], undefined, REMOTE_TIMEOUT_MS);
   if (clone.code !== 0) {
     throw new RegistrationBlocked(`Cannot clone ${remoteUrl}: ${firstLine(clone.stderr)}`);
   }
@@ -113,7 +114,12 @@ async function onboard(
   }
 
   deps.progress("Checking that Kiln can push to the remote");
-  const push = await git("push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`);
+  const push = await run(
+    "git",
+    ["push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`],
+    clonePath,
+    REMOTE_TIMEOUT_MS,
+  );
   if (push.code !== 0) {
     throw new RegistrationBlocked(
       `A push dry-run to ${remoteUrl} failed: ${firstLine(push.stderr)}`,

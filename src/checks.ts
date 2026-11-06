@@ -2,6 +2,7 @@
 // and the checks made on a Project's remote.
 export const SETUP_TIMEOUT_MS = 15 * 60_000;
 export const TEST_TIMEOUT_MS = 30 * 60_000;
+export const REMOTE_TIMEOUT_MS = 30_000;
 export const OUTPUT_TAIL_BYTES = 4000;
 export const PUSH_CHECK_REF = "refs/heads/kiln/registration-check";
 
@@ -33,6 +34,7 @@ export async function branchProtection(clonePath: string, branch: string): Promi
       "gh",
       ["api", `repos/{owner}/{repo}/branches/${encodeURIComponent(branch)}/protection`],
       clonePath,
+      REMOTE_TIMEOUT_MS,
     );
   } catch {
     return `Could not confirm branch protection for "${branch}": the gh command is not available.`;
@@ -50,23 +52,45 @@ export interface Output {
   stderr: string;
 }
 
-export async function run(cmd: string, args: string[], cwd?: string): Promise<Output> {
+export async function run(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+  timeoutMs?: number,
+): Promise<Output> {
   const child = new Deno.Command(cmd, {
     args,
     cwd,
+    detached: timeoutMs !== undefined,
     // Never wait for credentials that nobody can type.
     env: { GIT_TERMINAL_PROMPT: "0" },
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
   }).spawn();
-  const out = await child.output();
-  const dec = new TextDecoder();
-  return {
-    code: out.code,
-    stdout: dec.decode(out.stdout),
-    stderr: dec.decode(out.stderr),
-  };
+  let timedOut = false;
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+    timedOut = true;
+    try {
+      Deno.kill(-child.pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch { /* already exited */ }
+    }
+  }, timeoutMs);
+  try {
+    const out = await child.output();
+    const dec = new TextDecoder();
+    const stderr = dec.decode(out.stderr);
+    return {
+      code: timedOut ? 124 : out.code,
+      stdout: dec.decode(out.stdout),
+      stderr: timedOut ? `timed out after ${timeoutMs! / 1000} seconds\n${stderr}` : stderr,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function shell(
