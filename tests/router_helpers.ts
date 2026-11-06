@@ -106,7 +106,13 @@ export class Agent {
   }
 
   /** send, expecting it to work; returns the sent message. */
-  async send(to: string, kind: string, body: unknown, inReplyTo?: number, assignmentId?: number): Promise<Message> {
+  async send(
+    to: string,
+    kind: string,
+    body: unknown,
+    inReplyTo?: number,
+    assignmentId?: number,
+  ): Promise<Message> {
     const out = await this.call("send", { to, kind, body, inReplyTo, assignmentId });
     assertEquals(out.isError, false, out.text);
     return out.data.sent;

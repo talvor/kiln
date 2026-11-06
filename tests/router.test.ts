@@ -3,7 +3,11 @@ import { join } from "@std/path";
 import { withWorld } from "./world.ts";
 import { asAgent, assignment, openTeam, stopHook } from "./router_helpers.ts";
 
-async function waitFor<T>(read: () => Promise<T>, ready: (value: T) => boolean, timeoutMs = 10_000): Promise<T> {
+async function waitFor<T>(
+  read: () => Promise<T>,
+  ready: (value: T) => boolean,
+  timeoutMs = 10_000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
@@ -18,12 +22,19 @@ withWorld("tools, inbox reads, and message history", async (world) => {
   await asAgent(world, "dev-1", async (agent) => {
     assertEquals((await agent.tools()).sort(), ["raise_question", "read_inbox", "send"]);
   });
-  const sent = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const sent = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await asAgent(world, "dev-1", async (agent) => {
     const [read] = await agent.inbox();
     assertEquals([read.id, read.from, read.to, read.kind, read.body], [
-      sent.id, sent.from, sent.to, sent.kind, sent.body,
+      sent.id,
+      sent.from,
+      sent.to,
+      sent.kind,
+      sent.body,
     ]);
     assertNotEquals(read.readAt, null);
     assertEquals(await agent.inbox(), []);
@@ -37,33 +48,51 @@ withWorld("tools, inbox reads, and message history", async (world) => {
 
 withWorld("routes and message schemas are enforced", async (world) => {
   await openTeam(world);
-  const wrongRoute = await asAgent(world, "dev-1", (agent) =>
-    agent.call("send", { to: "dev-2", kind: "question", body: { question: "x" } }));
+  const wrongRoute = await asAgent(
+    world,
+    "dev-1",
+    (agent) => agent.call("send", { to: "dev-2", kind: "question", body: { question: "x" } }),
+  );
   assert(wrongRoute.isError);
   assertStringIncludes(wrongRoute.text, "route refused");
 
-  const badBody = await asAgent(world, "dev-lead", (agent) =>
-    agent.call("send", { to: "dev-1", kind: "assignment", body: { ...assignment, extra: 1 } }));
+  const badBody = await asAgent(
+    world,
+    "dev-lead",
+    (agent) =>
+      agent.call("send", { to: "dev-1", kind: "assignment", body: { ...assignment, extra: 1 } }),
+  );
   assert(badBody.isError);
   assertStringIncludes(badBody.text, 'unknown field "extra"');
   const inheritedName = await asAgent(world, "dev-lead", (agent) =>
     agent.call("send", {
-      to: "dev-1", kind: "assignment", body: { ...assignment, constructor: "unexpected" },
+      to: "dev-1",
+      kind: "assignment",
+      body: { ...assignment, constructor: "unexpected" },
     }));
   assert(inheritedName.isError);
   assertStringIncludes(inheritedName.text, 'unknown field "constructor"');
 
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const job = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await asAgent(world, "dev-1", async (agent) => {
     const badReply = await agent.call("send", {
-      to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: 999,
+      to: "dev-lead",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+      inReplyTo: 999,
     });
     assert(badReply.isError);
     assertStringIncludes(badReply.text, "must reply to an assignment");
     await agent.send("dev-lead", "result", { status: "done", summary: "x" }, job.id);
     const duplicate = await agent.call("send", {
-      to: "dev-lead", kind: "result", body: { status: "done", summary: "again" }, inReplyTo: job.id,
+      to: "dev-lead",
+      kind: "result",
+      body: { status: "done", summary: "again" },
+      inReplyTo: job.id,
     });
     assert(duplicate.isError);
     assertStringIncludes(duplicate.text, "already has a result");
@@ -74,19 +103,46 @@ withWorld("routes and message schemas are enforced", async (world) => {
 
 withWorld("MCP rejects malformed and extra tool arguments", async (world) => {
   await openTeam(world);
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const job = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await asAgent(world, "dev-1", async (agent) => {
-    for (const [name, args] of [
-      ["read_inbox", { extra: true }],
-      ["read_inbox", { constructor: "unexpected" }],
-      ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: String(job.id) }],
-      ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: true }],
-      ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: job.id, extra: true }],
-      ["send", { to: "dev-lead", kind: "result", body: { status: "done", summary: "x" }, inReplyTo: job.id, constructor: "unexpected" }],
-      ["raise_question", { question: "x", extra: true }],
-      ["raise_question", { question: "x", constructor: "unexpected" }],
-    ] as const) {
+    for (
+      const [name, args] of [
+        ["read_inbox", { extra: true }],
+        ["read_inbox", { constructor: "unexpected" }],
+        ["send", {
+          to: "dev-lead",
+          kind: "result",
+          body: { status: "done", summary: "x" },
+          inReplyTo: String(job.id),
+        }],
+        ["send", {
+          to: "dev-lead",
+          kind: "result",
+          body: { status: "done", summary: "x" },
+          inReplyTo: true,
+        }],
+        ["send", {
+          to: "dev-lead",
+          kind: "result",
+          body: { status: "done", summary: "x" },
+          inReplyTo: job.id,
+          extra: true,
+        }],
+        ["send", {
+          to: "dev-lead",
+          kind: "result",
+          body: { status: "done", summary: "x" },
+          inReplyTo: job.id,
+          constructor: "unexpected",
+        }],
+        ["raise_question", { question: "x", extra: true }],
+        ["raise_question", { question: "x", constructor: "unexpected" }],
+      ] as const
+    ) {
       const out = await agent.call(name, args);
       assert(out.isError, name);
     }
@@ -102,7 +158,10 @@ withWorld("a question exempts only its live assignment", async (world) => {
   ]);
   await asAgent(world, "dev-1", async (agent) => {
     await agent.inbox();
-    const question = await agent.call("raise_question", { question: "Which file?", assignmentId: a.id });
+    const question = await agent.call("raise_question", {
+      question: "Which file?",
+      assignmentId: a.id,
+    });
     assertEquals(question.isError, false, question.text);
     assertEquals(question.data.sent.assignmentId, a.id);
     const wrong = await agent.call("raise_question", { question: "Wrong", assignmentId: 999 });
@@ -115,18 +174,25 @@ withWorld("a question exempts only its live assignment", async (world) => {
   assertEquals(await stopHook(world, "dev-1", true), null);
   const lead = await asAgent(world, "dev-lead", (agent) => agent.inbox());
   assertEquals(lead.filter((m) => m.kind === "result").map((m) => m.inReplyTo), [b.id]);
-  await asAgent(world, "dev-1", (agent) =>
-    agent.send("dev-lead", "result", { status: "done", summary: "done" }, a.id));
+  await asAgent(
+    world,
+    "dev-1",
+    (agent) => agent.send("dev-lead", "result", { status: "done", summary: "done" }, a.id),
+  );
   assertEquals(await stopHook(world, "dev-1"), null);
 });
 
 withWorld("an answered question no longer exempts its assignment", async (world) => {
   await openTeam(world);
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const job = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   const question = await asAgent(world, "dev-1", async (agent) => {
     await agent.inbox();
-    return (await agent.call("raise_question", { question: "Which file?", assignmentId: job.id })).data.sent;
+    return (await agent.call("raise_question", { question: "Which file?", assignmentId: job.id }))
+      .data.sent;
   });
   await asAgent(world, "dev-lead", async (agent) => {
     await agent.inbox();
@@ -137,26 +203,34 @@ withWorld("an answered question no longer exempts its assignment", async (world)
   assertStringIncludes(verdict!.reason, `assignment ${job.id}`);
 });
 
-withWorld("repeated Stop cannot duplicate a synthesised result or redeliver work", async (world) => {
-  await openTeam(world);
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
-  assertEquals((await stopHook(world, "dev-1"))?.decision, "block");
-  assertEquals(await stopHook(world, "dev-1", true), null);
-  assertEquals(await stopHook(world, "dev-1", true), null);
-  const [failure] = await asAgent(world, "dev-lead", (agent) => agent.inbox());
-  assertEquals([failure.kind, failure.inReplyTo, failure.synthesised], ["result", job.id, true]);
-  assertEquals(await asAgent(world, "dev-1", (agent) => agent.inbox()), []);
-  assertEquals(await stopHook(world, "dev-1"), null);
-  await new Promise((resolve) => setTimeout(resolve, 2_500));
-  assertEquals(await world.launcher.calls(), []);
-  assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);
-});
+withWorld(
+  "repeated Stop cannot duplicate a synthesised result or redeliver work",
+  async (world) => {
+    await openTeam(world);
+    const job = await asAgent(
+      world,
+      "dev-lead",
+      (agent) => agent.send("dev-1", "assignment", assignment),
+    );
+    assertEquals((await stopHook(world, "dev-1"))?.decision, "block");
+    assertEquals(await stopHook(world, "dev-1", true), null);
+    assertEquals(await stopHook(world, "dev-1", true), null);
+    const [failure] = await asAgent(world, "dev-lead", (agent) => agent.inbox());
+    assertEquals([failure.kind, failure.inReplyTo, failure.synthesised], ["result", job.id, true]);
+    assertEquals(
+      await asAgent(world, "dev-1", (agent) => agent.inbox()),
+      [],
+    );
+    assertEquals(await stopHook(world, "dev-1"), null);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assertEquals(await world.launcher.calls(), []);
+    assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);
+  },
+);
 
 withWorld("Stop hook blocks when Kiln cannot check pending work", async (world) => {
   await openTeam(world);
-  await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  await asAgent(world, "dev-lead", (agent) => agent.send("dev-1", "assignment", assignment));
   await asAgent(world, "dev-1", (agent) => agent.inbox());
 
   const rpc = await world.kilnWithInput("{}", "hook", "stop", "--address", "missing");
@@ -197,9 +271,14 @@ withWorld("automatic delivery nudges each recipient with its tools and hook", as
 
 withWorld("failed launches do not count toward dead letters", async (world) => {
   await openTeam(world);
-  await world.launcher.script(Array.from({ length: 4 }, () => ({ outcome: "error_during_execution" as const })));
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  await world.launcher.script(
+    Array.from({ length: 4 }, () => ({ outcome: "error_during_execution" as const })),
+  );
+  const job = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await waitFor(() => world.launcher.prompts(), (items) => items.length >= 4, 15_000);
   const [waiting] = await asAgent(world, "dev-1", (agent) => agent.inbox());
   assertEquals([waiting.id, waiting.deliveries, waiting.deadLetteredAt], [job.id, 0, null]);
@@ -209,15 +288,24 @@ withWorld("failed launches do not count toward dead letters", async (world) => {
 withWorld("three automatic nudges dead-letter unread work and questions", async (world) => {
   await openTeam(world);
   await world.launcher.script(Array.from({ length: 6 }, () => ({ result: "ok" })));
-  const readJob = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", { ...assignment, title: "Read job" }));
+  const readJob = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", { ...assignment, title: "Read job" }),
+  );
   await asAgent(world, "dev-1", async (agent) => {
     await agent.inbox();
-    const asked = await agent.call("raise_question", { question: "Which file?", assignmentId: readJob.id });
+    const asked = await agent.call("raise_question", {
+      question: "Which file?",
+      assignmentId: readJob.id,
+    });
     assertEquals(asked.isError, false, asked.text);
   });
-  const job = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const job = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await waitFor(() => world.launcher.prompts(), (items) => items.length >= 6, 130_000);
   await new Promise((resolve) => setTimeout(resolve, 65_000));
   const leader = await waitFor(
@@ -226,7 +314,11 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     70_000,
   );
   const [failure] = leader;
-  assertEquals([failure.synthesised, failure.body.status, failure.inReplyTo], [true, "failed", job.id]);
+  assertEquals([failure.synthesised, failure.body.status, failure.inReplyTo], [
+    true,
+    "failed",
+    job.id,
+  ]);
   assertEquals((await world.launcher.prompts()).length, 6);
   assertEquals(await asAgent(world, "dev-1", (agent) => agent.inbox()), []);
   const verdict = await stopHook(world, "dev-1");
@@ -241,7 +333,11 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
     await agent.send("dev-1", "assignment", assignment);
     await agent.send("dev-2", "assignment", assignment);
   });
-  const prompts = await waitFor(() => world.launcher.prompts(), (items) => items.length >= 2, 40_000);
+  const prompts = await waitFor(
+    () => world.launcher.prompts(),
+    (items) => items.length >= 2,
+    40_000,
+  );
   assertEquals(prompts.length, 2);
   const [timedOut] = await asAgent(world, "dev-1", (agent) => agent.inbox());
   assertEquals(timedOut.deliveries, 0);
