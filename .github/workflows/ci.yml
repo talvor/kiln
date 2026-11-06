@@ -27,5 +27,5 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno fmt --check
-      - run: deno check src tests
+      - run: deno task check
       - run: deno task test

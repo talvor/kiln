@@ -4,11 +4,13 @@
   "exports": "./src/main.ts",
   "imports": {
     "@std/assert": "jsr:@std/assert@1",
-    "@std/path": "jsr:@std/path@1"
+    "@std/path": "jsr:@std/path@1",
+    "@anthropic-ai/claude-agent-sdk": "npm:@anthropic-ai/claude-agent-sdk@0.3.318"
   },
   "tasks": {
     "kiln": "deno run -A src/main.ts",
-    "check": "deno check src tests",
+    "build": "deno run -A scripts/build.ts",
+    "check": "deno check src tests scripts",
     "test": "deno test -A"
   },
   "compilerOptions": {
@@ -19,6 +21,7 @@
     "include": [
       "src/",
       "tests/",
+      "scripts/",
       "deno.json"
     ]
   }

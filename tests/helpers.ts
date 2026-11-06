@@ -1,6 +1,6 @@
 // Test harness: runs the real `kiln` CLI against a throwaway Kiln home.
 // Tests observe only what a user could: CLI output, exit codes, and files in the home.
-import { fromFileUrl, join } from "jsr:@std/path@1";
+import { fromFileUrl, join } from "@std/path";
 
 const MAIN = fromFileUrl(new URL("../src/main.ts", import.meta.url));
 

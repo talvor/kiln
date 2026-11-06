@@ -1,5 +1,5 @@
-import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { join } from "jsr:@std/path@1";
+import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import denoJson from "../deno.json" with { type: "json" };
 import { runKiln, status, withHome } from "./helpers.ts";

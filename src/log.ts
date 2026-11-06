@@ -1,4 +1,4 @@
-import { dirname } from "jsr:@std/path@1";
+import { dirname } from "@std/path";
 
 export type Level = "debug" | "info" | "warn" | "error";
 export type Fields = Record<string, unknown>;
