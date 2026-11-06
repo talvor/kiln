@@ -66,15 +66,17 @@ async function exists(path: string): Promise<boolean> {
 async function createWorktree(
   store: Store,
   project: ProjectRecord,
-  path: string,
+  requestedPath: string,
   branch: string,
   base: string,
 ): Promise<WorktreeRecord> {
+  // Keep the real path (e.g. /private/tmp on macOS), as Git and a launch's cwd report it.
+  await Deno.mkdir(dirname(requestedPath), { recursive: true });
+  const path = join(await Deno.realPath(dirname(requestedPath)), basename(requestedPath));
   const wt = store.addWorktree({ path, branch });
   let supportCreated = false;
   let branchCreated = false;
   try {
-    await Deno.mkdir(dirname(path), { recursive: true });
     if (await exists(path)) {
       throw new WorktreeBlocked(`Cannot create worktree ${path}: the path already exists.`);
     }
@@ -105,11 +107,9 @@ async function createWorktree(
       if (branchCreated) {
         const listed = await git(project.clonePath, "worktree", "list", "--porcelain", "-z");
         if (listed.code !== 0) throw new Error(firstLine(listed.stderr));
-        // Git reports resolved paths (e.g. /private/tmp on macOS).
-        const resolved = join(await Deno.realPath(dirname(path)), basename(path));
         const registered = listed.stdout.split("\0\0").some((record) => {
           const fields = record.split("\0");
-          return fields.includes(`worktree ${resolved}`) &&
+          return fields.includes(`worktree ${path}`) &&
             fields.includes(`branch refs/heads/${branch}`);
         });
         if (registered) {
