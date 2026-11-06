@@ -34,7 +34,8 @@ worker-confinement ticket (#12).
 
 Kiln runs a delivery pass every two seconds. A pass wakes each agent with unread Messages by
 launching Claude with a short prompt telling it to read its inbox. Each launch has a 30-second
-timeout. An unread Message is nudged again 60 seconds after the last Nudge. After three Nudges,
+timeout. A failed or timed-out launch does not count as a delivery. An unread Message is nudged
+again 60 seconds after the last successful Nudge. After three deliveries,
 the next pass dead-letters it: it
 is no longer delivered, and a dead-lettered **assignment** is answered with a failed result
 (marked synthesised) from the recipient to the sender.
@@ -45,7 +46,8 @@ Nudged agents run `kiln hook stop --address <address>` as a Claude Code Stop hoo
 stop when the agent has unread Messages, or an assignment it has neither reported on nor asked a
 live question about using `assignmentId`. When Claude retries after being blocked
 (`stop_hook_active`), the stop is allowed;
-an unreported assignment is then reported as a synthesised failed result.
+an unreported assignment is then reported as a synthesised failed result. If Kiln cannot check
+the pending work, the hook blocks the stop until it can.
 
 ## Not covered here
 

@@ -61,6 +61,8 @@ async function main(args: string[]): Promise<number> {
     return cmd ? 0 : 2;
   }
 
+  if (cmd === "hook") return await hookCommand(sub, args.slice(2));
+
   const paths = resolvePaths();
 
   switch (cmd) {
@@ -87,8 +89,6 @@ async function main(args: string[]): Promise<number> {
       await runToolServer(paths, address);
       return 0;
     }
-    case "hook":
-      return await hookCommand(sub, args.slice(2));
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
@@ -135,9 +135,10 @@ async function main(args: string[]): Promise<number> {
     try {
       input = JSON.parse(await new Response(Deno.stdin.readable).text() || "{}");
     } catch { /* an unreadable hook payload counts as a first attempt */ }
-    await ensureDaemon(paths);
     try {
-      const verdict = await call<StopVerdict>(paths, "router.stopCheck", {
+      const hookPaths = resolvePaths();
+      await ensureDaemon(hookPaths);
+      const verdict = await call<StopVerdict>(hookPaths, "router.stopCheck", {
         address,
         alreadyBlocked: input.stop_hook_active === true,
       });
@@ -146,8 +147,11 @@ async function main(args: string[]): Promise<number> {
       }
       return 0;
     } catch (err) {
-      console.error((err as Error).message);
-      return 1;
+      console.log(JSON.stringify({
+        decision: "block",
+        reason: `Kiln could not check pending work: ${(err as Error).message}`,
+      }));
+      return 0;
     }
   }
 

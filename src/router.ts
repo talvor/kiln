@@ -267,20 +267,21 @@ export function createRouter(opts: RouterOptions) {
         const waiting = new Set(store.listMessages({ to: address, waiting: true }).map((m) => m.id));
         const current = messages.filter((m) => waiting.has(m.id));
         if (!current.length) continue;
-        store.recordDelivery(current.map((m) => m.id));
-        store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
-        await nudge(sessionAt(address), current.length);
+        if (await nudge(sessionAt(address), current.length)) {
+          store.recordDelivery(current.map((m) => m.id));
+          store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
+        }
       }
     },
   };
 
-  async function nudge(session: SessionRecord, count: number): Promise<void> {
+  async function nudge(session: SessionRecord, count: number): Promise<boolean> {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const abortController = new AbortController();
     let timeout: number | undefined;
     try {
-      await Promise.race([opts.launch({
+      const launched = await Promise.race([opts.launch({
         prompt: `You have ${count} unread message(s) in your Kiln inbox. ` +
           `Call the read_inbox tool now and act on what it returns.`,
         cwd: session.cwd,
@@ -303,9 +304,11 @@ export function createRouter(opts: RouterOptions) {
           reject(new Error("launch timed out"));
         }, LAUNCH_TIMEOUT_MS);
       })]);
+      if (!launched.ok) log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
+      return launched.ok;
     } catch (err) {
-      // The Nudge still counts: a Message nobody can wake anyone for must reach the dead letters.
       log.warn("could not nudge", { address: session.address, err });
+      return false;
     } finally {
       clearTimeout(timeout);
     }

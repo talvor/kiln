@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { withWorld } from "./world.ts";
 import { asAgent, assignment, openTeam, stopHook } from "./router_helpers.ts";
 
@@ -152,6 +153,27 @@ withWorld("repeated Stop cannot duplicate a synthesised result or redeliver work
   assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);
 });
 
+withWorld("Stop hook blocks when Kiln cannot check pending work", async (world) => {
+  await openTeam(world);
+  await asAgent(world, "dev-lead", (agent) =>
+    agent.send("dev-1", "assignment", assignment));
+  await asAgent(world, "dev-1", (agent) => agent.inbox());
+
+  const rpc = await world.kilnWithInput("{}", "hook", "stop", "--address", "missing");
+  assertEquals(rpc.code, 0, rpc.stderr);
+  assertEquals(JSON.parse(rpc.stdout).decision, "block");
+  assertStringIncludes(JSON.parse(rpc.stdout).reason, "No session is open");
+
+  await world.kiln("daemon", "stop");
+  const blockedRuntime = join(world.root, "blocked-runtime");
+  await Deno.writeTextFile(blockedRuntime, "occupied");
+  world.env.KILN_RUNTIME_DIR = blockedRuntime;
+  const startup = await world.kilnWithInput("{}", "hook", "stop", "--address", "dev-1");
+  assertEquals(startup.code, 0, startup.stderr);
+  assertEquals(JSON.parse(startup.stdout).decision, "block");
+  assertStringIncludes(JSON.parse(startup.stdout).reason, "could not check pending work");
+});
+
 withWorld("automatic delivery nudges each recipient with its tools and hook", async (world) => {
   await openTeam(world);
   await world.launcher.script([{ result: "ok" }, { result: "ok" }]);
@@ -171,6 +193,17 @@ withWorld("automatic delivery nudges each recipient with its tools and hook", as
     assertStringIncludes(args, "mcp__kiln__read_inbox");
     assertStringIncludes(args, "hook");
   }
+});
+
+withWorld("failed launches do not count toward dead letters", async (world) => {
+  await openTeam(world);
+  await world.launcher.script(Array.from({ length: 4 }, () => ({ outcome: "error_during_execution" as const })));
+  const job = await asAgent(world, "dev-lead", (agent) =>
+    agent.send("dev-1", "assignment", assignment));
+  await waitFor(() => world.launcher.prompts(), (items) => items.length >= 4, 15_000);
+  const [waiting] = await asAgent(world, "dev-1", (agent) => agent.inbox());
+  assertEquals([waiting.id, waiting.deliveries, waiting.deadLetteredAt], [job.id, 0, null]);
+  assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);
 });
 
 withWorld("three automatic nudges dead-letter unread work and questions", async (world) => {
@@ -210,4 +243,6 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
   });
   const prompts = await waitFor(() => world.launcher.prompts(), (items) => items.length >= 2, 40_000);
   assertEquals(prompts.length, 2);
+  const [timedOut] = await asAgent(world, "dev-1", (agent) => agent.inbox());
+  assertEquals(timedOut.deliveries, 0);
 });
