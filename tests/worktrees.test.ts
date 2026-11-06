@@ -3,6 +3,7 @@
 // claude). A "worker" is the scripted launcher run in the Assignment's Worktree plus a commit.
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
 import { join, relative } from "@std/path";
+import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, assignment, openTeam } from "./router_helpers.ts";
 
@@ -160,7 +161,15 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
   const calls = await world.launcher.calls();
   const call = calls.at(-1)!;
   assertEquals(call.cwd, a.Worktree);
-  for (const key of ["KILN_PORT_BASE", "KILN_PORT_COUNT", "TMPDIR", "XDG_CACHE_HOME", "npm_config_cache"]) {
+  for (
+    const key of [
+      "KILN_PORT_BASE",
+      "KILN_PORT_COUNT",
+      "TMPDIR",
+      "XDG_CACHE_HOME",
+      "npm_config_cache",
+    ]
+  ) {
     assertEquals(call.env?.[key], a[key], key);
   }
 
@@ -174,8 +183,11 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
 withWorld("an Assignment uses its router Message ID across start and merge", async (world) => {
   await register(world);
   await startRequest(world);
-  const skipped = await asAgent(world, "dev-lead", (agent) =>
-    agent.send("dev-1", "assignment", assignment));
+  const skipped = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
   await asAgent(world, "dev-1", (agent) => agent.inbox());
   const started = await startAssignment(world, 1);
   assertEquals(Number(started.assignmentId), skipped.id + 1);
@@ -221,6 +233,62 @@ withWorld("a failed worktree add leaves its branch and path reusable", async (wo
   const retried = await startRequest(world);
   assertEquals(retried.Branch, "kiln/request-1");
   assertEquals(retried.KILN_PORT_BASE, "20000");
+});
+
+withWorld("a failed start preserves existing paths and branches", async (world) => {
+  await register(world);
+  const path = join(world.dirs.data, "worktrees", "remote", "request-1");
+  const support = `${path}.kiln`;
+  const clone = join(world.dirs.data, "projects", "remote");
+  await Deno.mkdir(path, { recursive: true });
+  await Deno.writeTextFile(join(path, "sentinel"), "existing path");
+  assertEquals((await world.kiln("request", "start", "remote")).code, 1);
+  assertEquals(await Deno.readTextFile(join(path, "sentinel")), "existing path");
+  await Deno.remove(path, { recursive: true });
+
+  await Deno.mkdir(support);
+  await Deno.writeTextFile(join(support, "sentinel"), "existing support");
+  assertEquals((await world.kiln("request", "start", "remote")).code, 1);
+  assertEquals(await Deno.readTextFile(join(support, "sentinel")), "existing support");
+  await Deno.remove(support, { recursive: true });
+
+  await world.git(clone, "branch", "kiln/request-1");
+  const tip = (await world.git(clone, "rev-parse", "kiln/request-1")).stdout;
+  assertEquals((await world.kiln("request", "start", "remote")).code, 1);
+  assertEquals((await world.git(clone, "rev-parse", "kiln/request-1")).stdout, tip);
+  await world.git(clone, "branch", "-D", "kiln/request-1");
+
+  const started = await startRequest(world);
+  assertEquals(started.Branch, "kiln/request-1");
+  assertEquals(started.KILN_PORT_BASE, "20000");
+});
+
+withWorld("a relative launch cwd uses its worktree environment", async (world) => {
+  await register(world);
+  await startRequest(world);
+  const a = await startAssignment(world, 1);
+  await world.launcher.script([{ result: "done" }]);
+  const cwd = relative(world.root, a.Worktree);
+  const result = await runKiln(
+    world.env,
+    ["launch", "check environment", "--cwd", cwd],
+    "",
+    world.root,
+  );
+  assertEquals(result.code, 0, result.stderr);
+  const call = (await world.launcher.calls()).at(-1)!;
+  assertEquals(call.cwd, a.Worktree);
+  for (
+    const key of [
+      "KILN_PORT_BASE",
+      "KILN_PORT_COUNT",
+      "TMPDIR",
+      "XDG_CACHE_HOME",
+      "npm_config_cache",
+    ]
+  ) {
+    assertEquals(call.env?.[key], a[key], key);
+  }
 });
 
 withWorld(

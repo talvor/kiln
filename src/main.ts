@@ -403,7 +403,7 @@ async function main(args: string[]): Promise<number> {
           console.error(LAUNCH_USAGE);
           return 2;
         }
-        if (arg === "--cwd") cwd = value;
+        if (arg === "--cwd") cwd = resolve(value);
         else maxBudgetUsd = Number(value);
       } else {
         promptParts.push(arg);
