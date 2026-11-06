@@ -6,6 +6,15 @@
 // The conductor holds no state of its own. `react` reads the store and does whatever the
 // Messages and records say is due, so it can be run after any change, or again after a crash.
 import { join } from "node:path";
+import {
+  type Budget,
+  budgetFor,
+  type LimitsConfig,
+  overlaps,
+  parseOwns,
+  projectCap,
+  REQUESTABLE,
+} from "./limits.ts";
 import type { Logger } from "./log.ts";
 import {
   type Config,
@@ -19,6 +28,8 @@ import {
 import type { Router } from "./router.ts";
 import type {
   AssignmentRecord,
+  LimitKind,
+  MessageRecord,
   ProjectRecord,
   RequestRecord,
   SessionRecord,
@@ -29,6 +40,7 @@ import { parseTicket, publishTicket } from "./tracker.ts";
 import { verifyWork } from "./verify.ts";
 import {
   mergeAssignment,
+  MergeConflict,
   startAssignment,
   type StartedRequest,
   startRequest,
@@ -166,49 +178,115 @@ export function createConductor(opts: ConductorOptions) {
     store.appendEvent("step.started", { request: request.id, step: step.id, message: sent.id });
   }
 
-  /** Start the Assignments the leader delegated, and record how the workers' ended. */
+  /**
+   * Take in the Assignments the leader delegated, as planned with the budget each runs under, and
+   * record how the workers' ended. Starting them is `startQueued`'s job.
+   */
   async function collect(request: RequestRecord, step: StepRecord): Promise<AssignmentRecord[]> {
     const project = projectOf(request);
     const known = new Set(store.listAssignments(request.id).map((a) => a.id));
-    // A retry's worker starts from the branch of the work that was rejected.
-    const rejected = step.retries
-      ? assignmentsOf(request, step).filter((a) => a.branch && !sameWorker(step, a)).at(-1)
-        ?.branch
-      : undefined;
     const leader = store.listSessions().find((s) =>
       s.role === "leader" && s.department === step.spec.department
     )!;
-    for (
-      const message of store.listMessages({ from: leader.address, kind: "assignment" })
-        .filter((m) => m.to === step.worker && !known.has(m.id))
-    ) {
-      try {
-        const started = await opts.withProject(
-          project.name,
-          () =>
-            startAssignment(
-              store,
-              project,
-              request.id,
-              message.id,
-              opts.worktreesDir,
-              rejected ?? undefined,
-            ),
-        );
-        store.setSessionCwd(step.worker!, started.path);
-        store.appendEvent("assignment.started", { id: message.id, step: step.id });
-      } catch (err) {
-        if (err instanceof WorktreeBlocked) throw new StepFailed(err.message);
-        throw err;
+    const fresh = store.listMessages({ from: leader.address, kind: "assignment" })
+      .filter((m) => m.to === step.worker && !known.has(m.id));
+    if (fresh.length) {
+      const { limits } = await opts.loadConfig();
+      for (const message of fresh) {
+        const requested: Partial<Budget> = {};
+        for (const [field, key] of Object.entries(REQUESTABLE)) {
+          const value = message.body[field];
+          if (typeof value === "number") requested[key] = value;
+        }
+        const { budget, capped } = budgetFor(limits, project.name, requested);
+        const owns = parseOwns(message.body.owns);
+        store.planAssignment(request.id, message.id, { owns, budget });
+        store.appendEvent("assignment.planned", {
+          id: message.id,
+          step: step.id,
+          owns,
+          budget,
+          cappedByCeiling: capped,
+        });
       }
     }
-    const mine = assignmentsOf(request, step);
-    for (const a of mine.filter((a) => a.status === "active")) {
+    for (const a of assignmentsOf(request, step).filter((a) => a.status === "active")) {
       const result = store.listMessages({ kind: "result", inReplyTo: a.id })[0];
       if (!result) continue;
       store.setAssignmentState(a.id, result.body.status === "done" ? "done" : "failed");
     }
     return assignmentsOf(request, step);
+  }
+
+  /** Why a planned Assignment cannot start yet, or undefined when it can. */
+  function blockedBecause(
+    limits: LimitsConfig,
+    project: ProjectRecord,
+    a: AssignmentRecord,
+  ): string | undefined {
+    if (store.countActiveAssignments() >= limits.global) return "global cap";
+    if (store.countActiveAssignments(project.id) >= projectCap(limits, project.name)) {
+      return "project cap";
+    }
+    const ahead = store.listAssignments(a.requestId).find((b) =>
+      b.id < a.id && (b.status === "active" || b.status === "planned") &&
+      overlaps(a.owns, b.owns)
+    );
+    return ahead ? `files owned by assignment ${ahead.id}` : undefined;
+  }
+
+  /**
+   * Start planned Assignments, oldest first, while the caps and file ownership allow. An
+   * Assignment that waits for files starts off the work of the overlapping one that finished, so
+   * the two do not conflict at merge.
+   */
+  async function startQueued() {
+    const { limits } = await opts.loadConfig();
+    for (const request of store.listRequests("active")) {
+      if (!request.playbook) continue;
+      const step = store.listSteps(request.id).find((s) => s.status === "active");
+      if (!step) continue;
+      for (const a of assignmentsOf(request, step).filter((a) => a.status === "planned")) {
+        let project: ProjectRecord;
+        try {
+          project = projectOf(request);
+        } catch (err) {
+          if (err instanceof StepFailed) return failStep(request, step, err);
+          throw err;
+        }
+        const blocked = blockedBecause(limits, project, a);
+        if (blocked) continue;
+        try {
+          const mine = assignmentsOf(request, step);
+          const rejected = step.retries
+            ? mine.filter((b) => b.branch && !sameWorker(step, b)).at(-1)?.branch
+            : undefined;
+          const earlier = mine.filter((b) => b.id < a.id && b.branch);
+          const stacked = earlier.filter((b) =>
+            b.status === "done" && !b.mergedAt && overlaps(a.owns, b.owns)
+          ).at(-1)?.branch;
+          const continued = earlier.filter((b) => b.limitReached).at(-1)?.branch;
+          const message = store.getMessage(a.id)!;
+          const started = await opts.withProject(
+            project.name,
+            () =>
+              startAssignment(
+                store,
+                project,
+                request.id,
+                a.id,
+                opts.worktreesDir,
+                rejected ?? stacked ?? continued ?? undefined,
+              ),
+          );
+          store.setSessionCwd(message.to, started.path);
+          store.appendEvent("assignment.started", { id: a.id, step: step.id });
+        } catch (err) {
+          if (err instanceof WorktreeBlocked) return failStep(request, step, err);
+          throw err;
+        }
+      }
+    }
   }
 
   const sameWorker = (step: StepRecord, a: AssignmentRecord) =>
@@ -301,6 +379,24 @@ export function createConductor(opts: ConductorOptions) {
       try {
         await opts.withProject(project.name, () => mergeAssignment(store, project, a.id));
       } catch (err) {
+        if (err instanceof MergeConflict) {
+          // The work conflicts with what is already on the request branch: it becomes a new
+          // Assignment, for a fresh worker that starts from the conflicting work.
+          store.appendEvent("assignment.conflicted", {
+            id: a.id,
+            request: request.id,
+            step: step.id,
+          });
+          reject(
+            request,
+            step,
+            project,
+            [a],
+            `${err.message}\nMerge ${request.branch} into your branch, resolve the conflicts so ` +
+              `both sides' intent survives, and commit.`,
+          );
+          return false;
+        }
         if (err instanceof WorktreeBlocked) throw new StepFailed(err.message);
         throw err;
       }
@@ -353,12 +449,68 @@ export function createConductor(opts: ConductorOptions) {
         }
       } catch (err) {
         if (!(err instanceof StepFailed)) throw err;
-        store.setStepState(step.id, "failed", err.message);
-        store.setRequestState(request.id, "failed", err.message);
-        store.appendEvent("step.failed", { request: request.id, step: step.id, why: err.message });
-        log.warn("step failed", { request: request.id, step: step.id, why: err.message });
+        failStep(request, step, err);
       }
       return;
+    }
+  }
+
+  function failStep(request: RequestRecord, step: StepRecord, err: Error) {
+    store.setStepState(step.id, "failed", err.message);
+    store.setRequestState(request.id, "failed", err.message);
+    store.appendEvent("step.failed", { request: request.id, step: step.id, why: err.message });
+    log.warn("step failed", { request: request.id, step: step.id, why: err.message });
+  }
+
+  const activeOf = (address: string) =>
+    store.listActiveAssignments().filter((a) => store.getMessage(a.id)?.to === address);
+
+  /** What Kiln tells the leader when a worker hit a limit. */
+  function limitSummary(a: AssignmentRecord, kind: LimitKind): string {
+    const b = a.budget!;
+    const spent = `$${a.spendUsd.toFixed(2)}`;
+    const reason = {
+      turns: `its turn limit (${a.turnsUsed} of ${b.turns} turns)`,
+      spend: `its spend limit (${spent} of $${b.spendUsd})`,
+      time: `its time limit (${b.seconds} seconds of wall-clock time)`,
+      inactivity: `${b.idleSeconds} seconds without a sign of life`,
+    }[kind];
+    return `Limit reached: Kiln stopped this assignment's worker at ${reason}. Whatever the ` +
+      `worker committed is on branch ${a.branch}; uncommitted work is not carried over. ` +
+      `Your options: (1) continue: send the worker a new assignment, which starts from that ` +
+      `branch, and add maxTurns, maxSpendUsd or maxSeconds to it to allow more (Kiln caps them ` +
+      `at the Project's ceiling); (2) split: send smaller assignments, each with the paths it ` +
+      `owns in "owns"; (3) give up: send your result for the step to the overseer with status ` +
+      `failed.`;
+  }
+
+  /** The Assignment ran into a limit: stop its worker and report the failure to its leader. */
+  function reachLimit(a: AssignmentRecord, kind: LimitKind) {
+    const message = store.getMessage(a.id)!;
+    // A worker that already reported is done, whatever the clock says.
+    if (!router.failAssignment(a.id, limitSummary(a, kind))) return;
+    store.markLimitReached(a.id, kind);
+    router.abort(message.to);
+    store.appendEvent("assignment.limit_reached", { id: a.id, limit: kind });
+    log.warn("assignment reached a limit", { assignment: a.id, limit: kind });
+  }
+
+  /** Which limit, if any, the Assignment has run into. */
+  function limitOf(a: AssignmentRecord): LimitKind | undefined {
+    const b = a.budget;
+    if (!b || !a.startedAt) return;
+    const now = Date.now();
+    if (a.turnsUsed >= b.turns) return "turns";
+    if (a.spendUsd >= b.spendUsd - 1e-9) return "spend";
+    if (now - Date.parse(a.startedAt) >= b.seconds * 1000) return "time";
+    if (now - Date.parse(a.activityAt ?? a.startedAt) >= b.idleSeconds * 1000) return "inactivity";
+  }
+
+  /** Stop the workers of Assignments over a limit. Runs on a clock, apart from `react`. */
+  function watch() {
+    for (const a of store.listActiveAssignments()) {
+      const kind = limitOf(a);
+      if (kind) reachLimit(a, kind);
     }
   }
 
@@ -374,6 +526,11 @@ export function createConductor(opts: ConductorOptions) {
           log.error("could not advance request", { request: request.id, err });
         }
       }
+      try {
+        await startQueued();
+      } catch (err) {
+        log.error("could not start queued assignments", { err });
+      }
     });
     queue = pass.catch(() => {});
     return pass;
@@ -381,6 +538,50 @@ export function createConductor(opts: ConductorOptions) {
 
   return {
     react,
+    watch,
+    /** Whether an Assignment is still queued, so its worker is not to be woken. */
+    holds: (m: MessageRecord): boolean => {
+      if (m.kind !== "assignment") return false;
+      try {
+        return store.getAssignment(m.id).status === "planned";
+      } catch {
+        return false;
+      }
+    },
+    /** The turns and spend a launch for the worker may still use; none for other agents. */
+    launchLimits: (session: SessionRecord) => {
+      const active = session.role === "worker" ? activeOf(session.address) : [];
+      if (!active.length) return undefined;
+      return {
+        maxTurns: Math.max(1, Math.min(...active.map((a) => a.budget!.turns - a.turnsUsed))),
+        maxBudgetUsd: Math.max(
+          0.01,
+          Math.min(...active.map((a) => a.budget!.spendUsd - a.spendUsd)),
+        ),
+      };
+    },
+    /** A worker's launch ended: charge it to the Assignments the worker has. */
+    observe: (session: SessionRecord, used: { turns: number; costUsd: number }) => {
+      const active = session.role === "worker" && (used.turns || used.costUsd)
+        ? activeOf(session.address)
+        : []; // a launch that did not run is no sign of life
+      active.forEach((a, i) =>
+        store.addUsage(a.id, {
+          turns: Math.floor(used.turns / active.length) + (i ? 0 : used.turns % active.length),
+          spendUsd: used.costUsd / active.length,
+        })
+      );
+      watch();
+    },
+    /** A worker's launch shows a sign of life. */
+    activity: (session: SessionRecord) => {
+      if (session.role === "worker") {
+        for (const a of activeOf(session.address)) store.touchAssignment(a.id);
+      }
+    },
+    /** Whether the limit watch, not a fixed timeout, bounds the worker's launches. */
+    watched: (session: SessionRecord) =>
+      session.role === "worker" && activeOf(session.address).length > 0,
     /** Resolves once the pass in flight, if any, has finished. */
     idle: () => queue,
 

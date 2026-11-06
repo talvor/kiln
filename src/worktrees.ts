@@ -10,6 +10,9 @@ import { WORKTREE_PORTS } from "./store.ts";
 /** The request or assignment cannot go ahead; the message says why. */
 export class WorktreeBlocked extends Error {}
 
+/** The Assignment's work conflicts with what is already on the request branch. */
+export class MergeConflict extends WorktreeBlocked {}
+
 /** What a Worktree is, and the environment work inside it should run with. */
 export interface WorktreeInfo {
   path: string;
@@ -242,7 +245,7 @@ export async function mergeAssignment(
     );
     if (merged.code !== 0) {
       await git(requestWt.path, "merge", "--abort");
-      throw new WorktreeBlocked(
+      throw new MergeConflict(
         `Assignment ${assignmentId} does not merge cleanly into ${request.branch}: ` +
           `${firstLine(merged.stdout || merged.stderr)}. The request branch is unchanged.`,
       );

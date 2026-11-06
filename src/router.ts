@@ -31,6 +31,19 @@ export interface RouterOptions {
   rolePrompt?: (roleName: string) => Promise<string | undefined>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
   selfCommand: (args: string[]) => { cmd: string; args: string[] };
+  /** Messages that are not delivered yet, e.g. an Assignment still queued behind a cap. */
+  hold?: (message: MessageRecord) => boolean;
+  /** What a launch for this session may use up; undefined when the router's defaults apply. */
+  launchLimits?: (session: SessionRecord) => { maxTurns: number; maxBudgetUsd: number } | undefined;
+  /** Called after each launch for a session, whatever its outcome, with what it used. */
+  observe?: (
+    session: SessionRecord,
+    used: { turns: number; costUsd: number; outcome: string },
+  ) => void;
+  /** Called when a launch for a session shows a sign of life. */
+  activity?: (session: SessionRecord) => void;
+  /** The caller watches this session's launches, so they are not cut short after a fixed time. */
+  watched?: (session: SessionRecord) => boolean;
 }
 
 export interface StopVerdict {
@@ -42,6 +55,8 @@ const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 export function createRouter(opts: RouterOptions) {
   const { store, log } = opts;
+  /** Launches in flight, by the address of the session they wake. */
+  const inFlight = new Map<string, Set<AbortController>>();
 
   const sessionAt = (address: string): SessionRecord => {
     try {
@@ -202,6 +217,18 @@ export function createRouter(opts: RouterOptions) {
 
     send,
 
+    /** Stop whatever is running for the session at `address`. */
+    abort(address: string): void {
+      for (const controller of inFlight.get(address) ?? []) controller.abort();
+    },
+
+    /** Report an open assignment as failed on behalf of its worker, saying why. */
+    failAssignment(assignmentId: number, why: string): MessageRecord | undefined {
+      const assignment = store.getMessage(assignmentId);
+      if (!assignment || assignment.kind !== "assignment" || hasResult(assignmentId)) return;
+      return synthesiseFailure(assignment, why);
+    },
+
     /** Ask the sender's direct superior; the answer comes back as an answer Message. */
     raiseQuestion(
       from: string,
@@ -264,7 +291,8 @@ export function createRouter(opts: RouterOptions) {
     async tick(): Promise<void> {
       const now = Date.now();
       const due = store.listMessages({ waiting: true }).filter((m) =>
-        m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= RENUDGE_AFTER_MS
+        !opts.hold?.(m) &&
+        (m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= RENUDGE_AFTER_MS)
       );
       const byRecipient = new Map<string, MessageRecord[]>();
       for (const m of due) {
@@ -281,17 +309,18 @@ export function createRouter(opts: RouterOptions) {
           byRecipient.set(m.to, [...byRecipient.get(m.to) ?? [], m]);
         }
       }
-      for (const [address, messages] of byRecipient) {
+      // Agents are woken side by side: one that takes long must not hold up the others.
+      await Promise.all([...byRecipient].map(async ([address, messages]) => {
         const waiting = new Set(
           store.listMessages({ to: address, waiting: true }).map((m) => m.id),
         );
         const current = messages.filter((m) => waiting.has(m.id));
-        if (!current.length) continue;
+        if (!current.length) return;
         if (await nudge(sessionAt(address), current.length)) {
           store.recordDelivery(current.map((m) => m.id));
           store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
         }
-      }
+      }));
     },
   };
 
@@ -299,6 +328,10 @@ export function createRouter(opts: RouterOptions) {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const abortController = new AbortController();
+    const limits = opts.launchLimits?.(session);
+    const controllers = inFlight.get(session.address) ?? new Set();
+    controllers.add(abortController);
+    inFlight.set(session.address, controllers);
     const rolePrompt = session.roleName
       ? await opts.rolePrompt?.(session.roleName).catch(() => undefined)
       : undefined;
@@ -322,24 +355,40 @@ export function createRouter(opts: RouterOptions) {
               }],
             },
           },
+          maxTurns: limits?.maxTurns,
+          maxBudgetUsd: limits?.maxBudgetUsd,
+          onActivity: () => opts.activity?.(session),
           abortController,
         }),
         new Promise<never>((_, reject) => {
+          abortController.signal.addEventListener(
+            "abort",
+            () => reject(new Error("launch aborted")),
+          );
+          if (opts.watched?.(session)) return;
           timeout = setTimeout(() => {
             abortController.abort();
             reject(new Error("launch timed out"));
           }, LAUNCH_TIMEOUT_MS);
         }),
       ]);
+      opts.observe?.(session, {
+        turns: launched.turns,
+        costUsd: launched.costUsd,
+        outcome: launched.outcome,
+      });
       if (!launched.ok) {
         log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
       }
       return launched.ok;
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
+      opts.observe?.(session, { turns: 0, costUsd: 0, outcome: "aborted" });
       return false;
     } finally {
       clearTimeout(timeout);
+      controllers.delete(abortController);
+      if (!controllers.size) inFlight.delete(session.address);
     }
   }
 }

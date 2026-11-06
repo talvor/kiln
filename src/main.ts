@@ -577,9 +577,13 @@ interface RequestStatus {
       id: number;
       worker: string;
       status: string;
-      branch: string;
+      branch: string | null;
       worktree: string | null;
       merged: boolean;
+      owns: string[];
+      turnsUsed: number;
+      spendUsd: number;
+      limitReached: string | null;
     }[];
   }[];
 }
@@ -594,8 +598,12 @@ function describeRequest(r: RequestStatus): string {
     const retried = s.retries ? `, retried ${s.retries} time${s.retries === 1 ? "" : "s"}` : "";
     lines.push(`Step ${s.position} ${s.name} (${s.department}): ${s.status}${retried}`);
     for (const a of s.assignments) {
+      const where = a.branch ?? "waiting to start";
+      const limit = a.limitReached ? `, stopped at its ${a.limitReached} limit` : "";
       lines.push(
-        `  Assignment ${a.id} (${a.worker}): ${a.status}${a.merged ? ", merged" : ""}, ${a.branch}`,
+        `  Assignment ${a.id} (${a.worker}): ${a.status}${
+          a.merged ? ", merged" : ""
+        }, ${where}${limit}`,
       );
     }
   }

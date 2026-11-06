@@ -30,6 +30,7 @@ withWorld("kiln launch uses a cheap model under a spend cap", async (world) => {
     text: "ok",
     outcome: "success",
     costUsd: 0.02,
+    turns: 1,
     model: "haiku",
     maxBudgetUsd: 0.25,
   });

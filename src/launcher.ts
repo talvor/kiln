@@ -17,6 +17,10 @@ export interface LaunchRequest {
   readOnly?: boolean;
   /** Override the spend cap for this launch (USD); never raises it above MAX_LAUNCH_USD. */
   maxBudgetUsd?: number;
+  /** Stop after this many agent turns. */
+  maxTurns?: number;
+  /** Called whenever Claude shows a sign of life, e.g. a message on the stream. */
+  onActivity?: () => void;
   /** MCP servers (stdio) to give Claude, by name. */
   mcpServers?: Record<string, { command: string; args?: string[] }>;
   /** Tools Claude may use without asking, e.g. the tools of an MCP server above. */
@@ -34,6 +38,8 @@ export interface LaunchResult {
   outcome: string;
   /** Estimated cost of the launch in USD. */
   costUsd: number;
+  /** Agent turns the launch took. */
+  turns: number;
   model: string;
   maxBudgetUsd: number;
 }
@@ -68,6 +74,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       env: req.env ? { ...Deno.env.toObject(), ...req.env } : undefined,
       model: LAUNCHER_MODEL,
       maxBudgetUsd,
+      maxTurns: req.maxTurns,
       pathToClaudeCodeExecutable: findClaude(),
       permissionMode: "acceptEdits",
       tools: req.readOnly ? ["Read", "Glob", "Grep"] : undefined,
@@ -81,8 +88,14 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
   });
   try {
     for await (const msg of run) {
+      req.onActivity?.();
       if (msg.type !== "result") continue;
-      const base = { costUsd: msg.total_cost_usd, model: LAUNCHER_MODEL, maxBudgetUsd };
+      const base = {
+        costUsd: msg.total_cost_usd,
+        turns: msg.num_turns,
+        model: LAUNCHER_MODEL,
+        maxBudgetUsd,
+      };
       return msg.subtype === "success"
         ? { ...base, ok: !msg.is_error, text: msg.result, outcome: msg.subtype }
         : { ...base, ok: false, text: msg.errors.join("; ") || msg.subtype, outcome: msg.subtype };

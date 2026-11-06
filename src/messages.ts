@@ -5,13 +5,24 @@ export const KINDS: readonly MessageKind[] = ["assignment", "result", "question"
 
 interface Field {
   required?: boolean;
+  /** The field is a positive number rather than text. */
+  number?: boolean;
   /** Allowed values; the field is free text when absent. */
   oneOf?: string[];
 }
 
 /** The fields each kind of Message carries. Anything else is refused. */
 export const SCHEMAS: Record<MessageKind, Record<string, Field>> = {
-  assignment: { title: { required: true }, instructions: { required: true } },
+  assignment: {
+    title: { required: true },
+    instructions: { required: true },
+    // The paths the worker will change, comma separated: overlapping Assignments run one at a time.
+    owns: {},
+    // Limits above Kiln's defaults, up to the Project's ceiling.
+    maxTurns: { number: true },
+    maxSpendUsd: { number: true },
+    maxSeconds: { number: true },
+  },
   result: { status: { required: true, oneOf: ["done", "failed"] }, summary: { required: true } },
   question: { question: { required: true }, context: {} },
   answer: { answer: { required: true } },
@@ -32,6 +43,10 @@ export function validateBody(kind: MessageKind, body: unknown): string[] {
     const value = fields[name];
     if (value === undefined) {
       if (field.required) problems.push(`missing required field "${name}"`);
+    } else if (field.number) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        problems.push(`field "${name}" must be a positive number`);
+      }
     } else if (typeof value !== "string" || !value.trim()) {
       problems.push(`field "${name}" must be a non-empty string`);
     } else if (field.oneOf && !field.oneOf.includes(value)) {
