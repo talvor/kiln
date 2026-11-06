@@ -1,7 +1,7 @@
 // Managing a registered Project: re-checking it after its commands or default branch change, and
 // re-running its test baseline. Commands come only from the user (the flags they pass); files in
 // the Project may have suggested commands at registration but never change or run anything here.
-import { join } from "@std/path";
+import { isAbsolute, relative, resolve } from "@std/path";
 import {
   branchProtection,
   commandWarnings,
@@ -34,6 +34,26 @@ export interface Change {
  * Returns the patch to record; throws RecheckBlocked (recording nothing) if it cannot.
  */
 export async function recheckProject(
+  project: ProjectRecord,
+  change: Change,
+  progress: (message: string) => void,
+): Promise<ProjectPatch> {
+  try {
+    return await recheck(project, change, progress);
+  } catch (err) {
+    // A blocked re-check changes nothing: put the clone back where the record says it is.
+    if (err instanceof RecheckBlocked) {
+      await run(
+        "git",
+        ["checkout", "--force", "-B", project.defaultBranch, project.headCommit],
+        project.clonePath,
+      ).catch(() => {});
+    }
+    throw err;
+  }
+}
+
+async function recheck(
   project: ProjectRecord,
   change: Change,
   progress: (message: string) => void,
@@ -122,7 +142,7 @@ export async function recheckProject(
 
 /** Removing a Project deletes only Kiln's own clone, and only if it sits under `projectsDir`. */
 export async function removeClone(clonePath: string, projectsDir: string): Promise<void> {
-  const root = join(projectsDir, "");
-  if (!clonePath.startsWith(root)) return;
+  const within = relative(resolve(projectsDir), resolve(clonePath));
+  if (!within || within.startsWith("..") || isAbsolute(within)) return;
   await Deno.remove(clonePath, { recursive: true }).catch(() => {});
 }
