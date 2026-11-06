@@ -185,7 +185,12 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.assignmentId as number | undefined,
       ),
     "messages.raise": (params) =>
-      router.raiseQuestion(String(params.from), params.question, params.context, params.assignmentId as number | undefined),
+      router.raiseQuestion(
+        String(params.from),
+        params.question,
+        params.context,
+        params.assignmentId as number | undefined,
+      ),
     "messages.read": (params) => router.readInbox(String(params.address)),
     "router.stopCheck": (params) =>
       router.checkStop(String(params.address), params.alreadyBlocked === true),
@@ -274,7 +279,6 @@ async function serve(
 /** A socket file younger than this may belong to a daemon that has bound but not yet listened. */
 const FRESH_SOCKET_MS = 2000;
 
-/** A duration in milliseconds from the environment; falls back when unset or malformed. */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Bind the daemon socket; returns undefined if a live daemon already owns it. */

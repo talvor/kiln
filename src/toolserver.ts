@@ -113,7 +113,9 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
     ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
     : name === "raise_question"
     ? { question: "string", context: "string", assignmentId: "integer" }
-    : (() => { throw new Error(`unknown tool "${name}"`); })();
+    : (() => {
+      throw new Error(`unknown tool "${name}"`);
+    })();
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("tool arguments must be an object");
   }
@@ -121,15 +123,25 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
   for (const [field, item] of Object.entries(args)) {
     const type = fields[field];
     if (!Object.hasOwn(fields, field)) throw new Error(`unknown argument "${field}"`);
-    if (type === "integer" ? !Number.isSafeInteger(item) || (item as number) <= 0
-      : type === "object" ? typeof item !== "object" || item === null || Array.isArray(item)
-      : type === "kind" ? typeof item !== "string" || !["assignment", "result", "question", "answer"].includes(item)
-      : typeof item !== "string") {
+    if (
+      type === "integer"
+        ? !Number.isSafeInteger(item) || (item as number) <= 0
+        : type === "object"
+        ? typeof item !== "object" || item === null || Array.isArray(item)
+        : type === "kind"
+        ? typeof item !== "string" || !["assignment", "result", "question", "answer"].includes(item)
+        : typeof item !== "string"
+    ) {
       throw new Error(`invalid argument "${field}"`);
     }
   }
-  for (const field of name === "send" ? ["to", "kind", "body"]
-    : name === "raise_question" ? ["question"] : []) {
+  for (
+    const field of name === "send"
+      ? ["to", "kind", "body"]
+      : name === "raise_question"
+      ? ["question"]
+      : []
+  ) {
     if (!Object.hasOwn(args, field)) throw new Error(`missing argument "${field}"`);
   }
   return args;

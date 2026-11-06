@@ -26,7 +26,8 @@ const PROJECT_USAGE = `Usage:
   kiln project baseline <name>
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
-const SESSION_USAGE = "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
+const SESSION_USAGE =
+  "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
 const USAGE = `kiln ${VERSION}
 
 Usage:

@@ -65,9 +65,7 @@ export function createRouter(opts: RouterOptions) {
     store.listMessages({ kind: "result", inReplyTo: assignmentId }).length > 0;
   /** Assignments to `address` nobody has reported on yet. */
   const openAssignments = (address: string): MessageRecord[] =>
-    store.listMessages({ to: address, kind: "assignment" }).filter((a) =>
-      !hasResult(a.id)
-    );
+    store.listMessages({ to: address, kind: "assignment" }).filter((a) => !hasResult(a.id));
   /** Questions from `address` still waiting for an answer. */
   const openQuestions = (address: string, assignmentId: number): MessageRecord[] =>
     store.listMessages({ from: address, kind: "question" }).filter((q) =>
@@ -76,8 +74,10 @@ export function createRouter(opts: RouterOptions) {
     );
 
   const append = (m: Parameters<Store["appendMessage"]>[0]): MessageRecord => {
-    if (m.kind === "result" && m.inReplyTo !== undefined && m.inReplyTo !== null &&
-      hasResult(m.inReplyTo)) {
+    if (
+      m.kind === "result" && m.inReplyTo !== undefined && m.inReplyTo !== null &&
+      hasResult(m.inReplyTo)
+    ) {
       throw new RouterError(`assignment ${m.inReplyTo} already has a result`);
     }
     const sent = store.appendMessage(m);
@@ -127,8 +127,10 @@ export function createRouter(opts: RouterOptions) {
     if (inReplyTo !== undefined && (!Number.isSafeInteger(inReplyTo) || inReplyTo <= 0)) {
       throw new RouterError("inReplyTo must be a positive integer");
     }
-    if (assignmentId !== undefined &&
-      (!Number.isSafeInteger(assignmentId) || assignmentId <= 0)) {
+    if (
+      assignmentId !== undefined &&
+      (!Number.isSafeInteger(assignmentId) || assignmentId <= 0)
+    ) {
       throw new RouterError("assignmentId must be a positive integer");
     }
 
@@ -154,15 +156,24 @@ export function createRouter(opts: RouterOptions) {
     }
     if (kind === "question" && assignmentId !== undefined) {
       const original = store.getMessage(assignmentId);
-      if (!original || original.kind !== "assignment" || original.to !== from ||
+      if (
+        !original || original.kind !== "assignment" || original.to !== from ||
         original.from !== to || original.deadLetteredAt !== null ||
-        hasResult(assignmentId)) {
+        hasResult(assignmentId)
+      ) {
         throw new RouterError(`question must concern an open assignment ${to} sent you`);
       }
     } else if (kind !== "question" && assignmentId !== undefined) {
       throw new RouterError(`a ${kind} cannot name an assignmentId`);
     }
-    return append({ from, to, kind, body: body as Record<string, unknown>, inReplyTo, assignmentId });
+    return append({
+      from,
+      to,
+      kind,
+      body: body as Record<string, unknown>,
+      inReplyTo,
+      assignmentId,
+    });
   }
 
   return {
@@ -190,7 +201,12 @@ export function createRouter(opts: RouterOptions) {
     send,
 
     /** Ask the sender's direct superior; the answer comes back as an answer Message. */
-    raiseQuestion(from: string, question: unknown, context?: unknown, assignmentId?: number): MessageRecord {
+    raiseQuestion(
+      from: string,
+      question: unknown,
+      context?: unknown,
+      assignmentId?: number,
+    ): MessageRecord {
       const sender = sessionAt(from);
       const body = context === undefined ? { question } : { question, context };
       return send(from, superiorOrThrow(sender).address, "question", body, undefined, assignmentId);
@@ -264,7 +280,9 @@ export function createRouter(opts: RouterOptions) {
         }
       }
       for (const [address, messages] of byRecipient) {
-        const waiting = new Set(store.listMessages({ to: address, waiting: true }).map((m) => m.id));
+        const waiting = new Set(
+          store.listMessages({ to: address, waiting: true }).map((m) => m.id),
+        );
         const current = messages.filter((m) => waiting.has(m.id));
         if (!current.length) continue;
         if (await nudge(sessionAt(address), current.length)) {
@@ -279,32 +297,37 @@ export function createRouter(opts: RouterOptions) {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const abortController = new AbortController();
-    let timeout: number | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const launched = await Promise.race([opts.launch({
-        prompt: `You have ${count} unread message(s) in your Kiln inbox. ` +
-          `Call the read_inbox tool now and act on what it returns.`,
-        cwd: session.cwd,
-        mcpServers: { kiln: { command: server.cmd, args: server.args } },
-        allowedTools: TOOL_NAMES.map((t) => `mcp__kiln__${t}`),
-        settings: {
-          hooks: {
-            Stop: [{
-              hooks: [{
-                type: "command",
-                command: [stop.cmd, ...stop.args].map(shellQuote).join(" "),
+      const launched = await Promise.race([
+        opts.launch({
+          prompt: `You have ${count} unread message(s) in your Kiln inbox. ` +
+            `Call the read_inbox tool now and act on what it returns.`,
+          cwd: session.cwd,
+          mcpServers: { kiln: { command: server.cmd, args: server.args } },
+          allowedTools: TOOL_NAMES.map((t) => `mcp__kiln__${t}`),
+          settings: {
+            hooks: {
+              Stop: [{
+                hooks: [{
+                  type: "command",
+                  command: [stop.cmd, ...stop.args].map(shellQuote).join(" "),
+                }],
               }],
-            }],
+            },
           },
-        },
-        abortController,
-      }), new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          abortController.abort();
-          reject(new Error("launch timed out"));
-        }, LAUNCH_TIMEOUT_MS);
-      })]);
-      if (!launched.ok) log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
+          abortController,
+        }),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            abortController.abort();
+            reject(new Error("launch timed out"));
+          }, LAUNCH_TIMEOUT_MS);
+        }),
+      ]);
+      if (!launched.ok) {
+        log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
+      }
       return launched.ok;
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
