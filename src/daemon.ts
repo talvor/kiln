@@ -5,7 +5,13 @@ import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
-import { infoOf, mergeAssignment, startAssignment, startRequest, WorktreeBlocked } from "./worktrees.ts";
+import {
+  infoOf,
+  mergeAssignment,
+  startAssignment,
+  startRequest,
+  WorktreeBlocked,
+} from "./worktrees.ts";
 import { resolve } from "@std/path";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import {
@@ -190,7 +196,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       if (!project) throw new WorktreeBlocked("The request's project has been removed.");
       return withProjectQueue(
         project.name,
-        () => startAssignment(store, project, request.id, Number(params.assignmentId), paths.worktrees),
+        () =>
+          startAssignment(store, project, request.id, Number(params.assignmentId), paths.worktrees),
       );
     },
     "assignments.merge": (params) => {
