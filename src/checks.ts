@@ -8,14 +8,13 @@ export const PUSH_CHECK_REF = "refs/heads/kiln/registration-check";
 /** Warnings about commands a Project lacks. */
 export function commandWarnings(
   commands: { test: string | null; lint: string | null; build: string | null },
-  opts: { includeTest?: boolean } = {},
 ): string[] {
   const warnings: string[] = [];
   if (!commands.lint) warnings.push("No lint command: nothing will check style before merge.");
   if (!commands.build) {
     warnings.push("No build command: nothing will check that the project builds.");
   }
-  if (opts.includeTest !== false && !commands.test) {
+  if (!commands.test) {
     warnings.push("No test command: no test baseline was recorded.");
   }
   return warnings;

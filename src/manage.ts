@@ -89,11 +89,15 @@ async function recheck(
   if (checkout.code !== 0) {
     throw new RecheckBlocked(`Cannot check out ${branch}: ${firstLine(checkout.stderr)}`);
   }
-  const clean = await git("clean", "-fdx");
+  const clean = await git("clean", "-ffdx");
   if (clean.code !== 0) {
     throw new RecheckBlocked(`Cannot clean the clone: ${firstLine(clean.stderr)}`);
   }
-  const headCommit = (await git("rev-parse", "HEAD")).stdout.trim();
+  const head = await git("rev-parse", "HEAD");
+  if (head.code !== 0 || !head.stdout.trim()) {
+    throw new RecheckBlocked(`Cannot read the clone's HEAD: ${firstLine(head.stderr)}`);
+  }
+  const headCommit = head.stdout.trim();
 
   if (!baselineOnly) {
     const docs = await readableOnboardingFiles(clone);
@@ -113,8 +117,10 @@ async function recheck(
   }
 
   const warnings: string[] = [];
-  const protection = await branchProtection(clone, branch);
-  if (protection) warnings.push(protection);
+  if (!baselineOnly) {
+    const protection = await branchProtection(clone, branch);
+    if (protection) warnings.push(protection);
+  }
 
   if (next.setupCommand) {
     progress(`Running setup: ${next.setupCommand}`);

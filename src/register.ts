@@ -98,7 +98,7 @@ async function onboard(
   const git = (...args: string[]) => run("git", args, clonePath);
 
   const head = await git("rev-parse", "HEAD");
-  if (head.code !== 0) {
+  if (head.code !== 0 || !head.stdout.trim()) {
     throw new RegistrationBlocked(`${remoteUrl} has no commits; push something first.`);
   }
   const headCommit = head.stdout.trim();
@@ -139,8 +139,6 @@ async function onboard(
     }
   }
 
-  warnings.push(...commandWarnings(commands, { includeTest: false }));
-
   let baseline: Baseline | null = null;
   if (commands.test) {
     deps.progress(`Recording the test baseline: ${commands.test}`);
@@ -154,9 +152,8 @@ async function onboard(
       outputTail: tail(test.output),
       recordedAt: new Date().toISOString(),
     };
-  } else {
-    warnings.push(...commandWarnings(commands).filter((w) => w.startsWith("No test")));
   }
+  warnings.push(...commandWarnings(commands));
 
   return {
     name,

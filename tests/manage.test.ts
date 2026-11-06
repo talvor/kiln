@@ -109,8 +109,7 @@ withWorld("editing commands re-checks the project and records a new baseline", a
   const rerun = await world.kiln("project", "baseline", "remote");
   assertStringIncludes(rerun.stdout, "Test baseline: FAILING (exit 3)");
   assertStringIncludes(rerun.stdout, "warning: No lint command");
-  // The branch protection question was asked again.
-  assertEquals((await world.githubApi.calls()).length, calls + 2);
+  assertEquals((await world.githubApi.calls()).length, calls + 1);
 });
 
 withWorld("overlapping edit and baseline keep the edited test command", async (world) => {
@@ -201,6 +200,38 @@ withWorld("a post-checkout inspection failure restores the recorded branch", asy
   assertStringIncludes((await world.kiln("project", "list")).stdout, "main@");
   const clone = join(world.dirs.data, "projects", "remote");
   assertEquals((await world.git(clone, "rev-parse", "--abbrev-ref", "HEAD")).stdout.trim(), "main");
+});
+
+withWorld("a failed HEAD lookup cannot record an empty commit", async (world) => {
+  await register(world);
+  const before = (await world.kiln("project", "list")).stdout;
+  const gitPath = (await world.exec(world.root, "which", "git")).stdout.trim();
+  const fakeGit = join(world.root, "fake", "bin", "git");
+  await Deno.writeTextFile(
+    fakeGit,
+    `#!/bin/sh\nif [ "$1" = rev-parse ] && [ "$2" = HEAD ]; then exit 7; fi\nexec "${gitPath}" "$@"\n`,
+  );
+  await Deno.chmod(fakeGit, 0o755);
+
+  const baseline = await world.kiln("project", "baseline", "remote");
+  assertEquals(baseline.code, 1);
+  assertStringIncludes(baseline.stderr, "Cannot read the clone's HEAD");
+  assertEquals((await world.kiln("project", "list")).stdout, before);
+});
+
+withWorld("baseline removes a nested repository left by setup", async (world) => {
+  await register(world, {
+    ...COMMANDS,
+    setup: "git init -q nested",
+    test: "test ! -f nested/stale.txt",
+  });
+  const stale = join(world.dirs.data, "projects", "remote", "nested", "stale.txt");
+  await Deno.writeTextFile(stale, "old state\n");
+
+  const baseline = await world.kiln("project", "baseline", "remote");
+  assertEquals(baseline.code, 0, baseline.stderr);
+  assertStringIncludes(baseline.stdout, "Test baseline: passing");
+  assert(await Deno.stat(stale).then(() => false, () => true));
 });
 
 withWorld("daemon stop waits past the old timeout for a running re-check", async (world) => {
