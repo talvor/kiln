@@ -1,10 +1,18 @@
 import denoJson from "../deno.json" with { type: "json" };
-import { canConnect, closeQuietly } from "./client.ts";
+import { canConnect, closeQuietly, selfCommand } from "./client.ts";
+import { launch } from "./launcher.ts";
+import { createRouter, type TickResult } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
-import { type NewProject, openStore, type Store } from "./store.ts";
+import {
+  type MessageKind,
+  type NewProject,
+  type NewSession,
+  openStore,
+  type Store,
+} from "./store.ts";
 
 export const VERSION: string = denoJson.version;
 
@@ -70,12 +78,32 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }
   };
 
+  const router = createRouter({
+    store,
+    log,
+    launch,
+    selfCommand,
+    renudgeAfterMs: envMs("KILN_RENUDGE_AFTER_MS", 60_000),
+  });
+  // Delivery passes never overlap: a pass in flight is joined, not repeated.
+  let pass: Promise<TickResult> | undefined;
+  const deliver = (): Promise<TickResult> => pass ??= router.tick().finally(() => pass = undefined);
+  const tickMs = envMs("KILN_ROUTER_TICK_MS", 2_000);
+  const ticker = tickMs > 0
+    ? setInterval(
+      () => deliver().catch((err) => log.error("delivery pass failed", { err })),
+      tickMs,
+    )
+    : undefined;
+
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   const shutdown = async (reason: string) => {
     if (stopping) return;
     stopping = true;
     log.info("daemon stopping", { reason });
+    clearInterval(ticker);
+    await pass?.catch(() => {});
     while (projectQueues.size || projectReplies.size) {
       await Promise.all([...projectQueues.values(), ...projectReplies]);
     }
@@ -150,6 +178,29 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "sessions.open": (params) => router.openSession(params as unknown as NewSession),
+    "sessions.list": () => store.listSessions(),
+    "messages.send": (params) =>
+      router.send(
+        String(params.from),
+        String(params.to),
+        params.kind as MessageKind,
+        params.body,
+        params.inReplyTo === undefined || params.inReplyTo === null
+          ? undefined
+          : Number(params.inReplyTo),
+      ),
+    "messages.raise": (params) =>
+      router.raiseQuestion(String(params.from), params.question, params.context ?? undefined),
+    "messages.read": (params) => router.readInbox(String(params.address)),
+    "messages.list": (params) =>
+      store.listMessages({
+        to: params.to === undefined ? undefined : String(params.to),
+        from: params.from === undefined ? undefined : String(params.from),
+      }),
+    "router.stopCheck": (params) =>
+      router.checkStop(String(params.address), params.alreadyBlocked === true),
+    "router.tick": () => deliver(),
     stop: (_params, ctx) => {
       ctx.afterReply = () => beginShutdown("stop command");
       return { stopping: true, pid: Deno.pid, startedAt };
@@ -234,6 +285,12 @@ async function serve(
 
 /** A socket file younger than this may belong to a daemon that has bound but not yet listened. */
 const FRESH_SOCKET_MS = 2000;
+
+/** A duration in milliseconds from the environment; falls back when unset or malformed. */
+function envMs(name: string, fallback: number): number {
+  const n = Number(Deno.env.get(name));
+  return Deno.env.get(name) !== undefined && Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -70,6 +70,39 @@ export const MIGRATIONS: string[] = [
      status text not null default 'active' check (status in ('active', 'done')),
      created_at text not null
    ) strict;`,
+  // 4: sessions (the addresses agents work under) and the Messages between them. Messages are
+  // append-only; what happens to them afterwards (read, delivered, dead-lettered) lives in
+  // message_status.
+  `create table sessions (
+     address text primary key,
+     role text not null check (role in ('overseer', 'leader', 'worker')),
+     department text,
+     cwd text not null,
+     opened_at text not null
+   ) strict;
+   create unique index sessions_one_overseer on sessions (role) where role = 'overseer';
+   create unique index sessions_one_leader on sessions (department) where role = 'leader';
+   create table messages (
+     id integer primary key,
+     sender text not null references sessions (address),
+     recipient text not null references sessions (address),
+     kind text not null check (kind in ('assignment', 'result', 'question', 'answer')),
+     body text not null,
+     in_reply_to integer references messages (id),
+     synthesised integer not null default 0,
+     sent_at text not null
+   ) strict;
+   create trigger messages_no_update before update on messages
+     begin select raise(abort, 'messages are append-only'); end;
+   create trigger messages_no_delete before delete on messages
+     begin select raise(abort, 'messages are append-only'); end;
+   create table message_status (
+     message_id integer primary key references messages (id),
+     read_at text,
+     deliveries integer not null default 0,
+     last_delivery_at text,
+     dead_lettered_at text
+   ) strict;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -132,6 +165,59 @@ export type ProjectPatch = Partial<
   >
 >;
 
+export type Role = "overseer" | "leader" | "worker";
+export type MessageKind = "assignment" | "result" | "question" | "answer";
+
+/** The address an agent works under, and where it sits in the chain of command. */
+export interface SessionRecord {
+  address: string;
+  role: Role;
+  /** Set for leaders and workers; the overseer belongs to no department. */
+  department: string | null;
+  /** Directory Kiln wakes the agent in. */
+  cwd: string;
+  openedAt: string;
+}
+export type NewSession = Omit<SessionRecord, "openedAt">;
+
+/** A Message and what has happened to it since it was sent. */
+export interface MessageRecord {
+  id: number;
+  from: string;
+  to: string;
+  kind: MessageKind;
+  body: Record<string, unknown>;
+  /** The assignment a result answers, or the question an answer answers. */
+  inReplyTo: number | null;
+  /** Written by Kiln itself rather than by the sender. */
+  synthesised: boolean;
+  sentAt: string;
+  readAt: string | null;
+  /** How many Nudges have been sent for it. */
+  deliveries: number;
+  lastDeliveryAt: string | null;
+  deadLetteredAt: string | null;
+}
+export type NewMessage = Pick<MessageRecord, "from" | "to" | "kind" | "body"> & {
+  inReplyTo?: number | null;
+  synthesised?: boolean;
+};
+export interface MessageFilter {
+  to?: string;
+  from?: string;
+  kind?: MessageKind;
+  inReplyTo?: number;
+  /** Not yet read and not dead-lettered: what an agent still has to pick up. */
+  waiting?: boolean;
+}
+
+export class UnknownSessionError extends Error {
+  constructor(address: string) {
+    super(`No session is open at "${address}".`);
+  }
+}
+export class DuplicateSessionError extends Error {}
+
 export class UnknownProjectError extends Error {
   constructor(name: string) {
     super(`No project named "${name}" is registered.`);
@@ -175,6 +261,19 @@ export interface Store {
   updateProject(name: string, patch: ProjectPatch): ProjectRecord;
   /** Remove a Project, keeping its record and history; refuse active Requests unless forced. */
   removeProject(name: string, opts?: { force?: boolean }): ProjectRecord;
+  /** Open a session; throws DuplicateSessionError if its address, or its seat, is taken. */
+  addSession(session: NewSession): SessionRecord;
+  listSessions(): SessionRecord[];
+  /** Throws UnknownSessionError. */
+  getSession(address: string): SessionRecord;
+  /** Append a Message. Messages are never changed or removed afterwards. */
+  appendMessage(message: NewMessage): MessageRecord;
+  getMessage(id: number): MessageRecord | undefined;
+  listMessages(filter?: MessageFilter): MessageRecord[];
+  markRead(ids: number[]): void;
+  /** Count one more Nudge for each of these Messages. */
+  recordDelivery(ids: number[]): void;
+  deadLetter(id: number): void;
   close(): void;
 }
 
@@ -280,7 +379,123 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
     const countActive = db.prepare(
       "select count(*) n from requests where project_id = ? and status = 'active'",
     );
+    const toSession = (row: Record<string, unknown>): SessionRecord => ({
+      address: row.address as string,
+      role: row.role as Role,
+      department: row.department as string | null,
+      cwd: row.cwd as string,
+      openedAt: row.opened_at as string,
+    });
+    const toMessage = (row: Record<string, unknown>): MessageRecord => ({
+      id: row.id as number,
+      from: row.sender as string,
+      to: row.recipient as string,
+      kind: row.kind as MessageKind,
+      body: JSON.parse(row.body as string),
+      inReplyTo: row.in_reply_to as number | null,
+      synthesised: row.synthesised === 1,
+      sentAt: row.sent_at as string,
+      readAt: row.read_at as string | null,
+      deliveries: row.deliveries as number,
+      lastDeliveryAt: row.last_delivery_at as string | null,
+      deadLetteredAt: row.dead_lettered_at as string | null,
+    });
+    const messageSelect =
+      `select m.*, s.read_at, s.deliveries, s.last_delivery_at, s.dead_lettered_at
+       from messages m join message_status s on s.message_id = m.id`;
+    const inTransaction = <T>(work: () => T): T => {
+      db.exec("begin");
+      try {
+        const result = work();
+        db.exec("commit");
+        return result;
+      } catch (err) {
+        db.exec("rollback");
+        throw err;
+      }
+    };
+    const getMessage = (id: number): MessageRecord | undefined => {
+      const row = db.prepare(`${messageSelect} where m.id = ?`).get(id);
+      return row ? toMessage(row) : undefined;
+    };
     return {
+      addSession: (s) => {
+        const openedAt = new Date().toISOString();
+        try {
+          db.prepare(
+            "insert into sessions (address, role, department, cwd, opened_at) values (?, ?, ?, ?, ?)",
+          ).run(s.address, s.role, s.department, s.cwd, openedAt);
+        } catch (err) {
+          if (/UNIQUE constraint failed/.test((err as Error).message)) {
+            throw new DuplicateSessionError(
+              s.role === "overseer"
+                ? "There is already an overseer."
+                : s.role === "leader" && s.department
+                ? `Department "${s.department}" already has a leader, or "${s.address}" is open.`
+                : `A session is already open at "${s.address}".`,
+            );
+          }
+          throw err;
+        }
+        return { ...s, openedAt };
+      },
+      listSessions: () =>
+        db.prepare("select * from sessions order by opened_at, address").all().map(toSession),
+      getSession: (address) => {
+        const row = db.prepare("select * from sessions where address = ?").get(address);
+        if (!row) throw new UnknownSessionError(address);
+        return toSession(row);
+      },
+      appendMessage: (m) =>
+        inTransaction(() => {
+          const { lastInsertRowid } = db.prepare(
+            `insert into messages (sender, recipient, kind, body, in_reply_to, synthesised, sent_at)
+             values (?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            m.from,
+            m.to,
+            m.kind,
+            JSON.stringify(m.body),
+            m.inReplyTo ?? null,
+            m.synthesised ? 1 : 0,
+            new Date().toISOString(),
+          );
+          db.prepare("insert into message_status (message_id) values (?)").run(lastInsertRowid);
+          return getMessage(Number(lastInsertRowid))!;
+        }),
+      getMessage,
+      listMessages: (f = {}) => {
+        const where: string[] = [];
+        const values: (string | number)[] = [];
+        if (f.to !== undefined) (where.push("m.recipient = ?"), values.push(f.to));
+        if (f.from !== undefined) (where.push("m.sender = ?"), values.push(f.from));
+        if (f.kind !== undefined) (where.push("m.kind = ?"), values.push(f.kind));
+        if (f.inReplyTo !== undefined) (where.push("m.in_reply_to = ?"), values.push(f.inReplyTo));
+        if (f.waiting) where.push("s.read_at is null and s.dead_lettered_at is null");
+        return db.prepare(
+          `${messageSelect} ${where.length ? `where ${where.join(" and ")}` : ""} order by m.id`,
+        ).all(...values).map(toMessage);
+      },
+      markRead: (ids) =>
+        inTransaction(() => {
+          const stmt = db.prepare(
+            "update message_status set read_at = ? where message_id = ? and read_at is null",
+          );
+          const now = new Date().toISOString();
+          for (const id of ids) stmt.run(now, id);
+        }),
+      recordDelivery: (ids) =>
+        inTransaction(() => {
+          const stmt = db.prepare(
+            "update message_status set deliveries = deliveries + 1, last_delivery_at = ? where message_id = ?",
+          );
+          const now = new Date().toISOString();
+          for (const id of ids) stmt.run(now, id);
+        }),
+      deadLetter: (id) => {
+        db.prepare("update message_status set dead_lettered_at = ? where message_id = ?")
+          .run(new Date().toISOString(), id);
+      },
       addProject: (p) => {
         const registeredAt = new Date().toISOString();
         try {

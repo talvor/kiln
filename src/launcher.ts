@@ -16,6 +16,12 @@ export interface LaunchRequest {
   readOnly?: boolean;
   /** Override the spend cap for this launch (USD); never raises it above MAX_LAUNCH_USD. */
   maxBudgetUsd?: number;
+  /** MCP servers (stdio) to give Claude, by name. */
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  /** Tools Claude may use without asking, e.g. the tools of an MCP server above. */
+  allowedTools?: string[];
+  /** Extra settings for this launch, e.g. hooks. */
+  settings?: Record<string, unknown>;
 }
 
 export interface LaunchResult {
@@ -64,6 +70,9 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       tools: req.readOnly ? ["Read", "Glob", "Grep"] : undefined,
       persistSession: false,
       settingSources: [],
+      mcpServers: req.mcpServers,
+      allowedTools: req.allowedTools,
+      settings: req.settings,
     },
   });
   try {

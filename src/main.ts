@@ -2,6 +2,7 @@ import { call, DaemonNotRunning, ensureDaemon, isRunning, stopDaemon } from "./c
 import { ClaudeNotInstalled, launch } from "./launcher.ts";
 import { type DaemonStatus, runDaemon, VERSION } from "./daemon.ts";
 import { resolvePaths } from "./paths.ts";
+import { resolve } from "@std/path";
 import {
   type Commands,
   registerProject,
@@ -9,7 +10,9 @@ import {
   RegistrationDeclined,
 } from "./register.ts";
 import type { Change } from "./manage.ts";
-import type { ProjectRecord } from "./store.ts";
+import { runToolServer } from "./toolserver.ts";
+import type { MessageRecord, ProjectRecord, SessionRecord } from "./store.ts";
+import type { StopVerdict, TickResult } from "./router.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -23,6 +26,10 @@ const PROJECT_USAGE = `Usage:
   kiln project baseline <name>
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
+const SESSION_USAGE = `Usage:
+  kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]
+  kiln session list [--json]`;
+const MESSAGES_USAGE = "Usage: kiln messages [--to <address>] [--from <address>] [--json]";
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -34,6 +41,16 @@ Usage:
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln project list|pause|resume|edit|baseline|default-branch|remove ...
                          Manage registered projects (see \`kiln project\`)
+  kiln session open|list ...
+                         Open the address an agent works under (see \`kiln session\`)
+  kiln messages [--to <address>] [--from <address>] [--json]
+                         Show the Messages between agents: read, nudged, dead-lettered
+  kiln router tick [--json]
+                         Run a delivery pass now: nudge agents with unread Messages
+  kiln tool-server --address <address>
+                         Serve one agent's Kiln tools over MCP on stdio (read_inbox, send, raise_question)
+  kiln hook stop --address <address>
+                         The Stop hook for an agent: reads the hook's JSON on stdin
   kiln --version
 
 Any command that needs the daemon starts it if it is not running.`;
@@ -66,9 +83,128 @@ async function main(args: string[]): Promise<number> {
       return await launchCommand(args.slice(1));
     case "project":
       return await projectCommand(sub, args.slice(2));
+    case "session":
+      return await sessionCommand(sub, args.slice(2));
+    case "messages":
+      return await messagesCommand(args.slice(1));
+    case "router":
+      return await routerCommand(sub, args.slice(2));
+    case "tool-server": {
+      const address = flagValue(args.slice(1), "--address");
+      if (!address) {
+        console.error("Usage: kiln tool-server --address <address>");
+        return 2;
+      }
+      await runToolServer(paths, address);
+      return 0;
+    }
+    case "hook":
+      return await hookCommand(sub, args.slice(2));
     default:
       console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
       return 2;
+  }
+
+  async function sessionCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    const usage = () => {
+      console.error(SESSION_USAGE);
+      return 2;
+    };
+    if (sub === "list") {
+      if (rest.some((a) => a !== "--json")) return usage();
+      await ensureDaemon(paths);
+      const sessions = await call<SessionRecord[]>(paths, "sessions.list");
+      if (json) console.log(JSON.stringify(sessions));
+      else if (!sessions.length) console.log("No sessions are open.");
+      for (const s of json ? [] : sessions) {
+        console.log(`${s.address}  ${s.role}${s.department ? `  ${s.department}` : ""}`);
+      }
+      return 0;
+    }
+    if (sub !== "open") return usage();
+    const [address, ...flags] = rest;
+    if (!address || address.startsWith("-") || flags.length % 2) return usage();
+    const values: Record<string, string> = {};
+    for (let i = 0; i < flags.length; i += 2) {
+      if (!["--role", "--department", "--cwd"].includes(flags[i])) return usage();
+      values[flags[i]] = flags[i + 1];
+    }
+    if (!values["--role"]) return usage();
+    await ensureDaemon(paths);
+    try {
+      await call(paths, "sessions.open", {
+        address,
+        role: values["--role"],
+        department: values["--department"] ?? null,
+        cwd: resolve(values["--cwd"] ?? Deno.cwd()),
+      });
+    } catch (err) {
+      console.error(`Cannot open session: ${(err as Error).message}`);
+      return 1;
+    }
+    console.log(`Opened ${values["--role"]} session "${address}".`);
+    return 0;
+  }
+
+  async function messagesCommand(rest: string[]): Promise<number> {
+    const filter: Record<string, string> = {};
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--json") continue;
+      if ((rest[i] !== "--to" && rest[i] !== "--from") || !rest[i + 1]) {
+        console.error(MESSAGES_USAGE);
+        return 2;
+      }
+      filter[rest[i].slice(2)] = rest[++i];
+    }
+    await ensureDaemon(paths);
+    const messages = await call<MessageRecord[]>(paths, "messages.list", filter);
+    if (json) console.log(JSON.stringify(messages));
+    else if (!messages.length) console.log("No messages.");
+    for (const m of json ? [] : messages) console.log(describeMessage(m));
+    return 0;
+  }
+
+  async function routerCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    if (sub !== "tick" || rest.some((a) => a !== "--json")) {
+      console.error("Usage: kiln router tick [--json]");
+      return 2;
+    }
+    await ensureDaemon(paths);
+    const result = await call<TickResult>(paths, "router.tick");
+    if (json) console.log(JSON.stringify(result));
+    else {
+      for (const n of result.nudged) console.log(`nudged ${n.to} (${n.messages} unread)`);
+      for (const id of result.deadLettered) console.log(`dead-lettered message ${id}`);
+      if (!result.nudged.length && !result.deadLettered.length) console.log("Nothing to deliver.");
+    }
+    return 0;
+  }
+
+  /** Hook commands for an agent's Claude session; they speak Claude Code's hook protocol. */
+  async function hookCommand(sub: string | undefined, rest: string[]): Promise<number> {
+    const address = flagValue(rest, "--address");
+    if (sub !== "stop" || !address) {
+      console.error("Usage: kiln hook stop --address <address>");
+      return 2;
+    }
+    let input: { stop_hook_active?: boolean } = {};
+    try {
+      input = JSON.parse(await new Response(Deno.stdin.readable).text() || "{}");
+    } catch { /* an unreadable hook payload counts as a first attempt */ }
+    await ensureDaemon(paths);
+    try {
+      const verdict = await call<StopVerdict>(paths, "router.stopCheck", {
+        address,
+        alreadyBlocked: input.stop_hook_active === true,
+      });
+      if (verdict.block) {
+        console.log(JSON.stringify({ decision: "block", reason: verdict.reason }));
+      }
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
   }
 
   async function projectCommand(sub: string | undefined, rest: string[]): Promise<number> {
@@ -332,6 +468,24 @@ async function main(args: string[]): Promise<number> {
         return 2;
     }
   }
+}
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  const value = i >= 0 ? args[i + 1] : undefined;
+  return value && !value.startsWith("--") ? value : undefined;
+}
+
+function describeMessage(m: MessageRecord): string {
+  const state = m.deadLetteredAt
+    ? "dead-lettered"
+    : m.readAt
+    ? "read"
+    : `unread, nudged ${m.deliveries}x`;
+  const reply = m.inReplyTo === null ? "" : ` re #${m.inReplyTo}`;
+  return `#${m.id}  ${m.from} -> ${m.to}  ${m.kind}${reply}${
+    m.synthesised ? " (synthesised)" : ""
+  }  ${state}`;
 }
 
 function describeBaseline(p: { baseline: ProjectRecord["baseline"] }, registering = false): string {
