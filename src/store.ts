@@ -67,7 +67,7 @@ export const MIGRATIONS: string[] = [
    create table requests (
      id integer primary key,
      project_id integer not null references projects (id),
-     status text not null default 'active' check (status in ('active', 'done', 'cancelled')),
+     status text not null default 'active' check (status in ('active', 'done')),
      created_at text not null
    ) strict;`,
 ];
@@ -173,10 +173,7 @@ export interface Store {
   getProject(name: string): ProjectRecord;
   /** Change a Project; throws UnknownProjectError. */
   updateProject(name: string, patch: ProjectPatch): ProjectRecord;
-  /**
-   * Remove a Project, keeping its record and history. Refused (ActiveRequestsError) while it has
-   * active Requests unless forced, in which case they are cancelled.
-   */
+  /** Remove a Project, keeping its record and history; refuse active Requests unless forced. */
   removeProject(name: string, opts?: { force?: boolean }): ProjectRecord;
   close(): void;
 }
@@ -365,17 +362,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         const removedAt = new Date().toISOString();
         db.exec("begin");
         try {
-          if (active > 0) {
-            db.prepare(
-              "update requests set status = 'cancelled' where project_id = ? and status = 'active'",
-            )
-              .run(project.id);
-          }
           db.prepare("update projects set removed_at = ? where id = ?").run(removedAt, project.id);
           insertEvent.run(
             removedAt,
             "project.removed",
-            JSON.stringify({ id: project.id, name, forced: !!o?.force, cancelledRequests: active }),
+            JSON.stringify({ id: project.id, name, forced: !!o?.force }),
           );
           db.exec("commit");
         } catch (err) {

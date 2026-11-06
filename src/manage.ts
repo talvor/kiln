@@ -37,29 +37,31 @@ export async function recheckProject(
   project: ProjectRecord,
   change: Change,
   progress: (message: string) => void,
+  baselineOnly = false,
 ): Promise<ProjectPatch> {
   try {
-    return await recheck(project, change, progress);
+    return await recheck(project, change, progress, baselineOnly);
   } catch (err) {
-    if (err instanceof RecheckBlocked) {
-      let reason: string | undefined;
-      try {
-        const rollback = await run(
-          "git",
-          ["checkout", "--force", "-B", project.defaultBranch, project.headCommit],
-          project.clonePath,
-        );
-        if (rollback.code !== 0) reason = firstLine(rollback.stderr);
-      } catch (rollbackError) {
-        reason = (rollbackError as Error).message;
-      }
-      if (reason) {
-        throw new RecheckBlocked(
-          `${err.message}\nCould not restore the clone to ${project.defaultBranch}: ${reason}`,
-        );
-      }
+    const blocked = err instanceof RecheckBlocked
+      ? err
+      : new RecheckBlocked((err as Error).message);
+    let reason: string | undefined;
+    try {
+      const rollback = await run(
+        "git",
+        ["checkout", "--force", "-B", project.defaultBranch, project.headCommit],
+        project.clonePath,
+      );
+      if (rollback.code !== 0) reason = firstLine(rollback.stderr);
+    } catch (rollbackError) {
+      reason = (rollbackError as Error).message;
     }
-    throw err;
+    if (reason) {
+      throw new RecheckBlocked(
+        `${blocked.message}\nCould not restore the clone to ${project.defaultBranch}: ${reason}`,
+      );
+    }
+    throw blocked;
   }
 }
 
@@ -67,6 +69,7 @@ async function recheck(
   project: ProjectRecord,
   change: Change,
   progress: (message: string) => void,
+  baselineOnly: boolean,
 ): Promise<ProjectPatch> {
   const next = { ...project, ...change };
   const clone = project.clonePath;
@@ -92,19 +95,21 @@ async function recheck(
   }
   const headCommit = (await git("rev-parse", "HEAD")).stdout.trim();
 
-  const docs = await readableOnboardingFiles(clone);
-  if (!docs.some((file) => file === "AGENTS.md" || file === "CLAUDE.md")) {
-    throw new RecheckBlocked(
-      `"${branch}" has no agent docs. Add an AGENTS.md or CLAUDE.md at its root and push it.`,
-    );
-  }
+  if (!baselineOnly) {
+    const docs = await readableOnboardingFiles(clone);
+    if (!docs.some((file) => file === "AGENTS.md" || file === "CLAUDE.md")) {
+      throw new RecheckBlocked(
+        `"${branch}" has no agent docs. Add an AGENTS.md or CLAUDE.md at its root and push it.`,
+      );
+    }
 
-  progress("Checking that Kiln can push to the remote");
-  const push = await git("push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`);
-  if (push.code !== 0) {
-    throw new RecheckBlocked(
-      `A push dry-run to ${project.remoteUrl} failed: ${firstLine(push.stderr)}`,
-    );
+    progress("Checking that Kiln can push to the remote");
+    const push = await git("push", "--dry-run", "origin", `HEAD:${PUSH_CHECK_REF}`);
+    if (push.code !== 0) {
+      throw new RecheckBlocked(
+        `A push dry-run to ${project.remoteUrl} failed: ${firstLine(push.stderr)}`,
+      );
+    }
   }
 
   const warnings: string[] = [];

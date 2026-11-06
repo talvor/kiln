@@ -129,7 +129,7 @@ async function main(args: string[]): Promise<number> {
       }
       case "baseline": {
         if (rest.length !== 1 || rest[0].startsWith("-")) return usage();
-        return await recheckAndRecord(rest[0], {}, "Re-ran the baseline of");
+        return await recheckAndRecord(rest[0], {}, "Re-ran the baseline of", true);
       }
       case "default-branch": {
         if (rest.length !== 2 || rest.some((a) => a.startsWith("-"))) return usage();
@@ -182,6 +182,7 @@ async function main(args: string[]): Promise<number> {
     name: string,
     change: Change,
     done: string,
+    baselineOnly = false,
   ): Promise<number> {
     try {
       await ensureDaemon(paths);
@@ -189,7 +190,7 @@ async function main(args: string[]): Promise<number> {
         project?: ProjectRecord;
         progress: string[];
         blocked?: string;
-      }>(paths, "projects.recheck", { name, change });
+      }>(paths, "projects.recheck", { name, change, baselineOnly });
       for (const message of result.progress) console.log(message);
       if (result.blocked) {
         console.error(`Re-check blocked: ${result.blocked}\nThe project record was not changed. Setup may have left files in Kiln's clone.`);

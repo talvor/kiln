@@ -149,6 +149,58 @@ withWorld("re-running the baseline tests the latest default branch", async (worl
   );
 });
 
+withWorld("baseline re-run works without agent docs or push access", async (world) => {
+  await register(world);
+  await Deno.remove(join(world.project.path, "AGENTS.md"));
+  await world.git(world.project.path, "add", ".");
+  await world.git(world.project.path, "commit", "-m", "Remove agent docs");
+  await world.git(world.project.path, "push", "origin", "main");
+  await world.remote.refusePushes();
+
+  const baseline = await world.kiln("project", "baseline", "remote");
+  assertEquals(baseline.code, 0, baseline.stderr);
+  assertStringIncludes(baseline.stdout, "Test baseline: passing");
+  const edit = await world.kiln("project", "edit", "remote", "--test", "true");
+  assertEquals(edit.code, 1);
+  assertStringIncludes(edit.stderr, "no agent docs");
+});
+
+withWorld("a post-checkout inspection failure restores the recorded branch", async (world) => {
+  await register(world);
+  await world.git(world.project.path, "checkout", "-b", "develop");
+  await world.git(world.project.path, "push", "origin", "develop");
+  const gitPath = (await world.exec(world.root, "which", "git")).stdout.trim();
+  const fakeGit = join(world.root, "fake", "bin", "git");
+  await Deno.writeTextFile(fakeGit, `#!/bin/sh\nif [ "$1" = ls-files ]; then exit 7; fi\nexec "${gitPath}" "$@"\n`);
+  await Deno.chmod(fakeGit, 0o755);
+
+  const changed = await world.kiln("project", "default-branch", "remote", "develop");
+  assertEquals(changed.code, 1);
+  assertStringIncludes(changed.stderr, "Could not list files for onboarding");
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "main@");
+  const clone = join(world.dirs.data, "projects", "remote");
+  assertEquals((await world.git(clone, "rev-parse", "--abbrev-ref", "HEAD")).stdout.trim(), "main");
+});
+
+withWorld("daemon stop waits for a running re-check to persist", async (world) => {
+  await register(world);
+  const marker = join(world.dirs.data, "projects", "remote", "started.txt");
+  const edit = world.kiln(
+    "project", "edit", "remote", "--setup", "echo started > started.txt; sleep 1",
+    "--test", "exit 3",
+  );
+  const deadline = Date.now() + 5000;
+  while (!await Deno.stat(marker).then(() => true, () => false)) {
+    assert(Date.now() < deadline, "the edit did not begin setup");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const stop = world.kiln("daemon", "stop");
+  const [edited, stopped] = await Promise.all([edit, stop]);
+  assertEquals(edited.code, 0, edited.stderr);
+  assertEquals(stopped.code, 0, stopped.stderr);
+  assertStringIncludes((await world.kiln("project", "list")).stdout, "baseline FAILING");
+});
+
 withWorld("repo files may suggest commands but never grant power", async (world) => {
   await register(world);
   // The repository now claims commands, and instructs agents to run something.
