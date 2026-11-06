@@ -6,16 +6,21 @@ import { join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
 import { asAgent } from "./router_helpers.ts";
 
-const COMMANDS = { setup: null, test: null, lint: null, build: null };
+const COMMANDS: Record<string, string | null> = {
+  setup: null,
+  test: null,
+  lint: null,
+  build: null,
+};
 const TICKET_URL = "https://github.com/acme/remote/issues/7";
 
-async function register(world: World) {
+async function register(world: World, commands = COMMANDS) {
   await Deno.writeTextFile(join(world.project.path, "AGENTS.md"), "# How to work here\n");
   await world.git(world.project.path, "add", ".");
   await world.git(world.project.path, "commit", "-m", "Add agent docs");
   await world.git(world.project.path, "push", "origin", "main");
   await world.githubApi.script([{ stdout: "{}\n" }]);
-  await world.launcher.script([{ result: JSON.stringify(COMMANDS) }]);
+  await world.launcher.script([{ result: JSON.stringify(commands) }]);
   const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
 }
@@ -35,6 +40,7 @@ interface Status {
     name: string;
     department: string;
     status: string;
+    retries: number;
     failure: string | null;
     assignments: {
       id: number;
@@ -371,35 +377,114 @@ withWorld("a leader reporting failure fails the step and the request", async (wo
   assertEquals(await world.tracker.issues(), []);
 });
 
+/** The worker reports done, then the leader reports the step verified. */
+async function report(world: World, worker: string, jobId: number, stepMessage: number) {
+  await asAgent(world, worker, async (agent) => {
+    await agent.inbox();
+    await agent.send("engineering-leader", "result", { status: "done", summary: "Done" }, jobId);
+  });
+  await asAgent(world, "engineering-leader", async (agent) => {
+    await agent.inbox();
+    await agent.send("overseer", "result", { status: "done", summary: "Verified" }, stepMessage);
+  });
+}
+
+/** The leader delegates the open step to `worker`; returns the job and its worktree. */
+async function delegate(world: World, worker: string) {
+  const job = await asAgent(
+    world,
+    "engineering-leader",
+    (agent) => agent.send(worker, "assignment", { title: "Do the step", instructions: "Do it" }),
+  );
+  const all = (await statusOf(world)).steps.flatMap((s) => s.assignments);
+  return { job, worktree: all.find((a) => a.id === job.id)!.worktree };
+}
+
 withWorld(
-  "a step is not done until its artifact is verified on the request branch",
+  "work missing its artifact is rejected, and a fresh worker retries from the failed branch",
   async (world) => {
     await register(world);
     await start(world, "--playbook", "diagnose-a-bug", "--description", "Flaky login");
     const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
-    const job = await asAgent(
-      world,
-      "engineering-leader",
-      (agent) =>
-        agent.send("diagnostician-1", "assignment", { title: "Diagnose", instructions: "Go" }),
-    );
-    const { worktree } = (await statusOf(world)).steps[0].assignments[0];
-    await commitFile(world, worktree, "notes.md", "wrong file\n");
-    await asAgent(world, "diagnostician-1", async (agent) => {
-      await agent.inbox();
-      await agent.send("engineering-leader", "result", { status: "done", summary: "Done" }, job.id);
-    });
-    await asAgent(
-      world,
-      "engineering-leader",
-      (agent) => agent.send("overseer", "result", { status: "done", summary: "Verified" }, step.id),
-    );
-    const status = await statusOf(world);
-    assertEquals([status.status, status.steps[0].status], ["failed", "failed"]);
-    assertStringIncludes(status.failure ?? "", "diagnosis.md");
+    const first = await delegate(world, "diagnostician-1");
+    await commitFile(world, first.worktree, "notes.md", "wrong file\n");
+    await report(world, "diagnostician-1", first.job.id, step.id);
+
+    // Nothing was merged; the step went back to the leader with the feedback.
+    let status = await statusOf(world);
+    assertEquals([status.status, status.steps[0].status], ["active", "active"]);
     assertEquals(await world.remote.branches(), ["main"]);
+    const [retry] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    assertEquals([retry.from, retry.kind], ["overseer", "assignment"]);
+    const text = String(retry.body.instructions);
+    assertStringIncludes(text, "diagnosis.md");
+    assertStringIncludes(text, "diagnostician-1-retry-1");
+    assertStringIncludes(text, `kiln/request-1-assignment-${first.job.id}`);
+
+    // The fresh worker's worktree starts from the failed branch.
+    const second = await delegate(world, "diagnostician-1-retry-1");
+    assertStringIncludes(await Deno.readTextFile(join(second.worktree, "notes.md")), "wrong file");
+    await commitFile(world, second.worktree, "diagnosis.md", "the real cause\n");
+    await report(world, "diagnostician-1-retry-1", second.job.id, retry.id);
+
+    status = await statusOf(world);
+    assertEquals(status.steps.map((s) => s.status), ["done", "active"]);
+    assertEquals(status.steps[0].retries, 1);
+    assertEquals(status.steps[0].assignments.map((a) => [a.worker, a.status, a.merged]), [
+      ["diagnostician-1", "failed", false],
+      ["diagnostician-1-retry-1", "done", true],
+    ]);
+    assertEquals(
+      (await remoteFile(world, "kiln/request-1", "diagnosis.md")).stdout,
+      "the real cause\n",
+    );
   },
 );
+
+withWorld(
+  "checks are re-run against the baseline and failures go back as feedback",
+  async (world) => {
+    await register(world, { setup: null, test: "! test -e broken.flag", lint: null, build: null });
+    await start(world, "--playbook", "diagnose-a-bug", "--description", "Flaky login");
+    const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    const first = await delegate(world, "diagnostician-1");
+    await Deno.writeTextFile(join(first.worktree, "broken.flag"), "x");
+    await commitFile(world, first.worktree, "diagnosis.md", "cause\n");
+    await report(world, "diagnostician-1", first.job.id, step.id);
+
+    const [retry] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    assertStringIncludes(String(retry.body.instructions), "test check failed");
+    assertStringIncludes(String(retry.body.instructions), "baseline passed");
+    assertEquals(await world.remote.branches(), ["main"]);
+
+    const second = await delegate(world, "diagnostician-1-retry-1");
+    await world.git(second.worktree, "rm", "broken.flag");
+    await world.git(second.worktree, "commit", "-m", "Remove the breakage");
+    await report(world, "diagnostician-1-retry-1", second.job.id, retry.id);
+    const status = await statusOf(world);
+    assertEquals([status.status, status.steps[0].status], ["active", "done"]);
+  },
+);
+
+withWorld("after two retries a rejected step goes up to the Overseer", async (world) => {
+  await register(world);
+  await start(world, "--playbook", "diagnose-a-bug", "--description", "Flaky login");
+  let [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+  for (const worker of ["diagnostician-1", "diagnostician-1-retry-1", "diagnostician-1-retry-2"]) {
+    const job = await delegate(world, worker);
+    await commitFile(world, job.worktree, `${worker}.md`, "wrong file\n");
+    await report(world, worker, job.job.id, step.id);
+    if (worker.endsWith("2")) break;
+    [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+  }
+  const status = await statusOf(world);
+  assertEquals([status.status, status.steps[0].status], ["failed", "failed"]);
+  assertEquals(status.steps[0].retries, 2);
+  assertStringIncludes(status.failure ?? "", "Overseer");
+  assertStringIncludes(status.failure ?? "", "diagnosis.md");
+  assertEquals(status.steps.map((s) => s.status), ["failed", "planned"]);
+  assertEquals(await world.remote.branches(), ["main"]);
+});
 
 withWorld("a ticket that cannot be published fails the request", async (world) => {
   await register(world);

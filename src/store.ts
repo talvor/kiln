@@ -179,6 +179,7 @@ export const MIGRATIONS: string[] = [
      unique (request_id, position)
    ) strict;
    alter table sessions add column role_name text;`,
+  `alter table steps add column retries integer not null default 0;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -304,6 +305,8 @@ export interface StepRecord {
   worker: string | null;
   /** The assignment Message that handed the step to the leader. */
   messageId: number | null;
+  /** How many times the Step went back to its leader with rejection feedback. */
+  retries: number;
   failure: string | null;
 }
 export interface AssignmentRecord {
@@ -447,6 +450,8 @@ export interface Store {
   listSteps(requestId: number): StepRecord[];
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
   beginStep(id: number, messageId: number, worker: string): void;
+  /** Hand a rejected Step back to its leader in `messageId`, to be delegated to a fresh `worker`. */
+  retryStep(id: number, messageId: number, worker: string): void;
   setStepState(id: number, status: State, failure?: string): void;
   /** Begin an Assignment for a router assignment Message. */
   addAssignment(requestId: number, messageId: number): AssignmentRecord;
@@ -659,6 +664,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       status: row.status as State,
       worker: row.worker as string | null,
       messageId: row.message_id as number | null,
+      retries: row.retries as number,
       failure: row.failure as string | null,
     });
     const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
@@ -721,6 +727,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       beginStep: (id, messageId, worker) => {
         db.prepare("update steps set status = 'active', message_id = ?, worker = ? where id = ?")
           .run(messageId, worker, id);
+      },
+      retryStep: (id, messageId, worker) => {
+        db.prepare(
+          "update steps set message_id = ?, worker = ?, retries = retries + 1 where id = ?",
+        ).run(messageId, worker, id);
       },
       setStepState: (id, status, failure) => {
         db.prepare("update steps set status = ?, failure = ? where id = ?")

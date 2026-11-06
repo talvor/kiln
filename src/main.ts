@@ -571,6 +571,7 @@ interface RequestStatus {
     name: string;
     department: string;
     status: string;
+    retries: number;
     failure: string | null;
     assignments: {
       id: number;
@@ -590,7 +591,8 @@ function describeRequest(r: RequestStatus): string {
   if (r.trackerItem) lines.push(`Tracker item: ${r.trackerItem}`);
   if (r.branch) lines.push(`Branch: ${r.branch}`);
   for (const s of r.steps) {
-    lines.push(`Step ${s.position} ${s.name} (${s.department}): ${s.status}`);
+    const retried = s.retries ? `, retried ${s.retries} time${s.retries === 1 ? "" : "s"}` : "";
+    lines.push(`Step ${s.position} ${s.name} (${s.department}): ${s.status}${retried}`);
     for (const a of s.assignments) {
       lines.push(
         `  Assignment ${a.id} (${a.worker}): ${a.status}${a.merged ? ", merged" : ""}, ${a.branch}`,

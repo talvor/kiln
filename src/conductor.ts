@@ -10,9 +10,11 @@ import type { Logger } from "./log.ts";
 import {
   type Config,
   ConfigError,
+  isStepWorker,
   leaderRoleOf,
   overseerRole,
   type PlaybookConfig,
+  stepWorkerAddress,
 } from "./playbooks.ts";
 import type { Router } from "./router.ts";
 import type {
@@ -24,6 +26,7 @@ import type {
   Store,
 } from "./store.ts";
 import { parseTicket, publishTicket } from "./tracker.ts";
+import { verifyWork } from "./verify.ts";
 import {
   mergeAssignment,
   startAssignment,
@@ -52,6 +55,9 @@ export interface StartPlaybookRequest {
   trackerItem: string | null;
 }
 
+/** How many times a rejected Step goes back to its leader before it goes up to the Overseer. */
+export const MAX_RETRIES = 2;
+
 /** Why a Step cannot go on: it, and the Request, fail with this. */
 class StepFailed extends Error {}
 
@@ -66,7 +72,7 @@ export function createConductor(opts: ConductorOptions) {
 
   /** The Assignments the leader gave this Step's worker. */
   const assignmentsOf = (request: RequestRecord, step: StepRecord): AssignmentRecord[] =>
-    store.listAssignments(request.id).filter((a) => store.getMessage(a.id)?.to === step.worker);
+    store.listAssignments(request.id).filter((a) => isStepWorker(step, store.getMessage(a.id)?.to));
 
   /** The session at the seat, opened if nobody sits there yet. */
   const seat = (
@@ -83,6 +89,7 @@ export function createConductor(opts: ConductorOptions) {
     step: StepRecord,
     steps: StepRecord[],
     worker: string,
+    rejection?: { feedback: string; branch: string | null },
   ) {
     const { spec } = step;
     const lines = [
@@ -93,10 +100,25 @@ export function createConductor(opts: ConductorOptions) {
       `The request: ${request.description}`,
     ];
     if (request.trackerItem) lines.push(`Tracker item: ${request.trackerItem}`);
+    if (rejection) {
+      lines.push(
+        "",
+        `Retry ${step.retries + 1} of ${MAX_RETRIES}: the earlier work was rejected when Kiln ` +
+          `verified it, and nothing from it was merged. The rejection feedback:`,
+        "",
+        rejection.feedback,
+      );
+    }
     lines.push(
       "",
-      `Delegate this to your worker "${worker}" (the ${spec.worker} role): send it an assignment ` +
-        `with your instructions. It works on its own branch and must commit ${spec.artifact}.`,
+      `Delegate this to ${rejection ? "a fresh worker" : "your worker"} "${worker}" ` +
+        `(the ${spec.worker} role): send it an assignment with your instructions` +
+        (rejection
+          ? ", including the rejection feedback above. Its worktree starts from the rejected " +
+            `work${rejection.branch ? ` on branch ${rejection.branch}` : ""}, so it fixes that ` +
+            "work rather than starting over. "
+          : ". ") +
+        `It works on its own branch and must commit ${spec.artifact}.`,
       `When it reports done, verify ${spec.artifact} against what this step asks. Then send ` +
         `your result to the overseer with status done, or failed if the step cannot be done. ` +
         `Reply to this message: inReplyTo is its id.`,
@@ -125,7 +147,7 @@ export function createConductor(opts: ConductorOptions) {
       leaderName,
       project.clonePath,
     );
-    const worker = `${step.spec.worker}-${step.id}`;
+    const worker = stepWorkerAddress(step.spec, step.id);
     seat(
       (s) => s.address === worker,
       {
@@ -148,6 +170,11 @@ export function createConductor(opts: ConductorOptions) {
   async function collect(request: RequestRecord, step: StepRecord): Promise<AssignmentRecord[]> {
     const project = projectOf(request);
     const known = new Set(store.listAssignments(request.id).map((a) => a.id));
+    // A retry's worker starts from the branch of the work that was rejected.
+    const rejected = step.retries
+      ? assignmentsOf(request, step).filter((a) => a.branch && !sameWorker(step, a)).at(-1)
+        ?.branch
+      : undefined;
     const leader = store.listSessions().find((s) =>
       s.role === "leader" && s.department === step.spec.department
     )!;
@@ -158,7 +185,15 @@ export function createConductor(opts: ConductorOptions) {
       try {
         const started = await opts.withProject(
           project.name,
-          () => startAssignment(store, project, request.id, message.id, opts.worktreesDir),
+          () =>
+            startAssignment(
+              store,
+              project,
+              request.id,
+              message.id,
+              opts.worktreesDir,
+              rejected ?? undefined,
+            ),
         );
         store.setSessionCwd(step.worker!, started.path);
         store.appendEvent("assignment.started", { id: message.id, step: step.id });
@@ -176,6 +211,62 @@ export function createConductor(opts: ConductorOptions) {
     return assignmentsOf(request, step);
   }
 
+  const sameWorker = (step: StepRecord, a: AssignmentRecord) =>
+    store.getMessage(a.id)?.to === step.worker;
+
+  /**
+   * Verification rejected the work. Within the retry limit the Step goes back to its leader as a
+   * new assignment from the overseer, carrying the feedback, for a fresh worker that starts from
+   * the rejected branch; past it, the Step fails and the rejection goes up to the Overseer.
+   */
+  function reject(
+    request: RequestRecord,
+    step: StepRecord,
+    project: ProjectRecord,
+    rejected: AssignmentRecord[],
+    feedback: string,
+  ) {
+    store.appendEvent("step.rejected", { request: request.id, step: step.id, feedback });
+    if (step.retries >= MAX_RETRIES) {
+      store.appendEvent("step.escalated", { request: request.id, step: step.id });
+      throw new StepFailed(
+        `Verification rejected the ${step.spec.name} step ${step.retries + 1} times, ` +
+          `${MAX_RETRIES} of them retries; it goes up to the Overseer. The last rejection:\n${feedback}`,
+      );
+    }
+    for (const a of rejected) store.setAssignmentState(a.id, "failed");
+    const worker = stepWorkerAddress(step.spec, step.id, step.retries + 1);
+    seat(
+      (s) => s.address === worker,
+      {
+        address: worker,
+        role: "worker",
+        department: step.spec.department,
+      },
+      step.spec.worker,
+      project.clonePath,
+    );
+    const overseer = store.listSessions().find((s) => s.role === "overseer")!;
+    const leader = store.listSessions().find((s) =>
+      s.role === "leader" && s.department === step.spec.department
+    )!;
+    const steps = store.listSteps(request.id);
+    const sent = router.send(overseer.address, leader.address, "assignment", {
+      title: `${step.spec.name} (request ${request.id}), retry ${step.retries + 1}`,
+      instructions: describeStep(request, step, steps, worker, {
+        feedback,
+        branch: rejected.at(-1)?.branch ?? null,
+      }),
+    });
+    store.retryStep(step.id, sent.id, worker);
+    store.appendEvent("step.retried", {
+      request: request.id,
+      step: step.id,
+      message: sent.id,
+      worker,
+    });
+  }
+
   /** The leader says the step is verified: merge the work back, publish, and finish the step. */
   async function close(request: RequestRecord, step: StepRecord, assignments: AssignmentRecord[]) {
     const report = store.listMessages({ kind: "result", inReplyTo: step.messageId! })[0];
@@ -187,18 +278,22 @@ export function createConductor(opts: ConductorOptions) {
       );
     }
     const project = projectOf(request);
-    const done = assignments.filter((a) => a.status === "done");
+    const done = assignments.filter((a) => a.status === "done" && sameWorker(step, a));
     if (!done.length) {
       throw new StepFailed("The leader reported the step done, but no worker reported done.");
     }
-    // Verify before anything is merged: the worker must have committed what the step asks for.
+    // Verify before anything is merged: the checks and the acceptance criteria, on the work as
+    // the worker left it. A rejected Step goes back for a fresh worker, or up to the Overseer.
+    const problems: string[] = [];
     for (const a of done.filter((a) => !a.mergedAt)) {
       const wt = store.getWorktree(a.worktreeId!);
-      if (!(await hasContent(join(wt.path, step.spec.artifact)))) {
-        throw new StepFailed(
-          `Verification failed: assignment ${a.id} did not commit ${step.spec.artifact}.`,
-        );
+      for (const problem of await verifyWork(project, step.spec, wt.path)) {
+        problems.push(`Assignment ${a.id}: ${problem}`);
       }
+    }
+    if (problems.length) {
+      await reject(request, step, project, done, problems.join("\n\n"));
+      return false;
     }
     for (const a of done) {
       const wt = store.getWorktree(a.worktreeId!);
@@ -322,12 +417,4 @@ export function createConductor(opts: ConductorOptions) {
       return started;
     },
   };
-}
-
-async function hasContent(path: string): Promise<boolean> {
-  try {
-    return (await Deno.stat(path)).isFile && (await Deno.readTextFile(path)).trim().length > 0;
-  } catch {
-    return false;
-  }
 }

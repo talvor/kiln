@@ -169,13 +169,17 @@ export async function startRequest(
   }
 }
 
-/** Start an Assignment: its own branch off the request branch, in its own Worktree. */
+/**
+ * Start an Assignment: its own branch in its own Worktree, off the request branch or, for a
+ * retry, off `fromBranch`, the branch of the work that was rejected.
+ */
 export async function startAssignment(
   store: Store,
   project: ProjectRecord,
   requestId: number,
   assignmentId: number,
   worktreesDir: string,
+  fromBranch?: string,
 ): Promise<StartedAssignment> {
   const request = store.getRequest(requestId);
   if (request.status !== "active" || !request.branch) {
@@ -189,7 +193,7 @@ export async function startAssignment(
       project,
       join(worktreesDir, project.name, `request-${requestId}-assignment-${assignment.id}`),
       branch,
-      request.branch,
+      fromBranch ?? request.branch,
     );
     store.attachAssignment(assignment.id, branch, wt.id);
     return { assignmentId: assignment.id, requestId, ...infoOf(wt) };
