@@ -2,7 +2,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@st
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import denoJson from "../deno.json" with { type: "json" };
-import { runKiln, status, withHome } from "./helpers.ts";
+import { makeHome, runKiln, status, withHome } from "./helpers.ts";
 
 withHome("daemon starts, reports status, and stops", async (home) => {
   assertEquals((await status(home)).code, 3, "stopped daemon reports exit code 3");
@@ -33,6 +33,61 @@ withHome("restart replaces the daemon process", async (home) => {
   assertEquals(r.code, 0, r.stderr);
   const after = (await status(home)).info.pid;
   assertNotEquals(after, before);
+});
+
+Deno.test("stop finishes when a replacement daemon owns the socket", async () => {
+  const home = await makeHome();
+  await Deno.mkdir(home.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(home.dirs.runtime, "kiln.sock") });
+  const seen: string[] = [];
+  const serving = (async () => {
+    while (true) {
+      let conn: Deno.Conn;
+      try {
+        conn = await listener.accept();
+      } catch {
+        return;
+      }
+      void (async () => {
+        try {
+          const bytes = new Uint8Array(1024);
+          const decoder = new TextDecoder();
+          let input = "";
+          while (!input.includes("\n")) {
+            const size = await conn.read(bytes);
+            if (size === null) return;
+            input += decoder.decode(bytes.subarray(0, size), { stream: true });
+          }
+          const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+          seen.push(request.method);
+          const identity = request.method === "stop"
+            ? { pid: 101, startedAt: "old" }
+            : { pid: 102, startedAt: "new" };
+          await conn.write(new TextEncoder().encode(
+            JSON.stringify({ id: request.id, ok: true, result: identity }) + "\n",
+          ));
+        } catch {
+        } finally {
+          conn.close();
+        }
+      })();
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      home.kiln("daemon", "stop"),
+      new Promise<null>((resolve) => timer = setTimeout(() => resolve(null), 3000)),
+    ]);
+    assert(result, "stop kept waiting for the replacement daemon");
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(seen.slice(0, 2), ["stop", "ping"]);
+  } finally {
+    clearTimeout(timer);
+    listener.close();
+    await serving;
+    await Deno.remove(home.root, { recursive: true });
+  }
 });
 
 withHome("the first command that needs the daemon starts it", async (home) => {

@@ -111,14 +111,20 @@ export async function ensureDaemon(paths: KilnPaths, timeoutMs = 15_000): Promis
 
 /** Ask the daemon to stop and wait until it has gone. Returns false if it was not running. */
 export async function stopDaemon(paths: KilnPaths): Promise<boolean> {
+  let stopped: { pid: number; startedAt: string };
   try {
-    await call(paths, "stop");
+    stopped = await call(paths, "stop");
   } catch (err) {
     if (err instanceof DaemonNotRunning) return false;
     throw err;
   }
   while (true) {
-    if (!(await canConnect(paths.socket))) return true;
+    try {
+      const running = await call<{ pid: number; startedAt: string }>(paths, "ping", {}, 3000);
+      if (running.pid !== stopped.pid || running.startedAt !== stopped.startedAt) return true;
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return true;
+    }
     await sleep(50);
   }
 }

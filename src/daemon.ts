@@ -100,7 +100,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   for (const sig of ["SIGINT", "SIGHUP"] as const) Deno.addSignalListener(sig, () => {});
 
   const handlers: Record<string, Handler> = {
-    ping: () => ({ pid: Deno.pid }),
+    ping: () => ({ pid: Deno.pid, startedAt }),
     status,
     backup: async () => ({ path: await store.backup() }),
     "projects.list": (params) =>
@@ -144,7 +144,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }),
     stop: (_params, ctx) => {
       ctx.afterReply = () => beginShutdown("stop command");
-      return { stopping: true };
+      return { stopping: true, pid: Deno.pid, startedAt };
     },
   };
 
