@@ -193,3 +193,13 @@ export function leaderRoleOf(config: Config, department: string): RoleConfig {
 export function overseerRole(config: Config): RoleConfig {
   return [...config.roles.values()].find((r) => r.kind === "overseer")!;
 }
+
+/** The address of the worker session for a Step's first try, or for its `retry`th retry. */
+export function stepWorkerAddress(spec: StepSpec, stepId: number, retry = 0): string {
+  return retry ? `${spec.worker}-${stepId}-retry-${retry}` : `${spec.worker}-${stepId}`;
+}
+/** Whether `address` is a worker the Step has had, on any try. */
+export function isStepWorker(step: { id: number; spec: StepSpec }, address: string | undefined) {
+  const base = stepWorkerAddress(step.spec, step.id);
+  return address === base || (address?.startsWith(`${base}-retry-`) ?? false);
+}

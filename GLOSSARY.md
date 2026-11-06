@@ -52,6 +52,10 @@ _Avoid_: status, phase
 The ticket in a project's tracker that a request came from. A request may have none. A ticket Kiln publishes for a request is a new tracker item.
 _Avoid_: issue link, ticket reference
 
+**Rejection**:
+A failed verification of a step's work. The work is not merged; the step goes back to its leader with the feedback for a fresh worker that starts from the rejected branch. A step is retried twice, then the rejection goes up to the Overseer.
+_Avoid_: bounce, failure
+
 **Gate**:
 A point in a request where the overseer must bring the user a decision before work can continue.
 _Avoid_: approval step, checkpoint

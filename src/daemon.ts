@@ -2,7 +2,7 @@ import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
-import { loadConfig } from "./playbooks.ts";
+import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
@@ -304,11 +304,12 @@ function requestStatus(store: Store, id: number) {
       department: step.spec.department,
       status: step.status,
       failure: step.failure,
+      retries: step.retries,
       assignments: assignments
-        .filter((a) => store.getMessage(a.id)?.to === step.worker)
+        .filter((a) => isStepWorker(step, store.getMessage(a.id)?.to))
         .map((a) => ({
           id: a.id,
-          worker: step.worker,
+          worker: store.getMessage(a.id)!.to,
           status: a.status,
           branch: a.branch,
           worktree: a.worktreeId === null ? null : store.getWorktree(a.worktreeId).path,

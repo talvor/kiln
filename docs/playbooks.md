@@ -73,8 +73,21 @@ Each Step names a department with a leader and a worker role in that department.
 optional. A file that is not valid is refused when a Request starts, naming the file and the
 problem. A Request keeps the Steps it started with if the file changes later.
 
+## Verification and retries
+
+When the leader reports a Step done, Kiln verifies each worker's Assignment before merging it, in
+the Assignment's worktree: the Step's artifact is committed (and starts with a title when it is
+published as a ticket), and the Project's setup, lint, build and test commands pass. A test failure
+counts against the work when the registered baseline passed; when the baseline was already failing
+the test run cannot tell, and is not held against it.
+
+A rejected Step goes back to its leader as a new assignment from the overseer, carrying the
+rejection feedback. The leader delegates it to a fresh worker (`<role>-<step>-retry-<n>`) whose
+worktree starts from the rejected branch, and reports on the Step again. Nothing rejected is
+merged. After two retries a third rejection fails the Step and the Request, with the last feedback,
+for the Overseer. `kiln request status` shows each try's Assignment and the Step's retries.
+
 ## Not covered here
 
-Deeper verification (re-running checks against the baseline), retries with a fresh worker,
-escalation to the user, limits, and worker confinement are left to later tickets, as is following a
+Escalation to the user, limits, and worker confinement are left to later tickets, as is following a
 diagnosis with a fix Request. A Step that fails stays failed.
