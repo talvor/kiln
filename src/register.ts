@@ -2,6 +2,18 @@
 // onboarding agent propose its commands, and records them with the test baseline once the user
 // confirms. Problems that make a Project unworkable block registration; the rest are warnings.
 import { basename, isAbsolute, join, relative, resolve } from "@std/path";
+import {
+  branchProtection,
+  commandWarnings,
+  defaultBranchOf,
+  firstLine,
+  PUSH_CHECK_REF,
+  run,
+  SETUP_TIMEOUT_MS,
+  shell,
+  tail,
+  TEST_TIMEOUT_MS,
+} from "./checks.ts";
 import type { LaunchRequest, LaunchResult } from "./launcher.ts";
 import type { Baseline, NewProject } from "./store.ts";
 
@@ -34,10 +46,6 @@ export interface RegisterDeps {
   progress(message: string): void;
 }
 
-const SETUP_TIMEOUT_MS = 15 * 60_000;
-const TEST_TIMEOUT_MS = 30 * 60_000;
-const OUTPUT_TAIL_BYTES = 4000;
-const PUSH_CHECK_REF = "refs/heads/kiln/registration-check";
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export async function registerProject(
@@ -131,10 +139,7 @@ async function onboard(
     }
   }
 
-  if (!commands.lint) warnings.push("No lint command: nothing will check style before merge.");
-  if (!commands.build) {
-    warnings.push("No build command: nothing will check that the project builds.");
-  }
+  warnings.push(...commandWarnings(commands, { includeTest: false }));
 
   let baseline: Baseline | null = null;
   if (commands.test) {
@@ -150,7 +155,7 @@ async function onboard(
       recordedAt: new Date().toISOString(),
     };
   } else {
-    warnings.push("No test command: no test baseline was recorded.");
+    warnings.push(...commandWarnings(commands).filter((w) => w.startsWith("No test")));
   }
 
   return {
@@ -199,12 +204,6 @@ function nameFrom(url: string): string {
   return last.replace(/\.git$/, "");
 }
 
-async function defaultBranchOf(clonePath: string): Promise<string> {
-  const ref = await run("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], clonePath);
-  if (ref.code === 0) return ref.stdout.trim().replace(/^origin\//, "");
-  return (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], clonePath)).stdout.trim();
-}
-
 const MANIFEST_NAMES = new Set([
   "package.json",
   "deno.json",
@@ -243,7 +242,7 @@ function isOnboardingFile(file: string): boolean {
       .test(file);
 }
 
-async function readableOnboardingFiles(clonePath: string): Promise<string[]> {
+export async function readableOnboardingFiles(clonePath: string): Promise<string[]> {
   const tracked = await run("git", ["ls-files", "-z"], clonePath);
   if (tracked.code !== 0) throw new RegistrationBlocked("Could not list files for onboarding.");
   const root = await Deno.realPath(clonePath);
@@ -260,24 +259,6 @@ async function readableOnboardingFiles(clonePath: string): Promise<string[]> {
     } catch { /* absent */ }
   }
   return files;
-}
-
-async function branchProtection(clonePath: string, branch: string): Promise<string | null> {
-  let result: { code: number; stdout: string; stderr: string };
-  try {
-    result = await run(
-      "gh",
-      ["api", `repos/{owner}/{repo}/branches/${encodeURIComponent(branch)}/protection`],
-      clonePath,
-    );
-  } catch {
-    return `Could not confirm branch protection for "${branch}": the gh command is not available.`;
-  }
-  if (result.code === 0) return null;
-  if (/404/.test(result.stderr)) {
-    return `Could not confirm branch protection for "${branch}": API returned 404.`;
-  }
-  return `Could not confirm branch protection for "${branch}": ${firstLine(result.stderr)}`;
 }
 
 const ONBOARDING_PROMPT =
@@ -338,85 +319,6 @@ function parseCommands(text: string): Commands | null {
   }
   return out;
 }
-
-interface Output {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-async function run(cmd: string, args: string[], cwd?: string): Promise<Output> {
-  const child = new Deno.Command(cmd, {
-    args,
-    cwd,
-    // Never wait for credentials that nobody can type.
-    env: { GIT_TERMINAL_PROMPT: "0" },
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const out = await child.output();
-  const dec = new TextDecoder();
-  return {
-    code: out.code,
-    stdout: dec.decode(out.stdout),
-    stderr: dec.decode(out.stderr),
-  };
-}
-
-async function shell(
-  command: string,
-  cwd: string,
-  timeoutMs: number,
-): Promise<{ code: number; output: string }> {
-  const child = new Deno.Command("sh", {
-    args: ["-c", `exec 2>&1; ${command}`],
-    cwd,
-    detached: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "null",
-  }).spawn();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try {
-      Deno.kill(-child.pid, "SIGKILL");
-    } catch {
-      try {
-        child.kill("SIGKILL");
-      } catch { /* already exited */ }
-    }
-  }, timeoutMs);
-  let bytes = new Uint8Array();
-  const drain = (async () => {
-    for await (const chunk of child.stdout) {
-      const end = chunk.subarray(Math.max(0, chunk.length - OUTPUT_TAIL_BYTES));
-      if (end.length === OUTPUT_TAIL_BYTES) {
-        bytes = end.slice();
-      } else {
-        const next = new Uint8Array(Math.min(OUTPUT_TAIL_BYTES, bytes.length + end.length));
-        const previous = bytes.subarray(Math.max(0, bytes.length - (next.length - end.length)));
-        next.set(previous);
-        next.set(end, previous.length);
-        bytes = next;
-      }
-    }
-  })();
-  try {
-    const [status] = await Promise.all([child.status, drain]);
-    const output = new TextDecoder().decode(bytes);
-    return {
-      code: timedOut ? 124 : status.code,
-      output: timedOut ? `timed out after ${timeoutMs / 60_000} minutes\n${output}` : output,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const firstLine = (s: string) => s.trim().split("\n").find(Boolean) ?? "(no message)";
-const tail = (s: string) => s.length > OUTPUT_TAIL_BYTES ? s.slice(-OUTPUT_TAIL_BYTES) : s;
 
 async function isDirectory(path: string): Promise<boolean> {
   try {

@@ -20,3 +20,8 @@ unattended permission controls.
 
 Run `deno task kiln project register <path-or-url>` to register a project. See
 [the registration guide](docs/register.md) for what Kiln checks, what blocks and what only warns.
+
+## Manage projects
+
+Pause, edit commands, re-run the test baseline, change the default branch or remove a project with
+`deno task kiln project ...`. See [the management guide](docs/manage.md).

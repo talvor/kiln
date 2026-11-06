@@ -3,7 +3,8 @@ import { canConnect, closeQuietly } from "./client.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
-import { type NewProject, openStore, type Store } from "./store.ts";
+import { removeClone } from "./manage.ts";
+import { type NewProject, openStore, type ProjectPatch, type Store } from "./store.ts";
 
 export const VERSION: string = denoJson.version;
 
@@ -79,7 +80,21 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     ping: () => ({ pid: Deno.pid }),
     status,
     backup: async () => ({ path: await store.backup() }),
-    "projects.list": () => store.listProjects(),
+    "projects.list": (params) =>
+      store.listProjects({ includeRemoved: params.includeRemoved === true }),
+    "projects.get": (params) => store.getProject(String(params.name)),
+    "projects.update": (params) => {
+      const name = String(params.name);
+      const patch = params.patch as ProjectPatch;
+      const project = store.updateProject(name, patch);
+      store.appendEvent("project.updated", { id: project.id, name, fields: Object.keys(patch) });
+      return project;
+    },
+    "projects.remove": async (params) => {
+      const project = store.removeProject(String(params.name), { force: params.force === true });
+      await removeClone(project.clonePath, paths.projects);
+      return project;
+    },
     "projects.add": (params) => {
       const project = store.addProject(params as unknown as NewProject);
       store.appendEvent("project.registered", { id: project.id, name: project.name });
