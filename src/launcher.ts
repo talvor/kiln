@@ -13,6 +13,7 @@ export interface LaunchRequest {
   prompt: string;
   /** Directory Claude works in: a Project checkout. */
   cwd: string;
+  readOnly?: boolean;
   /** Override the spend cap for this launch (USD); never raises it above MAX_LAUNCH_USD. */
   maxBudgetUsd?: number;
 }
@@ -59,8 +60,8 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       model: LAUNCHER_MODEL,
       maxBudgetUsd,
       pathToClaudeCodeExecutable: findClaude(),
-      // Unattended: allow file edits without approval; exclude project-supplied settings below.
       permissionMode: "acceptEdits",
+      tools: req.readOnly ? ["Read", "Glob", "Grep"] : undefined,
       persistSession: false,
       settingSources: [],
     },

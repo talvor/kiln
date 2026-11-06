@@ -12,6 +12,8 @@ export interface KilnPaths {
   socket: string;
   store: string;
   backups: string;
+  /** Kiln's own clones of registered Projects, one directory per Project. */
+  projects: string;
   log: string;
 }
 
@@ -59,13 +61,14 @@ export function resolvePaths(
     socket,
     store: join(data, "kiln.db"),
     backups: join(data, "backups"),
+    projects: join(data, "projects"),
     log: join(state, "daemon.log"),
   };
 }
 
 /** Create every directory Kiln writes to, private to the user. */
 export function ensureDirs(p: KilnPaths): void {
-  for (const dir of [p.config, p.data, p.backups, p.state, p.runtime]) {
+  for (const dir of [p.config, p.data, p.backups, p.projects, p.state, p.runtime]) {
     Deno.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   // The socket directory must be private even if it already existed.

@@ -3,7 +3,7 @@ import { canConnect, closeQuietly } from "./client.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
-import { openStore, type Store } from "./store.ts";
+import { type NewProject, openStore, type Store } from "./store.ts";
 
 export const VERSION: string = denoJson.version;
 
@@ -79,6 +79,12 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     ping: () => ({ pid: Deno.pid }),
     status,
     backup: async () => ({ path: await store.backup() }),
+    "projects.list": () => store.listProjects(),
+    "projects.add": (params) => {
+      const project = store.addProject(params as unknown as NewProject);
+      store.appendEvent("project.registered", { id: project.id, name: project.name });
+      return project;
+    },
     stop: (_params, ctx) => {
       ctx.afterReply = () => shutdown("stop command");
       return { stopping: true };

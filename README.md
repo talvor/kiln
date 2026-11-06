@@ -15,3 +15,8 @@ unattended permission controls.
 
 `deno task smoke` opts into live checks against the real `claude`. It costs money; see
 [the smoke guide](docs/smoke.md).
+
+## Register a project
+
+Run `deno task kiln project register <path-or-url>` to register a project. See
+[the registration guide](docs/register.md) for what Kiln checks, what blocks and what only warns.
