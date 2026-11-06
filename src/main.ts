@@ -13,7 +13,7 @@ import type { ProjectRecord } from "./store.ts";
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
 const REGISTER_USAGE =
-  "Usage: kiln project register <path-or-url> [--name <name>] [--yes] [--json]";
+  "Usage: kiln project register <path-or-url> [--name <name>]";
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -21,7 +21,7 @@ Usage:
   kiln backup            Write a safe copy of the store and print its path
   kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]
                          Run Claude once on a prompt in a directory (default: here)
-  kiln project register <path-or-url> [--name <name>] [--yes] [--json]
+  kiln project register <path-or-url> [--name <name>]
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln --version
 
@@ -64,28 +64,24 @@ async function main(args: string[]): Promise<number> {
 
   async function registerCommand(rest: string[]): Promise<number> {
     let name: string | undefined;
-    let yes = false;
-    let asJson = false;
     const positional: string[] = [];
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
-      if (arg === "--yes" || arg === "-y") yes = true;
-      else if (arg === "--json") asJson = true;
-      else if (arg === "--name") {
+      if (arg === "--name") {
         name = rest[++i];
         if (!name || name.startsWith("--")) {
           console.error(REGISTER_USAGE);
           return 2;
         }
+      } else if (arg.startsWith("-")) {
+        console.error(REGISTER_USAGE);
+        return 2;
       } else positional.push(arg);
     }
     if (positional.length !== 1) {
       console.error(REGISTER_USAGE);
       return 2;
     }
-    // With --json, stdout carries only the result; everything else goes to stderr.
-    const say = (message: string) => (asJson ? console.error : console.log)(message);
-
     await ensureDaemon(paths);
     const existing = await call<ProjectRecord[]>(paths, "projects.list");
     try {
@@ -93,10 +89,9 @@ async function main(args: string[]): Promise<number> {
         projectsDir: paths.projects,
         existingNames: existing.map((p) => p.name),
         launch,
-        progress: say,
+        progress: console.log,
         confirm: async (commands) => {
-          say(describeCommands(commands));
-          if (yes) return true;
+          console.log(describeCommands(commands));
           Deno.stdout.writeSync(new TextEncoder().encode("Use these commands? [y/N] "));
           return /^y(es)?$/i.test((await readLine())?.trim() ?? "");
         },
@@ -104,19 +99,18 @@ async function main(args: string[]): Promise<number> {
           await call(paths, "projects.add", { ...p });
         },
       });
-      if (asJson) console.log(JSON.stringify(project, null, 2));
-      else {
-        for (const w of project.warnings) console.log(`warning: ${w}`);
-        const b = project.baseline;
-        if (b) {
-          console.log(
-            b.passed
-              ? "Test baseline: passing."
-              : `Test baseline: FAILING (exit ${b.exitCode}); the project is registered with its tests already red.`,
-          );
-        }
-        console.log(`Registered ${project.name} (clone: ${project.clonePath})`);
+      for (const w of project.warnings) console.log(`warning: ${w}`);
+      const b = project.baseline;
+      if (b) {
+        console.log(
+          b.passed
+            ? "Test baseline: passing."
+            : `Test baseline: FAILING (exit ${b.exitCode}); the project is registered with its tests already red.`,
+        );
+      } else {
+        console.log("Test baseline: not recorded (no test command).");
       }
+      console.log(`Registered ${project.name} (clone: ${project.clonePath})`);
       return 0;
     } catch (err) {
       if (err instanceof RegistrationBlocked) {

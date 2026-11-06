@@ -1,7 +1,7 @@
 // Registering a Project: Kiln takes its own clone, checks the Project can be worked on, has an
 // onboarding agent propose its commands, and records them with the test baseline once the user
 // confirms. Problems that make a Project unworkable block registration; the rest are warnings.
-import { isAbsolute, join, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve } from "@std/path";
 import type { LaunchRequest, LaunchResult } from "./launcher.ts";
 import type { Baseline, NewProject } from "./store.ts";
 
@@ -59,20 +59,24 @@ export async function registerProject(
   if (deps.existingNames.includes(name)) {
     throw new RegistrationBlocked(`A project named "${name}" is already registered.`);
   }
+  await Deno.mkdir(deps.projectsDir, { recursive: true });
   const clonePath = join(deps.projectsDir, name);
-  if (await exists(clonePath)) {
+  try {
+    await Deno.mkdir(clonePath);
+  } catch (err) {
+    if (!(err instanceof Deno.errors.AlreadyExists)) throw err;
     throw new RegistrationBlocked(
       `${clonePath} already exists; remove it or register under another --name.`,
     );
   }
-
+  let recording = false;
   try {
     const project = await onboard(source, name, remoteUrl, clonePath, deps);
+    recording = true;
     await deps.record(project);
     return project;
   } catch (err) {
-    // A Project that did not register leaves nothing behind.
-    await Deno.remove(clonePath, { recursive: true }).catch(() => {});
+    if (!recording) await Deno.remove(clonePath, { recursive: true }).catch(() => {});
     throw err;
   }
 }
@@ -85,7 +89,6 @@ async function onboard(
   deps: RegisterDeps,
 ): Promise<NewProject> {
   deps.progress(`Cloning ${remoteUrl}`);
-  await Deno.mkdir(deps.projectsDir, { recursive: true });
   const clone = await run("git", ["clone", remoteUrl, clonePath]);
   if (clone.code !== 0) {
     throw new RegistrationBlocked(`Cannot clone ${remoteUrl}: ${firstLine(clone.stderr)}`);
@@ -120,9 +123,11 @@ async function onboard(
 
   deps.progress("Asking the onboarding agent for the project's commands");
   const commands = await proposeCommands(clonePath, deps);
-  // The agent only reads; whatever it wrote is not part of the Project.
-  await git("reset", "--hard", "--quiet");
-  await git("clean", "-fdq");
+  const reset = await git("reset", "--hard", "--quiet");
+  const clean = await git("clean", "-fdxq");
+  if (reset.code !== 0 || clean.code !== 0) {
+    throw new RegistrationBlocked("Could not restore the clone after onboarding.");
+  }
 
   if (!await deps.confirm(commands)) throw new RegistrationDeclined();
 
@@ -211,9 +216,15 @@ async function defaultBranchOf(clonePath: string): Promise<string> {
 }
 
 async function hasAgentDocs(clonePath: string): Promise<boolean> {
+  const root = await Deno.realPath(clonePath);
   for (const file of ["AGENTS.md", "CLAUDE.md"]) {
     try {
-      if ((await Deno.stat(join(clonePath, file))).size > 0) return true;
+      const path = await Deno.realPath(join(clonePath, file));
+      const within = relative(root, path);
+      if (within.split(/[\\/]/)[0] !== ".." && !isAbsolute(within)) {
+        const info = await Deno.stat(path);
+        if (info.isFile && info.size > 0) return true;
+      }
     } catch { /* absent */ }
   }
   return false;
@@ -254,7 +265,7 @@ root:
 Use null for any command the project does not have. Do not invent commands.`;
 
 async function proposeCommands(clonePath: string, deps: RegisterDeps): Promise<Commands> {
-  const result = await deps.launch({ prompt: ONBOARDING_PROMPT, cwd: clonePath });
+  const result = await deps.launch({ prompt: ONBOARDING_PROMPT, cwd: clonePath, readOnly: true });
   if (!result.ok) {
     throw new RegistrationBlocked(
       `The onboarding agent did not finish (${result.outcome}): ${result.text}`,
@@ -273,16 +284,19 @@ function parseCommands(text: string): Commands | null {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end < start) return null;
-  let raw: Record<string, unknown>;
+  let raw: unknown;
   try {
     raw = JSON.parse(text.slice(start, end + 1));
   } catch {
     return null;
   }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const fields = raw as Record<string, unknown>;
   const out: Commands = { setup: null, test: null, lint: null, build: null };
   for (const key of Object.keys(out) as (keyof Commands)[]) {
-    const value = raw[key];
-    if (value === undefined || value === null) continue;
+    if (!Object.hasOwn(fields, key)) return null;
+    const value = fields[key];
+    if (value === null) continue;
     if (typeof value !== "string") return null;
     out[key] = value.trim() || null;
   }
@@ -295,7 +309,7 @@ interface Output {
   stderr: string;
 }
 
-async function run(cmd: string, args: string[], cwd?: string, timeoutMs?: number): Promise<Output> {
+async function run(cmd: string, args: string[], cwd?: string): Promise<Output> {
   const child = new Deno.Command(cmd, {
     args,
     cwd,
@@ -305,41 +319,63 @@ async function run(cmd: string, args: string[], cwd?: string, timeoutMs?: number
     stdout: "piped",
     stderr: "piped",
   }).spawn();
-  let timedOut = false;
-  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
-    timedOut = true;
-    try {
-      child.kill("SIGKILL");
-    } catch { /* already exited */ }
-  }, timeoutMs);
   const out = await child.output();
-  clearTimeout(timer);
   const dec = new TextDecoder();
   return {
-    code: timedOut ? 124 : out.code,
+    code: out.code,
     stdout: dec.decode(out.stdout),
-    stderr: timedOut
-      ? `timed out after ${timeoutMs! / 60_000} minutes\n${dec.decode(out.stderr)}`
-      : dec.decode(out.stderr),
+    stderr: dec.decode(out.stderr),
   };
 }
 
-async function shell(command: string, cwd: string, timeoutMs: number) {
-  const r = await run("sh", ["-c", command], cwd, timeoutMs);
-  return { code: r.code, output: r.stdout + r.stderr };
+async function shell(command: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
+  const child = new Deno.Command("sh", {
+    args: ["-c", `exec 2>&1; ${command}`],
+    cwd,
+    detached: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  }).spawn();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      Deno.kill(-child.pid, "SIGKILL");
+    } catch {
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+    }
+  }, timeoutMs);
+  let bytes = new Uint8Array();
+  const drain = (async () => {
+    for await (const chunk of child.stdout) {
+      const end = chunk.subarray(Math.max(0, chunk.length - OUTPUT_TAIL_BYTES));
+      if (end.length === OUTPUT_TAIL_BYTES) {
+        bytes = end.slice();
+      } else {
+        const next = new Uint8Array(Math.min(OUTPUT_TAIL_BYTES, bytes.length + end.length));
+        const previous = bytes.subarray(Math.max(0, bytes.length - (next.length - end.length)));
+        next.set(previous);
+        next.set(end, previous.length);
+        bytes = next;
+      }
+    }
+  })();
+  try {
+    const [status] = await Promise.all([child.status, drain]);
+    const output = new TextDecoder().decode(bytes);
+    return {
+      code: timedOut ? 124 : status.code,
+      output: timedOut ? `timed out after ${timeoutMs / 60_000} minutes\n${output}` : output,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const firstLine = (s: string) => s.trim().split("\n").find(Boolean) ?? "(no message)";
 const tail = (s: string) => s.length > OUTPUT_TAIL_BYTES ? s.slice(-OUTPUT_TAIL_BYTES) : s;
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await Deno.lstat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await Deno.stat(path)).isDirectory;

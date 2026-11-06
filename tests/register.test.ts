@@ -58,7 +58,7 @@ withWorld(
     await world.githubApi.script([PROTECTED]);
     await world.launcher.script([proposal(FULL)]);
 
-    const r = await world.kiln("project", "register", world.project.path, "--yes");
+    const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
     assertEquals(r.code, 0, r.stderr);
     assertStringIncludes(r.stdout, "echo prepared > prepared.txt");
     assertStringIncludes(r.stdout, "Registered remote");
@@ -95,7 +95,7 @@ withWorld("registering by URL clones from that URL", async (world) => {
   await world.launcher.script([proposal(FULL)]);
 
   const url = `file://${world.remote.path}`;
-  const r = await world.kiln("project", "register", url, "--yes", "--name", "by-url");
+  const r = await world.kilnWithInput("y\n", "project", "register", url, "--name", "by-url");
   assertEquals(r.code, 0, r.stderr);
 
   const [row] = await registeredProjects(world);
@@ -138,7 +138,7 @@ withWorld("registration blocks on a project with no remote", async (world) => {
   const lonely = join(world.root, "lonely");
   await world.git(world.root, "init", "--initial-branch=main", lonely);
 
-  const r = await world.kiln("project", "register", lonely, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", lonely);
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "Registration blocked");
   assertStringIncludes(r.stderr, "no remote");
@@ -147,7 +147,7 @@ withWorld("registration blocks on a project with no remote", async (world) => {
 });
 
 withWorld("registration blocks on a project with no agent docs", async (world) => {
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "Registration blocked");
   assertStringIncludes(r.stderr, "AGENTS.md or CLAUDE.md");
@@ -161,8 +161,38 @@ withWorld("registration blocks on a project with no agent docs", async (world) =
   await world.git(world.project.path, "push", "origin", "main");
   await world.githubApi.script([PROTECTED]);
   await world.launcher.script([proposal(FULL)]);
-  const again = await world.kiln("project", "register", world.project.path, "--yes");
+  const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(again.code, 0, again.stderr);
+});
+
+withWorld("agent docs symlinked outside the clone block registration", async (world) => {
+  const privateFile = join(world.root, "private-notes.md");
+  await Deno.writeTextFile(privateFile, "private notes\n");
+  await Deno.symlink(privateFile, join(world.project.path, "AGENTS.md"));
+  await world.git(world.project.path, "add", ".");
+  await world.git(world.project.path, "commit", "-m", "Add linked agent docs");
+  await world.git(world.project.path, "push", "origin", "main");
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stderr, "AGENTS.md or CLAUDE.md");
+  assertEquals(await world.launcher.calls(), []);
+  await assertNothingRegistered(world);
+});
+
+withWorld("a directory named AGENTS.md is not agent docs", async (world) => {
+  const docs = join(world.project.path, "AGENTS.md");
+  await Deno.mkdir(docs);
+  await Deno.writeTextFile(join(docs, "note"), "directory content\n");
+  await world.git(world.project.path, "add", ".");
+  await world.git(world.project.path, "commit", "-m", "Add agent docs directory");
+  await world.git(world.project.path, "push", "origin", "main");
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stderr, "AGENTS.md or CLAUDE.md");
+  assertEquals(await world.launcher.calls(), []);
+  await assertNothingRegistered(world);
 });
 
 withWorld("registration blocks when setup fails", async (world) => {
@@ -170,7 +200,7 @@ withWorld("registration blocks when setup fails", async (world) => {
   await world.githubApi.script([PROTECTED]);
   await world.launcher.script([proposal({ ...FULL, setup: "echo no network >&2; exit 3" })]);
 
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "Registration blocked: Setup failed (exit 3)");
   assertStringIncludes(r.stderr, "no network");
@@ -181,7 +211,7 @@ withWorld("registration blocks when a push dry-run to the remote fails", async (
   await addAgentDocs(world);
   await world.remote.refusePushes();
 
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "Registration blocked");
   assertStringIncludes(r.stderr, "push dry-run");
@@ -197,12 +227,40 @@ withWorld(
     await world.githubApi.script([PROTECTED]);
     await world.launcher.script([{ result: "I could not work out how to build this." }]);
 
-    const r = await world.kiln("project", "register", world.project.path, "--yes");
+    const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
     assertEquals(r.code, 1);
     assertStringIncludes(r.stderr, "did not propose commands");
     await assertNothingRegistered(world);
   },
 );
+
+withWorld("an incomplete command proposal blocks registration", async (world) => {
+  await addAgentDocs(world);
+  await world.githubApi.script([PROTECTED]);
+  await world.launcher.script([proposal({})]);
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stderr, "did not propose commands");
+  await assertNothingRegistered(world);
+});
+
+withWorld("onboarding changes are removed before confirmed commands run", async (world) => {
+  await addAgentDocs(world);
+  await Deno.writeTextFile(join(world.project.path, ".gitignore"), ".env\n");
+  await world.git(world.project.path, "add", ".");
+  await world.git(world.project.path, "commit", "-m", "Ignore local env");
+  await world.git(world.project.path, "push", "origin", "main");
+  await world.githubApi.script([PROTECTED]);
+  await world.launcher.script([{
+    ...proposal({ ...FULL, setup: "test ! -e .env" }),
+    writeFiles: { ".env": "unexpected\n" },
+  }]);
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 0, r.stderr);
+  await assertNotExists(join(cloneOf(world, "remote"), ".env"));
+});
 
 withWorld("an unprotected default branch and a missing lint or build only warn", async (world) => {
   await addAgentDocs(world);
@@ -211,7 +269,7 @@ withWorld("an unprotected default branch and a missing lint or build only warn",
     proposal({ setup: null, test: "echo ok", lint: null, build: null }),
   ]);
 
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
   assertStringIncludes(r.stdout, `warning: The default branch "main" is not protected`);
   assertStringIncludes(r.stdout, "warning: No lint command");
@@ -228,7 +286,7 @@ withWorld("a default branch whose protection cannot be checked is a warning", as
   // No scripted reply: the fake `gh api` fails the way an unreachable GitHub would.
   await world.launcher.script([proposal(FULL)]);
 
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
   assertStringIncludes(r.stdout, `warning: Could not check whether "main" is protected`);
 });
@@ -241,9 +299,11 @@ withWorld("registration records the test baseline, even a failing one", async (w
     proposal(FULL),
   ]);
 
-  const failing = await world.kiln("project", "register", world.project.path, "--yes", "--json");
+  const failing = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(failing.code, 0, failing.stderr);
-  const failed = JSON.parse(failing.stdout).baseline;
+  assertStringIncludes(failing.stdout, "Test baseline: FAILING (exit 1)");
+  const [row] = await registeredProjects(world);
+  const failed = JSON.parse(row.baseline as string);
   assertEquals(failed.passed, false);
   assertEquals(failed.exitCode, 1);
   assertStringIncludes(failed.outputTail, "3 passed");
@@ -253,20 +313,35 @@ withWorld("registration records the test baseline, even a failing one", async (w
     (await world.git(world.project.path, "rev-parse", "HEAD")).stdout.trim(),
   );
 
-  const [row] = await registeredProjects(world);
-  assertEquals(JSON.parse(row.baseline as string).exitCode, 1);
-
-  const passing = await world.kiln(
+  const passing = await world.kilnWithInput(
+    "y\n",
     "project",
     "register",
     world.project.path,
-    "--yes",
     "--name",
     "second",
-    "--json",
   );
   assertEquals(passing.code, 0, passing.stderr);
-  assertEquals(JSON.parse(passing.stdout).baseline.passed, true);
+  assertStringIncludes(passing.stdout, "Test baseline: passing.");
+  const [, second] = await registeredProjects(world);
+  assertEquals(JSON.parse(second.baseline as string).passed, true);
+});
+
+withWorld("the test baseline retains the ordered, bounded end of output", async (world) => {
+  await addAgentDocs(world);
+  await world.githubApi.script([PROTECTED]);
+  await world.launcher.script([proposal({
+    ...FULL,
+    test: "printf early >&2; i=0; while [ $i -lt 5000 ]; do printf x; i=$((i+1)); done; printf END",
+  })]);
+
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
+  assertEquals(r.code, 0, r.stderr);
+  const [row] = await registeredProjects(world);
+  const baseline = JSON.parse(row.baseline as string);
+  assertEquals(baseline.outputTail.length, 4000);
+  assert(baseline.outputTail.endsWith("END"));
+  assert(!baseline.outputTail.includes("early"));
 });
 
 withWorld("a project without tests is registered with a warning and no baseline", async (world) => {
@@ -274,9 +349,10 @@ withWorld("a project without tests is registered with a warning and no baseline"
   await world.githubApi.script([PROTECTED]);
   await world.launcher.script([proposal({ ...FULL, test: null })]);
 
-  const r = await world.kiln("project", "register", world.project.path, "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(r.code, 0, r.stderr);
   assertStringIncludes(r.stdout, "warning: No test command");
+  assertStringIncludes(r.stdout, "Test baseline: not recorded (no test command).");
   const [row] = await registeredProjects(world);
   assertEquals(row.baseline, null);
 });
@@ -285,9 +361,9 @@ withWorld("a project cannot be registered twice under one name", async (world) =
   await addAgentDocs(world);
   await world.githubApi.script([PROTECTED]);
   await world.launcher.script([proposal(FULL)]);
-  assertEquals((await world.kiln("project", "register", world.project.path, "--yes")).code, 0);
+  assertEquals((await world.kilnWithInput("y\n", "project", "register", world.project.path)).code, 0);
 
-  const again = await world.kiln("project", "register", world.project.path, "--yes");
+  const again = await world.kilnWithInput("y\n", "project", "register", world.project.path);
   assertEquals(again.code, 1);
   assertStringIncludes(again.stderr, "already registered");
   assertEquals((await registeredProjects(world)).length, 1);
@@ -295,8 +371,12 @@ withWorld("a project cannot be registered twice under one name", async (world) =
 });
 
 withWorld("the source must be a directory or a git URL", async (world) => {
-  const r = await world.kiln("project", "register", join(world.root, "nowhere"), "--yes");
+  const r = await world.kilnWithInput("y\n", "project", "register", join(world.root, "nowhere"));
   assertEquals(r.code, 1);
   assertStringIncludes(r.stderr, "neither a directory nor a git URL");
   assertEquals((await world.kiln("project", "register")).code, 2);
+  for (const flag of ["--yes", "-y", "--json"]) {
+    const option = await world.kiln("project", "register", world.project.path, flag);
+    assertEquals(option.code, 2);
+  }
 });
