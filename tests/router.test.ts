@@ -282,8 +282,9 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
   // The delivery clock may nudge the Read job before dev-1 reads it; that wake is not one of the three.
   let earlyNudges = 0;
   await asAgent(world, "dev-1", async (agent) => {
-    const [read] = await agent.inbox();
-    earlyNudges = read.deliveries;
+    await agent.inbox();
+    // A nudge still in flight has started its launch but not yet recorded a delivery.
+    earlyNudges = (await world.launcher.prompts()).length;
     const asked = await agent.call("raise_question", {
       question: "Which file?",
       assignmentId: readJob.id,
