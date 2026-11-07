@@ -42,7 +42,8 @@ const SECRET_PATH = [
 export const isSecretPath = (path: string): boolean => SECRET_PATH.some((re) => re.test(path));
 
 /** Shell commands a worker must never run, by what they would do. */
-const AT = String.raw`(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*`;
+const AT = String
+  .raw`(?:^|[;&|(\n"'\x60{]|\b(?:then|do|else|env|xargs|nohup|time|exec|command|nice|eval))\s*(?:\w+=\S*\s+)*`;
 const GIT = String.raw`git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*`;
 const DESTRUCTIVE: [RegExp, string][] = [
   [
