@@ -171,3 +171,18 @@ export async function stopHook(
 }
 
 export const assignment = { title: "Add greeting", instructions: "Write hello.txt" };
+
+/** Poll until `ready` accepts what `read` returns; for evidence of Kiln's background work. */
+export async function waitFor<T>(
+  read: () => Promise<T>,
+  ready: (value: T) => boolean,
+  timeoutMs = 10_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (ready(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("timed out waiting for public delivery evidence");
+}

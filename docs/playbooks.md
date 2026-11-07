@@ -47,12 +47,15 @@ the name.
 
 ```json
 // roles/diagnostician.json
-{ "kind": "worker", "department": "engineering", "prompt": "You are a diagnostician. ..." }
+{ "kind": "worker", "department": "engineering", "prompt": "You are a diagnostician. ...",
+  "tools": ["Read", "Glob", "Grep", "Write", "Bash"] }
 ```
 
 `kind` is `overseer`, `leader` or `worker`; leaders and workers need a `department`. There must be
 one overseer and at most one leader per department. The `prompt` is added to the Nudge whenever
-Kiln wakes an agent playing the role.
+Kiln wakes an agent playing the role. `tools` is optional and lists the built-in tools the role may
+use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
+[worker confinement](router.md#worker-confinement) for the defaults.
 
 ```json
 // playbooks/diagnose-a-bug.json
@@ -89,5 +92,5 @@ for the Overseer. `kiln request status` shows each try's Assignment and the Step
 
 ## Not covered here
 
-Escalation to the user and worker confinement are left to later tickets, as is following a
+Escalation to the user is left to a later ticket, as is following a
 diagnosis with a fix Request. Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.

@@ -58,6 +58,10 @@ Usage:
                          Open the address an agent works under (see \`kiln session\`)
   kiln tool-server --address <address>
                          Serve one agent's Kiln tools over MCP on stdio (read_inbox, send, raise_question)
+  kiln hook police --address <address>
+                         The PreToolUse hook for an agent: refuses tool calls its role does not
+                         allow, writes outside its worktree, secrets and destructive commands,
+                         and raises each refusal as a question to its leader
   kiln hook stop --address <address>
                          The Stop hook for an agent: reads the hook's JSON on stdin
   kiln --version
@@ -248,10 +252,11 @@ async function main(args: string[]): Promise<number> {
   /** Hook commands for an agent's Claude session; they speak Claude Code's hook protocol. */
   async function hookCommand(sub: string | undefined, rest: string[]): Promise<number> {
     const address = flagValue(rest, "--address");
-    if (sub !== "stop" || !address) {
-      console.error("Usage: kiln hook stop --address <address>");
+    if ((sub !== "stop" && sub !== "police") || !address) {
+      console.error("Usage: kiln hook stop|police --address <address>");
       return 2;
     }
+    if (sub === "police") return await policeHook(address);
     let input: { stop_hook_active?: boolean } = {};
     try {
       input = JSON.parse(await new Response(Deno.stdin.readable).text() || "{}");
@@ -274,6 +279,42 @@ async function main(args: string[]): Promise<number> {
       }));
       return 0;
     }
+  }
+
+  /** The PreToolUse hook: refuses a tool call outside what the agent's role permits. */
+  async function policeHook(address: string): Promise<number> {
+    const refuse = (reason: string) =>
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: reason,
+        },
+      }));
+    let input: { tool_name?: string; tool_input?: Record<string, unknown> };
+    try {
+      input = JSON.parse(await new Response(Deno.stdin.readable).text());
+    } catch {
+      refuse("Kiln could not read the tool call to check it");
+      return 0;
+    }
+    try {
+      const hookPaths = resolvePaths();
+      await ensureDaemon(hookPaths);
+      const verdict = await call<{ allowed: boolean; reason?: string }>(
+        hookPaths,
+        "router.police",
+        {
+          address,
+          tool: input.tool_name ?? "",
+          input: input.tool_input ?? {},
+        },
+      );
+      if (!verdict.allowed) refuse(verdict.reason ?? "denied by Kiln");
+    } catch (err) {
+      refuse(`Kiln could not check this call: ${(err as Error).message}`);
+    }
+    return 0;
   }
 
   async function projectCommand(sub: string | undefined, rest: string[]): Promise<number> {

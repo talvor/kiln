@@ -27,6 +27,14 @@ export interface LaunchRequest {
   allowedTools?: string[];
   /** Extra settings for this launch, e.g. hooks. */
   settings?: Record<string, unknown>;
+  /** Built-in tools Claude has at all; others are not offered. Overrides `readOnly`. */
+  tools?: string[];
+  /** Permission rules that refuse a call outright, e.g. `Bash(sudo *)`. */
+  disallowedTools?: string[];
+  /** Deny anything not allowed, instead of accepting edits. */
+  denyByDefault?: boolean;
+  /** Claude's sandbox for commands, e.g. where they may write. */
+  sandbox?: Record<string, unknown>;
   abortController?: AbortController;
 }
 
@@ -76,8 +84,10 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       maxBudgetUsd,
       maxTurns: req.maxTurns,
       pathToClaudeCodeExecutable: findClaude(),
-      permissionMode: "acceptEdits",
-      tools: req.readOnly ? ["Read", "Glob", "Grep"] : undefined,
+      permissionMode: req.denyByDefault ? "dontAsk" : "acceptEdits",
+      tools: req.tools ?? (req.readOnly ? ["Read", "Glob", "Grep"] : undefined),
+      disallowedTools: req.disallowedTools,
+      sandbox: req.sandbox,
       persistSession: false,
       settingSources: [],
       mcpServers: req.mcpServers,

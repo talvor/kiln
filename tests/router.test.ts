@@ -1,21 +1,7 @@
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { withWorld } from "./world.ts";
-import { asAgent, assignment, openTeam, stopHook } from "./router_helpers.ts";
-
-async function waitFor<T>(
-  read: () => Promise<T>,
-  ready: (value: T) => boolean,
-  timeoutMs = 10_000,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (ready(value)) return value;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("timed out waiting for public delivery evidence");
-}
+import { asAgent, assignment, openTeam, stopHook, waitFor } from "./router_helpers.ts";
 
 withWorld("tools, inbox reads, and message history", async (world) => {
   await openTeam(world);
@@ -296,8 +282,9 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
   // The delivery clock may nudge the Read job before dev-1 reads it; that wake is not one of the three.
   let earlyNudges = 0;
   await asAgent(world, "dev-1", async (agent) => {
-    const [read] = await agent.inbox();
-    earlyNudges = read.deliveries;
+    await agent.inbox();
+    // A nudge still in flight has started its launch but not yet recorded a delivery.
+    earlyNudges = (await world.launcher.prompts()).length;
     const asked = await agent.call("raise_question", {
       question: "Which file?",
       assignmentId: readJob.id,

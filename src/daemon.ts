@@ -1,5 +1,6 @@
 import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
+import { run } from "./checks.ts";
 import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
@@ -23,6 +24,25 @@ import {
   openStore,
   type Store,
 } from "./store.ts";
+
+/**
+ * The sandbox for a launch in a Worktree: writes only to the Worktree, its support directory
+ * (temp files and caches) and the Git directory its commits go to.
+ */
+async function sandboxFor(
+  sandbox: Record<string, unknown> | undefined,
+  worktree: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (!sandbox) return sandbox;
+  const common = await run(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    worktree,
+  );
+  const fs = (sandbox.filesystem ?? {}) as { allowWrite?: string[] };
+  const extra = [`${worktree}.kiln`, ...(common.code === 0 ? [common.stdout.trim()] : [])];
+  return { ...sandbox, filesystem: { ...fs, allowWrite: [...(fs.allowWrite ?? []), ...extra] } };
+}
 
 export const VERSION: string = denoJson.version;
 
@@ -96,10 +116,15 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     observe: (session, used) => conductor.observe(session, used),
     activity: (session) => conductor.activity(session),
     watched: (session) => conductor.watched(session),
-    launch: (req) => {
+    launch: async (req) => {
       const wt = store.findLiveWorktree(resolve(req.cwd));
-      return launch({ ...req, env: wt ? infoOf(wt).env : undefined });
+      return launch({
+        ...req,
+        env: wt ? infoOf(wt).env : undefined,
+        sandbox: wt ? await sandboxFor(req.sandbox, wt.path) : req.sandbox,
+      });
     },
+    roleTools: async (name) => (await loadConfig(paths.config)).roles.get(name)?.tools,
     rolePrompt: async (name) => (await loadConfig(paths.config)).roles.get(name)?.prompt,
     selfCommand,
   });
@@ -271,6 +296,12 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.assignmentId as number | undefined,
       ),
     "messages.read": (params) => router.readInbox(String(params.address)),
+    "router.police": async (params) =>
+      await router.policeCall(
+        String(params.address),
+        String(params.tool),
+        (params.input ?? {}) as Record<string, unknown>,
+      ),
     "router.stopCheck": (params) =>
       router.checkStop(String(params.address), params.alreadyBlocked === true),
     stop: (_params, ctx) => {

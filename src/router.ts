@@ -3,6 +3,7 @@
 // when nobody picks one up Kiln Nudges the recipient, then gives up and dead-letters it.
 import type { Logger } from "./log.ts";
 import type { LaunchRequest, LaunchResult } from "./launcher.ts";
+import { confine, DEFAULT_TOOLS, judgeCall } from "./confinement.ts";
 import { KINDS, refuseRoute, superiorOf, validateBody } from "./messages.ts";
 import {
   type MessageKind,
@@ -29,6 +30,8 @@ export interface RouterOptions {
   launch: (req: LaunchRequest) => Promise<LaunchResult>;
   /** What a configured role is told about its job when it is woken; undefined if unknown. */
   rolePrompt?: (roleName: string) => Promise<string | undefined>;
+  /** The built-in tools a configured role may use; undefined if unknown (the kind's default applies). */
+  roleTools?: (roleName: string) => Promise<string[] | undefined>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
   selfCommand: (args: string[]) => { cmd: string; args: string[] };
   /** Messages that are not delivered yet, e.g. an Assignment still queued behind a cap. */
@@ -121,6 +124,15 @@ export function createRouter(opts: RouterOptions) {
     log.warn("synthesised a failed result", { assignment: assignment.id, why });
     return result;
   };
+
+  async function toolsOf(session: SessionRecord): Promise<string[]> {
+    const configured = session.roleName
+      ? await opts.roleTools?.(session.roleName).catch(() => undefined)
+      : undefined;
+    // A role whose configuration cannot be read gets no built-in tools, never more than it had.
+    if (session.roleName && configured === undefined) return [];
+    return configured ?? [...DEFAULT_TOOLS[session.role]];
+  }
 
   function send(
     from: string,
@@ -241,6 +253,55 @@ export function createRouter(opts: RouterOptions) {
       return send(from, superiorOrThrow(sender).address, "question", body, undefined, assignmentId);
     },
 
+    /**
+     * The policing hook's verdict on one tool call by `address`. A refused call goes up to the
+     * agent's direct superior as a question, about the agent's open assignment if it has one;
+     * the agent is told so, and the answer arrives in its inbox.
+     */
+    async policeCall(
+      address: string,
+      tool: string,
+      input: Record<string, unknown>,
+    ): Promise<{ allowed: boolean; reason?: string }> {
+      const session = sessionAt(address);
+      const verdict = judgeCall(
+        { tools: await toolsOf(session), worktree: session.cwd },
+        tool,
+        input,
+      );
+      if (verdict.allowed) return verdict;
+      store.appendEvent("tool.denied", { address, tool, reason: verdict.reason });
+      const superior = superiorOf(store.listSessions(), session);
+      if (!superior) return verdict;
+      const open = openAssignments(address);
+      const question =
+        `Kiln denied my ${tool} call: ${verdict.reason}. May I proceed another way, ` +
+        `or should the work change?`;
+      const asked = store.listMessages({ from: address, to: superior.address, kind: "question" })
+        .some((q) =>
+          q.body.question === question && q.deadLetteredAt === null &&
+          !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
+        );
+      if (!asked) {
+        send(
+          address,
+          superior.address,
+          "question",
+          {
+            question,
+            context: JSON.stringify(input).slice(0, 500),
+          },
+          undefined,
+          open.length === 1 ? open[0].id : undefined,
+        );
+      }
+      return {
+        allowed: false,
+        reason: `${verdict.reason}. Kiln has asked ${superior.address} about it; ` +
+          `their answer will arrive in your inbox. Carry on with something else meanwhile.`,
+      };
+    },
+
     /** Hand over what is waiting for `address`, marking it read. */
     readInbox(address: string): MessageRecord[] {
       sessionAt(address);
@@ -327,6 +388,9 @@ export function createRouter(opts: RouterOptions) {
   async function nudge(session: SessionRecord, count: number): Promise<boolean> {
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
+    const police = opts.selfCommand(["hook", "police", "--address", session.address]);
+    const tools = await toolsOf(session);
+    const confinement = confine(tools, session.cwd);
     const abortController = new AbortController();
     const limits = opts.launchLimits?.(session);
     const controllers = inFlight.get(session.address) ?? new Set();
@@ -344,9 +408,19 @@ export function createRouter(opts: RouterOptions) {
             `Call the read_inbox tool now and act on what it returns.`,
           cwd: session.cwd,
           mcpServers: { kiln: { command: server.cmd, args: server.args } },
-          allowedTools: TOOL_NAMES.map((t) => `mcp__kiln__${t}`),
+          allowedTools: [...confinement.allowedTools, ...TOOL_NAMES.map((t) => `mcp__kiln__${t}`)],
+          tools: confinement.tools,
+          disallowedTools: confinement.disallowedTools,
+          denyByDefault: true,
+          sandbox: confinement.sandbox,
           settings: {
             hooks: {
+              PreToolUse: [{
+                hooks: [{
+                  type: "command",
+                  command: [police.cmd, ...police.args].map(shellQuote).join(" "),
+                }],
+              }],
               Stop: [{
                 hooks: [{
                   type: "command",

@@ -29,8 +29,18 @@ takes one answer.
 `kiln tool-server --address <address>` is an MCP server on stdio configured for one address.
 Kiln hands it to every agent it wakes. Tools: `read_inbox` (each unread
 Message is handed over once, then marked read), `send`, and `raise_question` (asks your direct
-superior). Same-user local processes are trusted for now; session isolation is deferred to the
-worker-confinement ticket (#12).
+superior). Same-user local processes are trusted for now.
+
+## Worker confinement
+
+Every agent Kiln wakes runs deny-by-default: it may use only the built-in tools its role lists
+(`tools` in the role file; defaults are none for the overseer, read-only for leaders, and
+read/write/shell for workers) plus Kiln's own tools. A command sandbox limits writes to the
+agent's Worktree. A policing hook checks every tool call against the same rules: file writes
+outside the Worktree, secrets (`.env`, keys, `.ssh`, `.aws`, ...) and destructive commands (`sudo`,
+`git push`, `reset --hard`, `rm -rf /`, piping a download into a shell, ...) are refused. A refusal
+is never prompted; Kiln raises it as a question to the agent's direct superior (repeats are
+suppressed while one is unanswered) and tells the agent the answer will arrive in its inbox.
 
 ## Nudges, re-nudges and dead letters
 
