@@ -6,6 +6,7 @@ import type { LaunchRequest, LaunchResult } from "./launcher.ts";
 import { confine, DEFAULT_TOOLS, judgeCall } from "./confinement.ts";
 import { KINDS, refuseRoute, superiorOf, validateBody } from "./messages.ts";
 import {
+  type EscalationRecord,
   type MessageKind,
   type MessageRecord,
   type NewSession,
@@ -147,6 +148,7 @@ export function createRouter(opts: RouterOptions) {
     body: unknown,
     inReplyTo?: number,
     assignmentId?: number,
+    relaysQuestion?: number,
   ): MessageRecord {
     const sender = sessionAt(from);
     const recipient = sessionAt(to);
@@ -201,13 +203,51 @@ export function createRouter(opts: RouterOptions) {
     } else if (kind !== "question" && assignmentId !== undefined) {
       throw new RouterError(`a ${kind} cannot name an assignmentId`);
     }
-    return append({
+    if (relaysQuestion !== undefined) {
+      if (kind !== "question") throw new RouterError(`a ${kind} cannot relay a question`);
+      const original = store.getMessage(relaysQuestion);
+      if (
+        !original || original.kind !== "question" || original.to !== from ||
+        original.deadLetteredAt !== null
+      ) {
+        throw new RouterError(`relaysQuestion must be a question ${from} was asked`);
+      }
+      if (store.listMessages({ kind: "answer", inReplyTo: original.id }).length) {
+        throw new RouterError(`question ${original.id} is already answered`);
+      }
+      if (store.listMessages({ kind: "question" }).some((q) => q.relayOf === original.id)) {
+        throw new RouterError(`question ${original.id} was already passed up`);
+      }
+    }
+    const sent = append({
       from,
       to,
       kind,
       body: body as Record<string, unknown>,
       inReplyTo,
       assignmentId,
+      relayOf: relaysQuestion,
+    });
+    if (kind === "answer") passDown(sent);
+    return sent;
+  }
+
+  /**
+   * An answer to a question that was passed up goes on down to whoever first asked it, from the
+   * agent that passed it up, so the asker is answered without anyone in between waking.
+   */
+  function passDown(answer: MessageRecord): void {
+    const relayed = store.getMessage(answer.inReplyTo!)!;
+    if (relayed.relayOf === null) return;
+    const asked = store.getMessage(relayed.relayOf)!;
+    if (store.listMessages({ kind: "answer", inReplyTo: asked.id }).length) return;
+    append({
+      from: asked.to,
+      to: asked.from,
+      kind: "answer",
+      body: { answer: answer.body.answer },
+      inReplyTo: asked.id,
+      relayOf: answer.id,
     });
   }
 
@@ -253,10 +293,42 @@ export function createRouter(opts: RouterOptions) {
       question: unknown,
       context?: unknown,
       assignmentId?: number,
+      relaysQuestion?: number,
     ): MessageRecord {
       const sender = sessionAt(from);
       const body = context === undefined ? { question } : { question, context };
-      return send(from, superiorOrThrow(sender).address, "question", body, undefined, assignmentId);
+      return send(
+        from,
+        superiorOrThrow(sender).address,
+        "question",
+        body,
+        undefined,
+        assignmentId,
+        relaysQuestion,
+      );
+    },
+
+    /**
+     * The user decided an Escalation raised over a question: the Overseer's answer to that
+     * question is the decision, and it goes on down the chain like any other answer.
+     */
+    answerFromDecision(escalation: EscalationRecord): MessageRecord | undefined {
+      const question = escalation.questionId === null
+        ? undefined
+        : store.getMessage(escalation.questionId);
+      if (!question || store.listMessages({ kind: "answer", inReplyTo: question.id }).length) {
+        return;
+      }
+      const decision = escalation.status === "approved"
+        ? "The user approved."
+        : `The user rejected this: ${escalation.reason}`;
+      return send(
+        question.to,
+        question.from,
+        "answer",
+        { answer: `${decision} (escalation ${escalation.id}: ${escalation.summary})` },
+        question.id,
+      );
     },
 
     /**
@@ -382,8 +454,9 @@ export function createRouter(opts: RouterOptions) {
           store.listMessages({ to: address, waiting: true }).map((m) => m.id),
         );
         const current = messages.filter((m) => waiting.has(m.id));
-        if (!current.length) return;
-        if (await nudge(sessionAt(address), current.length)) {
+        // Still being woken: the next pass delivers what has arrived since, in the same session.
+        if (!current.length || inFlight.has(address)) return;
+        if (await nudge(sessionAt(address), current)) {
           store.recordDelivery(current.map((m) => m.id));
           store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
         }
@@ -391,7 +464,12 @@ export function createRouter(opts: RouterOptions) {
     },
   };
 
-  async function nudge(session: SessionRecord, count: number): Promise<boolean> {
+  async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<boolean> {
+    const count = messages.length;
+    // An answer to the agent's own question wakes the same Claude session that asked it.
+    const resume = messages.some((m) => m.kind === "answer")
+      ? session.claudeSessionId ?? undefined
+      : undefined;
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const police = opts.selfCommand(["hook", "police", "--address", session.address]);
@@ -413,6 +491,8 @@ export function createRouter(opts: RouterOptions) {
             `You have ${count} unread message(s) in your Kiln inbox. ` +
             `Call the read_inbox tool now and act on what it returns.`,
           cwd: session.cwd,
+          persist: true,
+          resume,
           // Marks every command the agent runs as the agent's: `kiln approve` refuses it.
           env: { KILN_AGENT: session.address },
           mcpServers: { kiln: { command: server.cmd, args: server.args } },
@@ -454,6 +534,7 @@ export function createRouter(opts: RouterOptions) {
           }, LAUNCH_TIMEOUT_MS);
         }),
       ]);
+      if (launched.sessionId) store.setClaudeSession(session.address, launched.sessionId);
       opts.observe?.(session, {
         turns: launched.turns,
         costUsd: launched.costUsd,

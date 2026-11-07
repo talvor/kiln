@@ -70,7 +70,9 @@ Deno.exit(run.exit ?? 0);
 async function speakSdkProtocol(run: LauncherRun): Promise<void> {
   const send = (msg: unknown) =>
     Deno.stdout.write(new TextEncoder().encode(JSON.stringify(msg) + "\n"));
-  const sessionId = "fake-session";
+  // A resumed run keeps its session; a new one gets an id of its own.
+  const resumed = Deno.args.find((a) => a.startsWith("--resume="))?.slice("--resume=".length);
+  const sessionId = resumed ?? `fake-session-${script.next}`;
   const outcome = run.outcome ?? "success";
   let buf = "";
   for await (const chunk of Deno.stdin.readable) {

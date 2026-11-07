@@ -37,7 +37,7 @@ export function createEscalations(store: Store) {
     /** The Overseer brings a decision to the user. */
     raise(
       from: string,
-      params: { summary?: unknown; detail?: unknown; requestId?: unknown },
+      params: { summary?: unknown; detail?: unknown; requestId?: unknown; questionId?: unknown },
     ): EscalationRecord {
       const sender: SessionRecord = store.getSession(from);
       if (sender.role !== "overseer") {
@@ -60,7 +60,20 @@ export function createEscalations(store: Store) {
         }
         requestId = request.id;
       }
-      const e = store.addEscalation({ raisedBy: from, requestId, summary, detail });
+      let questionId: number | null = null;
+      if (params.questionId !== undefined) {
+        const question = Number.isSafeInteger(params.questionId)
+          ? store.getMessage(params.questionId as number)
+          : undefined;
+        if (!question || question.kind !== "question" || question.to !== from) {
+          throw new EscalationError('"questionId" must be a question you were asked.');
+        }
+        if (store.listMessages({ kind: "answer", inReplyTo: question.id }).length) {
+          throw new EscalationError(`Question ${question.id} is already answered.`);
+        }
+        questionId = question.id;
+      }
+      const e = store.addEscalation({ raisedBy: from, requestId, summary, detail, questionId });
       store.appendEvent("escalation.raised", { id: e.id, request: requestId });
       return e;
     },

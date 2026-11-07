@@ -231,6 +231,12 @@ export const MIGRATIONS: string[] = [
      body text not null,
      sent_at text not null
    ) strict;`,
+  // 13: the question relay. A Message may relay another (a leader passing a worker's question up,
+  // or the answer coming back down); an Escalation may be raised over a question; and a session
+  // remembers its Claude session so it can be resumed to read an answer.
+  `alter table messages add column relay_of integer references messages (id);
+   alter table escalations add column question_id integer references messages (id);
+   alter table sessions add column claude_session_id text;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -416,6 +422,8 @@ export interface EscalationRecord {
   stepId: number | null;
   gate: GateKind | null;
   gateMessageId: number | null;
+  /** The question that reached the Overseer and could only be settled by the user. */
+  questionId: number | null;
   createdAt: string;
   decidedAt: string | null;
 }
@@ -428,6 +436,7 @@ export interface NewEscalation {
   requestId?: number | null;
   summary: string;
   detail?: string | null;
+  questionId?: number | null;
 }
 
 /** The page of an Escalation: the token is good for one decision. */
@@ -472,9 +481,11 @@ export interface SessionRecord {
   cwd: string;
   /** The configured role the session plays, whose prompt Kiln wakes it with. */
   roleName: string | null;
+  /** The Claude session of its last launch, resumed to deliver an answer to its own question. */
+  claudeSessionId: string | null;
   openedAt: string;
 }
-export type NewSession = Omit<SessionRecord, "openedAt" | "roleName"> & {
+export type NewSession = Omit<SessionRecord, "openedAt" | "roleName" | "claudeSessionId"> & {
   roleName?: string | null;
 };
 
@@ -489,6 +500,8 @@ export interface MessageRecord {
   inReplyTo: number | null;
   /** The assignment a question asks about, if any. */
   assignmentId: number | null;
+  /** The question this one passes up, or the answer this one passes down: the relay chain. */
+  relayOf: number | null;
   /** Written by Kiln itself rather than by the sender. */
   synthesised: boolean;
   sentAt: string;
@@ -501,6 +514,7 @@ export interface MessageRecord {
 export type NewMessage = Pick<MessageRecord, "from" | "to" | "kind" | "body"> & {
   inReplyTo?: number | null;
   assignmentId?: number | null;
+  relayOf?: number | null;
   synthesised?: boolean;
 };
 export interface MessageFilter {
@@ -624,6 +638,8 @@ export interface Store {
   getSession(address: string): SessionRecord;
   /** Point a session at another directory, e.g. its worker's Assignment Worktree. */
   setSessionCwd(address: string, cwd: string): void;
+  /** Remember the Claude session an agent was last launched in. */
+  setClaudeSession(address: string, id: string): void;
   /** Append a Message. Messages are never changed or removed afterwards. */
   appendMessage(message: NewMessage): MessageRecord;
   getMessage(id: number): MessageRecord | undefined;
@@ -772,6 +788,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       department: row.department as string | null,
       cwd: row.cwd as string,
       roleName: row.role_name as string | null,
+      claudeSessionId: row.claude_session_id as string | null,
       openedAt: row.opened_at as string,
     });
     const toMessage = (row: Record<string, unknown>): MessageRecord => ({
@@ -782,6 +799,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       body: JSON.parse(row.body as string),
       inReplyTo: row.in_reply_to as number | null,
       assignmentId: row.assignment_id as number | null,
+      relayOf: row.relay_of as number | null,
       synthesised: row.synthesised === 1,
       sentAt: row.sent_at as string,
       readAt: row.read_at as string | null,
@@ -818,6 +836,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       stepId: row.step_id as number | null,
       gate: row.gate as GateKind | null,
       gateMessageId: row.gate_message_id as number | null,
+      questionId: row.question_id as number | null,
       createdAt: row.created_at as string,
       decidedAt: row.decided_at as string | null,
     });
@@ -1075,10 +1094,13 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           }
           throw err;
         }
-        return { ...s, roleName: s.roleName ?? null, openedAt };
+        return { ...s, roleName: s.roleName ?? null, claudeSessionId: null, openedAt };
       },
       setSessionCwd: (address, cwd) => {
         db.prepare("update sessions set cwd = ? where address = ?").run(cwd, address);
+      },
+      setClaudeSession: (address, id) => {
+        db.prepare("update sessions set claude_session_id = ? where address = ?").run(id, address);
       },
       listSessions: () =>
         db.prepare("select * from sessions order by opened_at, address").all().map(toSession),
@@ -1090,8 +1112,8 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       appendMessage: (m) =>
         inTransaction(() => {
           const { lastInsertRowid } = db.prepare(
-            `insert into messages (sender, recipient, kind, body, in_reply_to, assignment_id, synthesised, sent_at)
-             values (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `insert into messages (sender, recipient, kind, body, in_reply_to, assignment_id, relay_of, synthesised, sent_at)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             m.from,
             m.to,
@@ -1099,6 +1121,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
             JSON.stringify(m.body),
             m.inReplyTo ?? null,
             m.assignmentId ?? null,
+            m.relayOf ?? null,
             m.synthesised ? 1 : 0,
             new Date().toISOString(),
           );
@@ -1242,8 +1265,8 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       addEscalation: (e) => {
         const { lastInsertRowid } = db.prepare(
           `insert into escalations
-             (raised_by, request_id, summary, detail, step_id, gate, gate_message_id, created_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (raised_by, request_id, summary, detail, step_id, gate, gate_message_id, question_id, created_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           e.raisedBy,
           e.requestId ?? null,
@@ -1252,6 +1275,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           e.stepId ?? null,
           e.gate ?? null,
           e.gateMessageId ?? null,
+          e.questionId ?? null,
           new Date().toISOString(),
         );
         return getEscalation(Number(lastInsertRowid));
