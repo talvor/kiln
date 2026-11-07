@@ -17,8 +17,10 @@ export interface LauncherRun {
   /** SDK mode: the final answer, and what the run cost. */
   result?: string;
   costUsd?: number;
+  /** SDK mode: how many agent turns the run took; default 1. */
+  turns?: number;
   /** SDK mode: how the run ended; default "success". */
-  outcome?: "success" | "error_max_budget_usd" | "error_during_execution";
+  outcome?: "success" | "error_max_budget_usd" | "error_max_turns" | "error_during_execution";
   hang?: boolean;
 }
 
@@ -86,7 +88,7 @@ async function speakSdkProtocol(run: LauncherRun): Promise<void> {
           type: "result",
           duration_ms: 1,
           duration_api_ms: 1,
-          num_turns: 1,
+          num_turns: run.turns ?? 1,
           stop_reason: null,
           total_cost_usd: run.costUsd ?? 0,
           usage: {},

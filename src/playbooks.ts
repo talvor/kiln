@@ -4,6 +4,8 @@
 // The file name is the role's or Playbook's name. Kiln ships defaults; a file with the same name
 // replaces the default. Files are read when a Request starts, so edits apply to the next one.
 import { join } from "@std/path";
+import { ConfigError } from "./config_error.ts";
+import { type LimitsConfig, loadLimits } from "./limits.ts";
 import { DEFAULT_PLAYBOOKS, DEFAULT_ROLES } from "./defaults.ts";
 import type { Role, StepSpec } from "./store.ts";
 
@@ -27,10 +29,11 @@ export interface Config {
   playbooks: Map<string, PlaybookConfig>;
   /** Playbooks whose files cannot be used. They do not stop other Playbooks from running. */
   broken: Map<string, ConfigError>;
+  /** Limits and concurrency caps. */
+  limits: LimitsConfig;
 }
 
-/** A config file that cannot be used; the message names the file and what is wrong. */
-export class ConfigError extends Error {}
+export { ConfigError };
 
 type Obj = Record<string, unknown>;
 
@@ -181,7 +184,7 @@ export async function loadConfig(configDir: string): Promise<Config> {
   for (const { name, file, raw, error } of await readJsonFiles(join(configDir, "playbooks"))) {
     add(name, file, raw, error);
   }
-  return { roles, playbooks, broken };
+  return { roles, playbooks, broken, limits: await loadLimits(configDir) };
 }
 
 /** The leader role of a department. */

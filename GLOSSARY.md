@@ -56,6 +56,14 @@ _Avoid_: issue link, ticket reference
 A failed verification of a step's work. The work is not merged; the step goes back to its leader with the feedback for a fresh worker that starts from the rejected branch. A step is retried twice, then the rejection goes up to the Overseer.
 _Avoid_: bounce, failure
 
+**Limit**:
+What one Assignment may use before Kiln stops its worker: turns, spend and wall-clock time, plus a watch for a worker that shows no sign of life. A Project's ceiling caps what a leader may ask for. When a Limit is reached the Assignment fails with a result written by Kiln, and its leader chooses what happens next.
+_Avoid_: quota, timeout
+
+**Cap**:
+How many Assignments may be active at once, in all of Kiln and in one Project. An Assignment over a Cap, or whose declared files overlap another's, waits as planned and starts when it is free.
+_Avoid_: rate limit, throttle
+
 **Gate**:
 A point in a request where the overseer must bring the user a decision before work can continue.
 _Avoid_: approval step, checkpoint

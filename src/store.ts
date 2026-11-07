@@ -1,5 +1,6 @@
 import { join } from "@std/path";
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
+import type { Budget } from "./limits.ts";
 import type { Logger } from "./log.ts";
 
 /**
@@ -180,6 +181,16 @@ export const MIGRATIONS: string[] = [
    ) strict;
    alter table sessions add column role_name text;`,
   `alter table steps add column retries integer not null default 0;`,
+  // 8: limits and queuing. An Assignment waits as planned until a concurrency slot and its files
+  // are free; once active it runs under a budget, counts the turns and spend its worker used, and
+  // records which limit stopped it.
+  `alter table assignments add column owns text not null default '[]';
+   alter table assignments add column budget text;
+   alter table assignments add column turns_used integer not null default 0;
+   alter table assignments add column spend_usd real not null default 0;
+   alter table assignments add column started_at text;
+   alter table assignments add column activity_at text;
+   alter table assignments add column limit_reached text;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -319,7 +330,20 @@ export interface AssignmentRecord {
   mergedAt: string | null;
   /** Whether the merge has reached the remote. */
   pushed: boolean;
+  /** The paths the Assignment declared it works on. */
+  owns: string[];
+  /** The limits it runs under; set when it is planned. */
+  budget: Budget | null;
+  /** What its worker has used so far. */
+  turnsUsed: number;
+  spendUsd: number;
+  /** When it began running, and when its worker last showed a sign of life. */
+  startedAt: string | null;
+  activityAt: string | null;
+  /** Which limit stopped it: turns, spend, time or inactivity. */
+  limitReached: LimitKind | null;
 }
+export type LimitKind = "turns" | "spend" | "time" | "inactivity";
 
 export class UnknownRequestError extends Error {
   constructor(id: number) {
@@ -453,10 +477,26 @@ export interface Store {
   /** Hand a rejected Step back to its leader in `messageId`, to be delegated to a fresh `worker`. */
   retryStep(id: number, messageId: number, worker: string): void;
   setStepState(id: number, status: State, failure?: string): void;
-  /** Begin an Assignment for a router assignment Message. */
+  /** Begin an Assignment for a router assignment Message; a planned one becomes active. */
   addAssignment(requestId: number, messageId: number): AssignmentRecord;
+  /** Queue an Assignment as planned, with the paths it owns and the budget it will run under. */
+  planAssignment(
+    requestId: number,
+    messageId: number,
+    plan: { owns: string[]; budget: Budget },
+  ): AssignmentRecord;
   /** Throws UnknownAssignmentError. */
   getAssignment(id: number): AssignmentRecord;
+  /** How many Assignments are active, in all of Kiln or in one Project. */
+  countActiveAssignments(projectId?: number): number;
+  /** The active Assignments of Requests that are active, oldest first. */
+  listActiveAssignments(): AssignmentRecord[];
+  /** Add what a launch of the Assignment's worker used, and note the worker is alive. */
+  addUsage(id: number, usage: { turns: number; spendUsd: number }): void;
+  /** Note a sign of life from the Assignment's worker. */
+  touchAssignment(id: number): void;
+  /** The Assignment ran into a limit: it has failed. */
+  markLimitReached(id: number, kind: LimitKind): void;
   listAssignments(requestId: number): AssignmentRecord[];
   setAssignmentState(id: number, status: State): void;
   /** Reserve a free port block for a new Worktree; throws if none is left. */
@@ -675,6 +715,13 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       status: row.status as State,
       mergedAt: row.merged_at as string | null,
       pushed: row.pushed === 1,
+      owns: JSON.parse(row.owns as string),
+      budget: row.budget ? JSON.parse(row.budget as string) : null,
+      turnsUsed: row.turns_used as number,
+      spendUsd: row.spend_usd as number,
+      startedAt: row.started_at as string | null,
+      activityAt: row.activity_at as string | null,
+      limitReached: row.limit_reached as LimitKind | null,
     });
     const toWorktree = (row: Record<string, unknown>): WorktreeRecord => ({
       id: row.id as number,
@@ -744,12 +791,69 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           if (!message || message.kind !== "assignment") {
             throw new UnknownAssignmentError(messageId);
           }
-          db.prepare(
-            "insert into assignments (id, request_id, created_at) values (?, ?, ?)",
-          ).run(messageId, requestId, new Date().toISOString());
+          const now = new Date().toISOString();
+          const planned = db.prepare(
+            "select 1 from assignments where id = ? and status = 'planned'",
+          ).get(messageId);
+          if (planned) {
+            db.prepare(
+              "update assignments set status = 'active', started_at = ?, activity_at = ? where id = ?",
+            ).run(now, now, messageId);
+          } else {
+            db.prepare(
+              `insert into assignments (id, request_id, created_at, started_at, activity_at)
+               values (?, ?, ?, ?, ?)`,
+            ).run(messageId, requestId, now, now, now);
+          }
           return getAssignment(messageId);
         }),
       getAssignment,
+      planAssignment: (requestId, messageId, plan) =>
+        inTransaction(() => {
+          getRequest(requestId);
+          const message = getMessage(messageId);
+          if (!message || message.kind !== "assignment") {
+            throw new UnknownAssignmentError(messageId);
+          }
+          db.prepare(
+            `insert into assignments (id, request_id, status, created_at, owns, budget)
+             values (?, ?, 'planned', ?, ?, ?)`,
+          ).run(
+            messageId,
+            requestId,
+            new Date().toISOString(),
+            JSON.stringify(plan.owns),
+            JSON.stringify(plan.budget),
+          );
+          return getAssignment(messageId);
+        }),
+      countActiveAssignments: (projectId) =>
+        Number(
+          db.prepare(
+            `select count(*) as n from assignments a join requests r on r.id = a.request_id
+             where a.status = 'active' ${projectId === undefined ? "" : "and r.project_id = ?"}`,
+          ).get(...(projectId === undefined ? [] : [projectId]))!.n,
+        ),
+      listActiveAssignments: () =>
+        db.prepare(
+          `select a.* from assignments a join requests r on r.id = a.request_id
+           where a.status = 'active' and r.status = 'active' order by a.id`,
+        ).all().map(toAssignment),
+      addUsage: (id, usage) => {
+        db.prepare(
+          `update assignments set turns_used = turns_used + ?, spend_usd = spend_usd + ?,
+             activity_at = ? where id = ?`,
+        ).run(usage.turns, usage.spendUsd, new Date().toISOString(), id);
+      },
+      touchAssignment: (id) => {
+        db.prepare("update assignments set activity_at = ? where id = ?")
+          .run(new Date().toISOString(), id);
+      },
+      markLimitReached: (id, kind) => {
+        db.prepare(
+          "update assignments set limit_reached = ?, status = 'failed' where id = ? and status = 'active'",
+        ).run(kind, id);
+      },
       listAssignments: (requestId) =>
         db.prepare("select * from assignments where request_id = ? order by id").all(requestId)
           .map(toAssignment),

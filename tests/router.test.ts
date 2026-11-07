@@ -293,8 +293,11 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     "dev-lead",
     (agent) => agent.send("dev-1", "assignment", { ...assignment, title: "Read job" }),
   );
+  // The delivery clock may nudge the Read job before dev-1 reads it; that wake is not one of the three.
+  let earlyNudges = 0;
   await asAgent(world, "dev-1", async (agent) => {
-    await agent.inbox();
+    const [read] = await agent.inbox();
+    earlyNudges = read.deliveries;
     const asked = await agent.call("raise_question", {
       question: "Which file?",
       assignmentId: readJob.id,
@@ -306,7 +309,11 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     "dev-lead",
     (agent) => agent.send("dev-1", "assignment", assignment),
   );
-  await waitFor(() => world.launcher.prompts(), (items) => items.length >= 6, 130_000);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (items) => items.length >= 6 + earlyNudges,
+    130_000,
+  );
   await new Promise((resolve) => setTimeout(resolve, 65_000));
   const leader = await waitFor(
     () => asAgent(world, "dev-lead", (agent) => agent.inbox()),
@@ -319,7 +326,7 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     "failed",
     job.id,
   ]);
-  assertEquals((await world.launcher.prompts()).length, 6);
+  assertEquals((await world.launcher.prompts()).length, 6 + earlyNudges);
   assertEquals(await asAgent(world, "dev-1", (agent) => agent.inbox()), []);
   const verdict = await stopHook(world, "dev-1");
   assertEquals(verdict?.decision, "block");
@@ -339,6 +346,15 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
     40_000,
   );
   assertEquals(prompts.length, 2);
-  const [timedOut] = await asAgent(world, "dev-1", (agent) => agent.inbox());
-  assertEquals(timedOut.deliveries, 0);
+  // Which recipient is woken first is not fixed: the one that got the hang stays undelivered,
+  // and the other is still nudged.
+  const deliveries = await waitFor(
+    async () =>
+      (await Promise.all(
+        ["dev-1", "dev-2"].map((name) => asAgent(world, name, (agent) => agent.inbox())),
+      )).map(([m]) => m.deliveries).sort(),
+    (counts) => counts[1] === 1,
+    10_000,
+  );
+  assertEquals(deliveries, [0, 1]);
 });

@@ -91,6 +91,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const router = createRouter({
     store,
     log,
+    hold: (m) => conductor.holds(m),
+    launchLimits: (session) => conductor.launchLimits(session),
+    observe: (session, used) => conductor.observe(session, used),
+    activity: (session) => conductor.activity(session),
+    watched: (session) => conductor.watched(session),
     launch: (req) => {
       const wt = store.findLiveWorktree(resolve(req.cwd));
       return launch({ ...req, env: wt ? infoOf(wt).env : undefined });
@@ -98,6 +103,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     rolePrompt: async (name) => (await loadConfig(paths.config)).roles.get(name)?.prompt,
     selfCommand,
   });
+  // The router and the conductor lean on each other; the router only calls back once running.
   const conductor = createConductor({
     store,
     log,
@@ -106,14 +112,25 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     worktreesDir: paths.worktrees,
     withProject: withProjectQueue,
   });
-  // Delivery passes never overlap: a pass in flight is joined, not repeated.
+  // Delivery passes never overlap: a pass in flight is joined, not repeated. The conductor reacts
+  // on its own clock, so a worker that takes long to wake does not hold up the other Assignments,
+  // and the limit watch runs apart from both, so a hung worker cannot hide from it.
   let pass: Promise<void> | undefined;
-  const deliver = (): Promise<void> =>
-    pass ??= router.tick().then(() => conductor.react()).finally(() => pass = undefined);
+  const deliver = (): Promise<void> => pass ??= router.tick().finally(() => pass = undefined);
   const ticker = setInterval(
-    () => deliver().catch((err) => log.error("delivery pass failed", { err })),
+    () => {
+      deliver().catch((err) => log.error("delivery pass failed", { err }));
+      conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+    },
     2_000,
   );
+  const watcher = setInterval(() => {
+    try {
+      conductor.watch();
+    } catch (err) {
+      log.error("limit watch failed", { err });
+    }
+  }, 500);
 
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
@@ -122,6 +139,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     stopping = true;
     log.info("daemon stopping", { reason });
     clearInterval(ticker);
+    clearInterval(watcher);
     await pass?.catch(() => {});
     await conductor.idle();
     while (projectQueues.size || projectReplies.size) {
@@ -314,6 +332,11 @@ function requestStatus(store: Store, id: number) {
           branch: a.branch,
           worktree: a.worktreeId === null ? null : store.getWorktree(a.worktreeId).path,
           merged: a.mergedAt !== null,
+          owns: a.owns,
+          budget: a.budget,
+          turnsUsed: a.turnsUsed,
+          spendUsd: a.spendUsd,
+          limitReached: a.limitReached,
         })),
     })),
   };

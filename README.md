@@ -37,3 +37,6 @@ answers through a per-session tool server; Kiln nudges agents with unread mail. 
 `kiln request start <project> --playbook diagnose-a-bug --description "..."` starts a Request that
 Kiln walks through step by step, from the overseer to a department's leader and its workers, to a
 published fix ticket. See [the playbook guide](docs/playbooks.md).
+
+Each Assignment runs under turn, spend and time limits, and a cap keeps only so many running at
+once; the rest wait as planned. See [the limits guide](docs/limits.md).
