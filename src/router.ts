@@ -465,11 +465,21 @@ export function createRouter(opts: RouterOptions) {
   };
 
   async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<boolean> {
-    const count = messages.length;
-    // An answer to the agent's own question wakes the same Claude session that asked it.
+    // An answer to the agent's own question wakes the same Claude session that asked it; if that
+    // session cannot be resumed, a fresh one still reads the answer from the inbox.
     const resume = messages.some((m) => m.kind === "answer")
       ? session.claudeSessionId ?? undefined
       : undefined;
+    if (resume && await launchNudge(session, messages, resume)) return true;
+    return launchNudge(session, messages, undefined);
+  }
+
+  async function launchNudge(
+    session: SessionRecord,
+    messages: MessageRecord[],
+    resume: string | undefined,
+  ): Promise<boolean> {
+    const count = messages.length;
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
     const police = opts.selfCommand(["hook", "police", "--address", session.address]);
