@@ -536,7 +536,7 @@ export interface ChatRecord {
   endReason: "exit" | "rollover" | null;
   /** Set once the session's context has grown too large and it should be replaced. */
   rolloverRequestedAt: string | null;
-  /** The newest event the user's chat had caught up with, as of the last sign of life. */
+  /** The newest event there was when the session began: the digest told it everything before. */
   eventsThrough: number;
 }
 export interface ChatTurn {
@@ -762,7 +762,7 @@ export interface Store {
   getChat(id: number): ChatRecord;
   /** The newest chat session, if any. */
   latestChat(): ChatRecord | undefined;
-  /** Note a sign of life, and the newest event the chat has caught up with. */
+  /** Note a sign of life. */
   touchChat(id: number): void;
   endChat(id: number, reason: "exit" | "rollover"): void;
   requestRollover(id: number): void;
@@ -1490,8 +1490,8 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         return row ? toChat(row) : undefined;
       },
       touchChat: (id) => {
-        db.prepare("update chat_sessions set seen_at = ?, events_through = ? where id = ?")
-          .run(new Date().toISOString(), lastEventId(), id);
+        db.prepare("update chat_sessions set seen_at = ? where id = ?")
+          .run(new Date().toISOString(), id);
       },
       endChat: (id, reason) => {
         db.prepare(

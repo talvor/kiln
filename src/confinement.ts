@@ -140,6 +140,12 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
         .find((p) =>
           !ctx.readRoots!.some((root) => insideWorktree(root, resolve(ctx.worktree, p)))
         );
+      const reaching = [input.pattern, input.glob].find((p): p is string =>
+        typeof p === "string" && (isAbsolute(p) || p.split("/").includes(".."))
+      );
+      if (!outside && reaching) {
+        return deny(`${tool} for ${reaching}: you may read only the registered projects`);
+      }
       if (outside) {
         return deny(`${tool} on ${outside}: you may read only the registered projects`);
       }
