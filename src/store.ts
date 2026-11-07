@@ -1495,8 +1495,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       },
       endChat: (id, reason) => {
         db.prepare(
-          "update chat_sessions set ended_at = ?, end_reason = ? where id = ? and ended_at is null",
-        ).run(new Date().toISOString(), reason, id);
+          "update chat_sessions set ended_at = ?, end_reason = ?, events_through = ? " +
+            "where id = ? and ended_at is null",
+        ).run(new Date().toISOString(), reason, lastEventId(), id);
       },
       requestRollover: (id) => {
         db.prepare(
