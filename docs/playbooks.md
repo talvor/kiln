@@ -124,7 +124,9 @@ QA. Its steps:
    verdicts. A leader that finds problems reports status `findings` with them in the summary. The
    findings go back to the step named by `findings` (implement) as a new Assignment, from the
    implementer's branch, for a fresh worker (`implementer-2-retry-1`); once it is merged the same
-   pull request is updated, and the QA steps begin again with new workers (`reviewer-3-round-1`).
+   pull request is updated, and the QA steps begin again with new workers (`reviewer-3-round-1`);
+   their earlier verdict files are removed from the request branch first, so a round that writes
+   nothing fails verification.
    Findings sent back do not count as retries, but after two rounds on the same QA step the
    Request fails for the Overseer.
 
