@@ -5,6 +5,7 @@ import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createEscalations } from "./escalations.ts";
+import { createPages } from "./pages.ts";
 import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
@@ -130,6 +131,28 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     selfCommand,
   });
   const escalations = createEscalations(store);
+  /** Record a decision, from a command or from a page, and let whatever waits on it carry on. */
+  const decideEscalation = (params: Parameters<typeof escalations.decide>[0]) => {
+    const decided = escalations.decide(params);
+    if (store.getEscalationPage(decided.id)) store.spendEscalationPage(decided.id);
+    try {
+      pages.refresh(decided.id);
+    } catch (err) {
+      log.error("page rewrite failed", { err });
+    }
+    // A Gate waits on this decision: let the conductor carry on at once.
+    if (decided.gate) {
+      conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+    }
+    return decided;
+  };
+  const pages = createPages({
+    store,
+    log,
+    dir: paths.pages,
+    decide: (p) => decideEscalation(p),
+  });
+  const pageServer = pages.start();
   // The router and the conductor lean on each other; the router only calls back once running.
   const conductor = createConductor({
     store,
@@ -148,6 +171,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     () => {
       deliver().catch((err) => log.error("delivery pass failed", { err }));
       conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+      try {
+        pages.sync();
+      } catch (err) {
+        log.error("page pass failed", { err });
+      }
     },
     2_000,
   );
@@ -180,6 +208,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     // Stop accepting first, and close the store before removing the socket: once the socket
     // is gone, a new daemon may start.
     listener.close();
+    await pageServer.shutdown().catch(() => {});
     store.close();
     removeQuietly(paths.socket);
     log.info("daemon stopped");
@@ -297,22 +326,24 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.context,
         params.assignmentId as number | undefined,
       ),
-    "escalations.raise": (params) => escalations.raise(String(params.from), params),
+    "escalations.raise": (params) => {
+      const raised = escalations.raise(String(params.from), params);
+      pages.sync();
+      return raised;
+    },
     "escalations.raised": (params) => escalations.raisedBy(String(params.from)),
-    "escalations.list": (params) => escalations.list(params.all !== true),
-    "escalations.decide": (params) => {
-      const decided = escalations.decide({
+    "escalations.list": (params) =>
+      escalations.list(params.all !== true).map((e) => ({
+        ...e,
+        page: pages.pathOf(e.id) ?? null,
+      })),
+    "escalations.decide": (params) =>
+      decideEscalation({
         id: params.id,
         approved: params.approved === true,
         reason: params.reason,
         agent: params.agent,
-      });
-      // A Gate waits on this decision: let the conductor carry on at once.
-      if (decided.gate) {
-        conductor.react().catch((err) => log.error("conductor pass failed", { err }));
-      }
-      return decided;
-    },
+      }),
     "messages.read": (params) => router.readInbox(String(params.address)),
     "router.police": async (params) =>
       await router.policeCall(
@@ -330,6 +361,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
 
   store.appendEvent("daemon.started", { pid: Deno.pid, version: VERSION });
   conductor.react().catch((err) => log.error("startup pass failed", { err }));
+  try {
+    pages.sync({ rewrite: true });
+  } catch (err) {
+    log.error("startup page pass failed", { err });
+  }
   log.info("daemon started", { pid: Deno.pid, version: VERSION, socket: paths.socket });
 
   while (!stopping) {

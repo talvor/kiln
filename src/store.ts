@@ -216,6 +216,21 @@ export const MIGRATIONS: string[] = [
    alter table escalations add column gate_message_id integer;`,
   // 11: work the user sent back is counted apart from verification retries.
   `alter table steps add column sent_back integer not null default 0;`,
+  // 12: Lavish pages. Each Escalation gets one page with a one-time token that lets the page, and
+  // only the page, carry the user's decision; text typed on the page is kept as notes for the
+  // Overseer and never decides anything.
+  `create table escalation_pages (
+     escalation_id integer primary key references escalations (id),
+     token text not null,
+     created_at text not null,
+     spent_at text
+   ) strict;
+   create table escalation_notes (
+     id integer primary key,
+     escalation_id integer not null references escalations (id),
+     body text not null,
+     sent_at text not null
+   ) strict;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -413,6 +428,20 @@ export interface NewEscalation {
   requestId?: number | null;
   summary: string;
   detail?: string | null;
+}
+
+/** The page of an Escalation: the token is good for one decision. */
+export interface EscalationPage {
+  escalationId: number;
+  token: string;
+  spentAt: string | null;
+}
+/** Text the user typed on an Escalation's page, for the Overseer to read. */
+export interface EscalationNote {
+  id: number;
+  escalationId: number;
+  body: string;
+  sentAt: string;
 }
 
 export class UnknownEscalationError extends Error {
@@ -614,6 +643,15 @@ export interface Store {
    * EscalationDecidedError when it was decided before.
    */
   decideEscalation(id: number, decision: { approved: boolean; reason?: string }): EscalationRecord;
+  /** The page of an Escalation and its one-time token, if it has one. */
+  getEscalationPage(id: number): EscalationPage | undefined;
+  /** Give the Escalation a page with this token. */
+  addEscalationPage(id: number, token: string): EscalationPage;
+  /** Spend the token: it carries a decision once. */
+  spendEscalationPage(id: number): void;
+  /** Keep text the user typed on the page for the Overseer. */
+  addEscalationNote(id: number, body: string): EscalationNote;
+  listEscalationNotes(id?: number): EscalationNote[];
   close(): void;
 }
 
@@ -1237,6 +1275,45 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           );
           return getEscalation(id);
         }),
+      getEscalationPage: (id) => {
+        const row = db.prepare("select * from escalation_pages where escalation_id = ?").get(id);
+        return row
+          ? {
+            escalationId: Number(row.escalation_id),
+            token: String(row.token),
+            spentAt: (row.spent_at as string | null) ?? null,
+          }
+          : undefined;
+      },
+      addEscalationPage: (id, token) => {
+        db.prepare(
+          "insert into escalation_pages (escalation_id, token, created_at) values (?, ?, ?)",
+        ).run(id, token, new Date().toISOString());
+        return { escalationId: id, token, spentAt: null };
+      },
+      spendEscalationPage: (id) => {
+        db.prepare("update escalation_pages set spent_at = ? where escalation_id = ?").run(
+          new Date().toISOString(),
+          id,
+        );
+      },
+      addEscalationNote: (id, body) => {
+        const sentAt = new Date().toISOString();
+        const { lastInsertRowid } = db.prepare(
+          "insert into escalation_notes (escalation_id, body, sent_at) values (?, ?, ?)",
+        ).run(id, body, sentAt);
+        return { id: Number(lastInsertRowid), escalationId: id, body, sentAt };
+      },
+      listEscalationNotes: (id) =>
+        db.prepare(
+          `select * from escalation_notes ${id === undefined ? "" : "where escalation_id = ?"}
+           order by id`,
+        ).all(...(id === undefined ? [] : [id])).map((row) => ({
+          id: Number(row.id),
+          escalationId: Number(row.escalation_id),
+          body: String(row.body),
+          sentAt: String(row.sent_at),
+        })),
       info: () => ({
         schemaVersion: version(),
         sqliteVersion: db.prepare("select sqlite_version() v").get()!.v as string,
