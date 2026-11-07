@@ -42,19 +42,40 @@ const SECRET_PATH = [
 export const isSecretPath = (path: string): boolean => SECRET_PATH.some((re) => re.test(path));
 
 /** Shell commands a worker must never run, by what they would do. */
+const AT = String.raw`(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*`;
+const GIT = String.raw`git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*`;
 const DESTRUCTIVE: [RegExp, string][] = [
   [
-    /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z]*\s+)*(\/|~|\$HOME|\*|\.{1,2}\/?)(\s|$)/,
+    new RegExp(
+      AT +
+        String
+          .raw`rm\s+(-[a-z]*\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z]*\s+)*(\/|~|\$HOME|\*|\.{1,2}\/?)(\s|$)`,
+    ),
     "recursive delete of a root, home, parent or wildcard",
   ],
-  [/\bsudo\b/, "privilege escalation"],
-  [/\bgit\b[^;&|]*\bpush\b/, "pushing is Kiln's job, not a worker's"],
-  [/\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.)/, "discarding work in the tree"],
-  [/\bgit\s+(branch\s+-D|worktree\s+(remove|prune))/, "removing branches or worktrees"],
-  [/\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(sh|bash|zsh)\b/, "piping a download into a shell"],
-  [/\b(mkfs|dd\s+if=|shutdown|reboot)\b/, "destroying or halting the machine"],
+  [new RegExp(AT + String.raw`sudo\b`), "privilege escalation"],
+  [new RegExp(AT + GIT + String.raw`push\b`), "pushing is Kiln's job, not a worker's"],
+  [
+    new RegExp(AT + GIT + String.raw`(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.)`),
+    "discarding work in the tree",
+  ],
+  [
+    new RegExp(AT + GIT + String.raw`(branch\s+-D|worktree\s+(remove|prune))`),
+    "removing branches or worktrees",
+  ],
+  [
+    new RegExp(AT + String.raw`(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(sh|bash|zsh)\b`),
+    "piping a download into a shell",
+  ],
+  [
+    new RegExp(AT + String.raw`(mkfs\S*|dd\s+if=|shutdown|reboot)\b`),
+    "destroying or halting the machine",
+  ],
   [/>\s*\/dev\/(sd|nvme)/, "writing to a disk device"],
-  [/\bchmod\s+(-R\s+)?[0-7]*7[0-7]*\s+\//, "opening up system permissions"],
+  [
+    new RegExp(AT + String.raw`chmod\s+(-R\s+)?[0-7]*7[0-7]*\s+\/`),
+    "opening up system permissions",
+  ],
 ];
 /** Reading a secret through a command is as bad as through a tool. */
 const SECRET_IN_COMMAND =
@@ -105,7 +126,8 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
   if (FILE_READERS.includes(tool)) {
     const where = target ? realpath(resolve(ctx.worktree, target)) : undefined;
     if (where && isSecretPath(where)) return deny(`${tool} on ${target}: that file holds secrets`);
-    for (const pattern of [input.glob, input.pattern]) {
+    const patterns = tool === "Glob" ? [input.pattern] : tool === "Grep" ? [input.glob] : [];
+    for (const pattern of patterns) {
       if (typeof pattern === "string" && isSecretPath(pattern.replaceAll("*", "x"))) {
         return deny(`${tool} for ${pattern}: that would reach secrets`);
       }

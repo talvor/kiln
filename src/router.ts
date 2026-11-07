@@ -274,18 +274,27 @@ export function createRouter(opts: RouterOptions) {
       const superior = superiorOf(store.listSessions(), session);
       if (!superior) return verdict;
       const open = openAssignments(address);
-      send(
-        address,
-        superior.address,
-        "question",
-        {
-          question: `Kiln denied my ${tool} call: ${verdict.reason}. May I proceed another way, ` +
-            `or should the work change?`,
-          context: JSON.stringify(input).slice(0, 500),
-        },
-        undefined,
-        open.length === 1 ? open[0].id : undefined,
-      );
+      const question =
+        `Kiln denied my ${tool} call: ${verdict.reason}. May I proceed another way, ` +
+        `or should the work change?`;
+      const asked = store.listMessages({ from: address, to: superior.address, kind: "question" })
+        .some((q) =>
+          q.body.question === question && q.deadLetteredAt === null &&
+          !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
+        );
+      if (!asked) {
+        send(
+          address,
+          superior.address,
+          "question",
+          {
+            question,
+            context: JSON.stringify(input).slice(0, 500),
+          },
+          undefined,
+          open.length === 1 ? open[0].id : undefined,
+        );
+      }
       return {
         allowed: false,
         reason: `${verdict.reason}. Kiln has asked ${superior.address} about it; ` +
