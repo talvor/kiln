@@ -310,7 +310,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         agent: params.agent,
       });
       // A question that went all the way to the user is answered by their decision.
-      router.answerFromDecision(decided);
+      try {
+        router.answerFromDecision(decided);
+      } catch (err) {
+        log.error("could not answer the question behind an escalation", { err });
+      }
       // A Gate waits on this decision: let the conductor carry on at once.
       if (decided.gate) {
         conductor.react().catch((err) => log.error("conductor pass failed", { err }));
