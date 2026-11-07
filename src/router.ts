@@ -470,15 +470,16 @@ export function createRouter(opts: RouterOptions) {
     const resume = messages.some((m) => m.kind === "answer")
       ? session.claudeSessionId ?? undefined
       : undefined;
-    if (resume && await launchNudge(session, messages, resume)) return true;
-    return launchNudge(session, messages, undefined);
+    const first = await launchNudge(session, messages, resume);
+    if (first === "unstarted" && resume) return (await launchNudge(session, messages, undefined)) === "ok";
+    return first === "ok";
   }
 
   async function launchNudge(
     session: SessionRecord,
     messages: MessageRecord[],
     resume: string | undefined,
-  ): Promise<boolean> {
+  ): Promise<"ok" | "failed" | "unstarted"> {
     const count = messages.length;
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
@@ -553,11 +554,12 @@ export function createRouter(opts: RouterOptions) {
       if (!launched.ok) {
         log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
       }
-      return launched.ok;
+      if (launched.ok) return "ok";
+      return launched.turns === 0 && !abortController.signal.aborted ? "unstarted" : "failed";
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
       opts.observe?.(session, { turns: 0, costUsd: 0, outcome: "aborted" });
-      return false;
+      return abortController.signal.aborted ? "failed" : "unstarted";
     } finally {
       clearTimeout(timeout);
       controllers.delete(abortController);
