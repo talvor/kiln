@@ -11,6 +11,30 @@ import { viewOf } from "./escalations.ts";
 
 const VIEWER = "lavish-axi";
 const MAX_FORM_BYTES = 64 * 1024;
+
+async function readCapped(req: Request): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  if (!req.body) return new Uint8Array(new ArrayBuffer(0));
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = req.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > MAX_FORM_BYTES) {
+      await reader.cancel().catch(() => {});
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(new ArrayBuffer(total));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
 const VIEWER_TIMEOUT_MS = 60_000;
 
 /** Remove script elements from text, however they are nested or left unclosed. */
@@ -138,11 +162,13 @@ ${controls}
     if (req.headers.get("host") !== origin.slice("http://".length)) {
       return reply(403, "Refused.");
     }
-    if (Number(req.headers.get("content-length") ?? 0) > MAX_FORM_BYTES) {
-      return reply(413, "That is too much text.");
-    }
     const id = Number(match[1]);
-    const form = await req.formData().catch(() => undefined);
+    const body = await readCapped(req);
+    if (body === undefined) return reply(413, "That is too much text.");
+    const form = await new Response(body, {
+      headers: { "content-type": req.headers.get("content-type") ?? "" },
+    })
+      .formData().catch(() => undefined);
     const field = (name: string) => {
       const value = form?.get(name);
       return typeof value === "string" ? value : undefined;
