@@ -214,6 +214,8 @@ export const MIGRATIONS: string[] = [
   `alter table escalations add column step_id integer references steps (id);
    alter table escalations add column gate text check (gate in ('spec-approval', 'out-of-scope'));
    alter table escalations add column gate_message_id integer;`,
+  // 11: work the user sent back is counted apart from verification retries.
+  `alter table steps add column sent_back integer not null default 0;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -343,6 +345,8 @@ export interface StepRecord {
   messageId: number | null;
   /** How many times the Step went back to its leader with rejection feedback. */
   retries: number;
+  /** How many times the user sent the Step's work back; these do not count as retries. */
+  sentBack: number;
   failure: string | null;
 }
 export interface AssignmentRecord {
@@ -545,7 +549,7 @@ export interface Store {
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
   beginStep(id: number, messageId: number, worker: string): void;
   /** Hand a rejected Step back to its leader in `messageId`, to be delegated to a fresh `worker`. */
-  retryStep(id: number, messageId: number, worker: string): void;
+  retryStep(id: number, messageId: number, worker: string, byUser?: boolean): void;
   setStepState(id: number, status: State, failure?: string): void;
   /** Begin an Assignment for a router assignment Message; a planned one becomes active. */
   addAssignment(requestId: number, messageId: number): AssignmentRecord;
@@ -805,6 +809,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       worker: row.worker as string | null,
       messageId: row.message_id as number | null,
       retries: row.retries as number,
+      sentBack: row.sent_back as number,
       failure: row.failure as string | null,
     });
     const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
@@ -875,9 +880,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         db.prepare("update steps set status = 'active', message_id = ?, worker = ? where id = ?")
           .run(messageId, worker, id);
       },
-      retryStep: (id, messageId, worker) => {
+      retryStep: (id, messageId, worker, byUser) => {
         db.prepare(
-          "update steps set message_id = ?, worker = ?, retries = retries + 1 where id = ?",
+          byUser
+            ? "update steps set message_id = ?, worker = ?, sent_back = sent_back + 1 where id = ?"
+            : "update steps set message_id = ?, worker = ?, retries = retries + 1 where id = ?",
         ).run(messageId, worker, id);
       },
       setStepState: (id, status, failure) => {

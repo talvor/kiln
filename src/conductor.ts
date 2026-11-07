@@ -262,7 +262,7 @@ export function createConductor(opts: ConductorOptions) {
         if (blocked) continue;
         try {
           const mine = assignmentsOf(request, step);
-          const rejected = step.retries
+          const rejected = step.retries || step.sentBack
             ? mine.filter((b) => b.branch && !sameWorker(step, b)).at(-1)?.branch
             : undefined;
           const earlier = mine.filter((b) => b.id < a.id && b.branch);
@@ -319,7 +319,7 @@ export function createConductor(opts: ConductorOptions) {
       );
     }
     if (!user) { for (const a of rejected) store.setAssignmentState(a.id, "failed"); }
-    const worker = stepWorkerAddress(step.spec, step.id, step.retries + 1);
+    const worker = stepWorkerAddress(step.spec, step.id, step.retries + step.sentBack + 1);
     seat(
       (s) => s.address === worker,
       {
@@ -345,7 +345,7 @@ export function createConductor(opts: ConductorOptions) {
         heading: user?.heading,
       }),
     });
-    store.retryStep(step.id, sent.id, worker);
+    store.retryStep(step.id, sent.id, worker, !!user);
     store.appendEvent("step.retried", {
       request: request.id,
       step: step.id,

@@ -53,7 +53,7 @@ const escalations = async (world: World, ...flags: string[]): Promise<Escalation
 /** The leader hands the open step to `worker`, who commits `files` and reports; the leader too. */
 async function deliver(
   world: World,
-  opts: { worker: string; stepMessage: number; files: Record<string, string> },
+  opts: { worker: string; stepMessage: number; files: Record<string, string | null> },
 ) {
   const job = await asAgent(
     world,
@@ -64,7 +64,8 @@ async function deliver(
     a.id === job.id
   )!;
   for (const [file, content] of Object.entries(opts.files)) {
-    await Deno.writeTextFile(join(open.worktree, file), content);
+    if (content === null) await Deno.remove(join(open.worktree, file));
+    else await Deno.writeTextFile(join(open.worktree, file), content);
   }
   await world.git(open.worktree, "add", ".");
   await world.git(open.worktree, "commit", "-m", "Write the artifact");
@@ -182,7 +183,42 @@ withWorld(
     assertStringIncludes(all[1].detail!, "v2 with Excel");
     await world.kiln("approve", String(all[1].id));
     const done = await waitFor(() => statusOf(world), (s) => s.status === "done");
-    assertEquals(done.steps[1].retries, 1);
+    assertEquals(done.steps[1].retries, 0);
+  },
+);
+
+withWorld(
+  "a spec the user rejected twice still gets an automatic retry when verification fails",
+  async (world) => {
+    await startDesign(world);
+    let step = await writeSpec(world);
+    for (const n of [1, 2]) {
+      await deliver(world, {
+        worker: n === 1 ? "seam-designer-2" : "seam-designer-2-retry-1",
+        stepMessage: step.id,
+        files: { "seams.md": `# Seams\nv${n}\n` },
+      });
+      const [open] = await escalations(world);
+      const r = await world.kiln("reject", String(open.id), "--reason", `Round ${n}`);
+      assertEquals(r.code, 0, r.stderr);
+      [step] = await waitFor(() => leaderInbox(world), (m) => m.length > 0);
+    }
+    assertStringIncludes(String(step.body.instructions), "seam-designer-2-retry-2");
+    assertEquals((await statusOf(world)).steps[1].retries, 0);
+
+    await deliver(world, {
+      worker: "seam-designer-2-retry-2",
+      stepMessage: step.id,
+      files: { "seams.md": null },
+    });
+    const status = await statusOf(world);
+    assertEquals([status.status, status.steps[1].status, status.steps[1].retries], [
+      "active",
+      "active",
+      1,
+    ]);
+    const [retry] = await waitFor(() => leaderInbox(world), (m) => m.length > 0);
+    assertStringIncludes(String(retry.body.instructions), "seam-designer-2-retry-3");
   },
 );
 
