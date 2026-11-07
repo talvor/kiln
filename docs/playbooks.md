@@ -73,7 +73,7 @@ use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
 ```
 
 Each Step names a department with a leader and a worker role in that department. `publish` is
-optional. A file that is not valid is refused when a Request starts, naming the file and the
+optional, and so is `gate` (`"spec-approval"`, see below). A file that is not valid is refused when a Request starts, naming the file and the
 problem. A Request keeps the Steps it started with if the file changes later.
 
 ## Verification and retries
