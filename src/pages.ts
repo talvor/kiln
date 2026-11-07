@@ -10,6 +10,7 @@ import type { EscalationRecord, Store } from "./store.ts";
 import { viewOf } from "./escalations.ts";
 
 const VIEWER = "lavish-axi";
+const MAX_FORM_BYTES = 64 * 1024;
 const VIEWER_TIMEOUT_MS = 60_000;
 
 /** Remove script elements from text, however they are nested or left unclosed. */
@@ -98,8 +99,9 @@ ${controls}
 `;
   }
 
-  async function write(id: number) {
-    await Deno.writeTextFile(pagePath(id), render(store.getEscalation(id)));
+  // Synchronous, so concurrent rewrites cannot interleave and leave a stale page behind.
+  function write(id: number) {
+    Deno.writeTextFileSync(pagePath(id), render(store.getEscalation(id)));
   }
 
   /** Open the page in Lavish. Lavish being absent or failing costs nothing: the commands remain. */
@@ -136,6 +138,9 @@ ${controls}
     if (req.headers.get("host") !== origin.slice("http://".length)) {
       return reply(403, "Refused.");
     }
+    if (Number(req.headers.get("content-length") ?? 0) > MAX_FORM_BYTES) {
+      return reply(413, "That is too much text.");
+    }
     const id = Number(match[1]);
     const form = await req.formData().catch(() => undefined);
     const field = (name: string) => {
@@ -155,7 +160,7 @@ ${controls}
       if (status !== "open") return reply(409, `This escalation is ${status}.`);
       store.addEscalationNote(id, text);
       store.appendEvent("escalation.note", { id });
-      await write(id);
+      write(id);
       return reply(200, "Sent to the Overseer. That is not a decision: decide on the page.");
     }
 
@@ -192,22 +197,22 @@ ${controls}
     },
 
     /** Rewrite a page after the Escalation changed, e.g. was decided. */
-    async refresh(id: number) {
-      if (store.getEscalationPage(id)) await write(id);
+    refresh(id: number) {
+      if (store.getEscalationPage(id)) write(id);
     },
 
     /**
      * Give every open Escalation a page. New ones are opened in Lavish; the others are rewritten
      * so that their forms reach this daemon.
      */
-    async sync(opts: { rewrite?: boolean } = {}) {
+    sync(opts: { rewrite?: boolean } = {}) {
       for (const e of store.listEscalations({ openOnly: true })) {
         if (store.getEscalationPage(e.id)) {
-          if (opts.rewrite) await write(e.id);
+          if (opts.rewrite) write(e.id);
           continue;
         }
         store.addEscalationPage(e.id, newToken());
-        await write(e.id);
+        write(e.id);
         void open(e.id); // Lavish may be slow; nothing waits for it
       }
     },

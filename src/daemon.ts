@@ -135,7 +135,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const decideEscalation = (params: Parameters<typeof escalations.decide>[0]) => {
     const decided = escalations.decide(params);
     if (store.getEscalationPage(decided.id)) store.spendEscalationPage(decided.id);
-    pages.refresh(decided.id).catch((err) => log.error("page rewrite failed", { err }));
+    try {
+      pages.refresh(decided.id);
+    } catch (err) {
+      log.error("page rewrite failed", { err });
+    }
     // A Gate waits on this decision: let the conductor carry on at once.
     if (decided.gate) {
       conductor.react().catch((err) => log.error("conductor pass failed", { err }));
@@ -167,7 +171,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     () => {
       deliver().catch((err) => log.error("delivery pass failed", { err }));
       conductor.react().catch((err) => log.error("conductor pass failed", { err }));
-      pages.sync().catch((err) => log.error("page pass failed", { err }));
+      try {
+        pages.sync();
+      } catch (err) {
+        log.error("page pass failed", { err });
+      }
     },
     2_000,
   );
@@ -318,9 +326,9 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.context,
         params.assignmentId as number | undefined,
       ),
-    "escalations.raise": async (params) => {
+    "escalations.raise": (params) => {
       const raised = escalations.raise(String(params.from), params);
-      await pages.sync();
+      pages.sync();
       return raised;
     },
     "escalations.raised": (params) => escalations.raisedBy(String(params.from)),
@@ -353,7 +361,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
 
   store.appendEvent("daemon.started", { pid: Deno.pid, version: VERSION });
   conductor.react().catch((err) => log.error("startup pass failed", { err }));
-  pages.sync({ rewrite: true }).catch((err) => log.error("startup page pass failed", { err }));
+  try {
+    pages.sync({ rewrite: true });
+  } catch (err) {
+    log.error("startup page pass failed", { err });
+  }
   log.info("daemon started", { pid: Deno.pid, version: VERSION, socket: paths.socket });
 
   while (!stopping) {
