@@ -71,9 +71,13 @@ export function createEscalations(store: Store) {
     },
 
     /** The Escalations the Overseer raised, with what the user decided. */
-    raisedBy(address: string): EscalationView[] {
+    raisedBy(address: string): (EscalationView & { notes: { text: string; sentAt: string }[] })[] {
       return store.listEscalations().filter((e) => e.raisedBy === address)
-        .map((e) => viewOf(store, e));
+        .map((e) => ({
+          ...viewOf(store, e),
+          // What the user typed on the Escalation's page: for the Overseer to read, never a decision.
+          notes: store.listEscalationNotes(e.id).map((n) => ({ text: n.body, sentAt: n.sentAt })),
+        }));
     },
 
     /**
