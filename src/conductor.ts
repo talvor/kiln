@@ -40,6 +40,7 @@ import type {
 import { commentOnPr, openDraftPr, parseTicket, PublishFailed, publishTicket } from "./tracker.ts";
 import { verifyWork } from "./verify.ts";
 import {
+  clearFromRequestBranch,
   mergeAssignment,
   MergeConflict,
   startAssignment,
@@ -439,13 +440,14 @@ export function createConductor(opts: ConductorOptions) {
    * its branch: QA found problems, or the user did not accept the result. The Steps after it begin
    * again once it is done, so the same pull request is updated and checked afresh.
    */
-  function sendBack(
+  async function sendBack(
     request: RequestRecord,
     target: StepRecord,
     feedback: string,
     heading: string,
   ) {
     const mine = assignmentsOf(request, target).filter((a) => sameWorker(target, a) && a.branch);
+    const cleared: string[] = [];
     for (const s of store.listSteps(request.id)) {
       if (s.position > target.position && s.status !== "planned") {
         // What the later Step's workers left unmerged is not carried into its next round.
@@ -455,7 +457,14 @@ export function createConductor(opts: ConductorOptions) {
           }
         }
         store.restartStep(s.id);
+        cleared.push(s.spec.artifact);
       }
+    }
+    try {
+      await clearFromRequestBranch(store, request.id, cleared);
+    } catch (err) {
+      if (err instanceof WorktreeBlocked) throw new StepFailed(err.message);
+      throw err;
     }
     store.setStepState(target.id, "active");
     reject(request, target, projectOf(request), [], feedback, {
@@ -469,7 +478,7 @@ export function createConductor(opts: ConductorOptions) {
   }
 
   /** The leader reports findings on the Step: they go back to the Step that must fix them. */
-  function returnFindings(request: RequestRecord, step: StepRecord, report: MessageRecord) {
+  async function returnFindings(request: RequestRecord, step: StepRecord, report: MessageRecord) {
     const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
     if (!target) {
       throw new StepFailed(
@@ -485,7 +494,7 @@ export function createConductor(opts: ConductorOptions) {
           `${report.body.summary}`,
       );
     }
-    sendBack(
+    await sendBack(
       request,
       target,
       String(report.body.summary ?? ""),
@@ -565,7 +574,7 @@ export function createConductor(opts: ConductorOptions) {
     if (step.spec.gate === "qa-passed") {
       const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
       if (!target) throw new StepFailed(`The user rejected the result: ${gate.reason}`);
-      sendBack(
+      await sendBack(
         request,
         target,
         gate.reason ?? "",
@@ -603,7 +612,7 @@ export function createConductor(opts: ConductorOptions) {
       return holdForUser("blocked-on-user", request, step, report, assignments);
     }
     if (report.body.status === "findings" && step.spec.findings) {
-      return returnFindings(request, step, report);
+      return await returnFindings(request, step, report);
     }
     if (report.body.status !== "done") {
       throw new StepFailed(

@@ -373,3 +373,50 @@ withWorld(
     assert(status.prUrl);
   },
 );
+
+withWorld(
+  "a restarted QA round that writes nothing does not pass on the last round's review",
+  async (world) => {
+    await startTicket(world);
+    const review = await implement(world);
+    await deliver(world, {
+      worker: "reviewer-3",
+      stepMessage: review.id,
+      files: { "review.md": "Fine.\n" },
+    });
+    const gatekeep = await nextForLeader(world);
+    await deliver(world, {
+      worker: "gatekeeper-4",
+      stepMessage: gatekeep.id,
+      files: { "gatekeeper.md": "Criterion 2 is not met.\n" },
+      status: "findings",
+      summary: "Criterion 2 (header row) is not met.",
+    });
+    const fix = await nextForLeader(world);
+    await deliver(world, {
+      worker: "implementer-2-retry-1",
+      stepMessage: fix.id,
+      files: { "feature.txt": "export v2 with header\n" },
+    });
+
+    // The fresh reviewer commits something else but not its review.
+    const again = await nextForLeader(world);
+    assertStringIncludes(String(again.body.instructions), "reviewer-3-round-1");
+    await deliver(world, {
+      worker: "reviewer-3-round-1",
+      stepMessage: again.id,
+      files: { "notes.txt": "looked at it\n" },
+    });
+
+    const retry = await nextForLeader(world);
+    assertStringIncludes(String(retry.body.instructions), "review.md was not committed");
+    assertEquals((await statusOf(world)).steps.map((s) => s.status), [
+      "done",
+      "done",
+      "active",
+      "planned",
+    ]);
+    assertEquals(await escalations(world), []);
+    assertEquals(await world.pullRequests.comments(), []);
+  },
+);
