@@ -34,6 +34,10 @@ const ASSIGNMENT_USAGE = `Usage:
   kiln assignment merge <assignment-id>`;
 const SESSION_USAGE =
   "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
+const ESCALATION_USAGE = `Usage:
+  kiln escalations [--all] [--json]
+  kiln approve <escalation-id>
+  kiln reject <escalation-id> --reason <text>`;
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -54,10 +58,16 @@ Usage:
                          Start an assignment: its own branch and worktree off the request branch
   kiln assignment merge <assignment-id>
                          Merge a verified assignment into its request branch and push it
+  kiln escalations [--all] [--json]
+                         Show the decisions waiting for you (--all: decided ones too)
+  kiln approve <escalation-id>
+                         Approve an escalation; only you can
+  kiln reject <escalation-id> --reason <text>
+                         Reject an escalation, saying why
   kiln session open ...
                          Open the address an agent works under (see \`kiln session\`)
   kiln tool-server --address <address>
-                         Serve one agent's Kiln tools over MCP on stdio (read_inbox, send, raise_question)
+                         Serve one agent's Kiln tools over MCP on stdio (read_inbox, send, raise_question, raise_escalation, read_escalations)
   kiln hook police --address <address>
                          The PreToolUse hook for an agent: refuses tool calls its role does not
                          allow, writes outside its worktree, secrets and destructive commands,
@@ -109,6 +119,10 @@ async function main(args: string[]): Promise<number> {
       );
     case "session":
       return await sessionCommand(sub, args.slice(2));
+    case "escalations":
+    case "approve":
+    case "reject":
+      return await escalationCommand(cmd, args.slice(1));
     case "tool-server": {
       const address = flagValue(args.slice(1), "--address");
       if (!address) {
@@ -212,6 +226,55 @@ async function main(args: string[]): Promise<number> {
       console.log(`Started request ${r.requestId} on ${target}, playbook ${values["--playbook"]}.`);
       console.log(`Branch: ${r.branch}`);
       console.log(`Worktree: ${r.path}`);
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
+  }
+
+  async function escalationCommand(verb: string, rest: string[]): Promise<number> {
+    const usage = () => {
+      console.error(ESCALATION_USAGE);
+      return 2;
+    };
+    if (verb === "escalations") {
+      if (rest.some((a) => a !== "--all" && a !== "--json")) return usage();
+      await ensureDaemon(paths);
+      try {
+        const list = await call<EscalationView[]>(paths, "escalations.list", {
+          all: rest.includes("--all"),
+        });
+        if (rest.includes("--json")) console.log(JSON.stringify(list));
+        else if (!list.length) console.log("No escalations are waiting for you.");
+        else for (const e of list) console.log(describeEscalation(e));
+        return 0;
+      } catch (err) {
+        console.error((err as Error).message);
+        return 1;
+      }
+    }
+    const [target, ...flags] = rest;
+    if (!target || !/^\d+$/.test(target)) return usage();
+    let reason: string | undefined;
+    if (verb === "reject") {
+      if (flags.length !== 2 || flags[0] !== "--reason") return usage();
+      reason = flags[1];
+      if (!reason.trim()) {
+        console.error("Say why with --reason <text>: a rejection needs a reason.");
+        return 2;
+      }
+    } else if (flags.length) return usage();
+    await ensureDaemon(paths);
+    try {
+      const e = await call<EscalationView>(paths, "escalations.decide", {
+        id: Number(target),
+        approved: verb === "approve",
+        reason,
+        // Set for anything an agent runs, so that the daemon can tell it from the user.
+        agent: Deno.env.get("KILN_AGENT"),
+      });
+      console.log(`${verb === "approve" ? "Approved" : "Rejected"} escalation ${e.id}.`);
       return 0;
     } catch (err) {
       console.error((err as Error).message);
@@ -595,6 +658,27 @@ function describeBaseline(p: { baseline: ProjectRecord["baseline"] }, registerin
   return `Test baseline: FAILING (exit ${b.exitCode}); ${
     registering ? "the project is registered with" : "the project has"
   } its tests already red.`;
+}
+
+interface EscalationView {
+  id: number;
+  raisedBy: string;
+  requestId: number | null;
+  summary: string;
+  detail: string | null;
+  status: string;
+  reason: string | null;
+}
+
+function describeEscalation(e: EscalationView): string {
+  const lines = [
+    `Escalation ${e.id} [${e.status}]${
+      e.requestId === null ? "" : ` (request ${e.requestId})`
+    }: ${e.summary}`,
+  ];
+  if (e.detail) lines.push(`  ${e.detail}`);
+  if (e.reason) lines.push(`  Reason: ${e.reason}`);
+  return lines.join("\n");
 }
 
 interface RequestStatus {

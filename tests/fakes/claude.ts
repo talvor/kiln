@@ -34,7 +34,14 @@ Deno.writeTextFileSync(
     args: Deno.args,
     cwd: Deno.cwd(),
     env: Object.fromEntries(
-      ["KILN_PORT_BASE", "KILN_PORT_COUNT", "TMPDIR", "XDG_CACHE_HOME", "npm_config_cache"]
+      [
+        "KILN_AGENT",
+        "KILN_PORT_BASE",
+        "KILN_PORT_COUNT",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "npm_config_cache",
+      ]
         .map((key) => [key, Deno.env.get(key)]),
     ),
   }) + "\n",

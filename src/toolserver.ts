@@ -52,6 +52,28 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "raise_escalation",
+    description: "Overseer only: bring the user a decision that is theirs to make. The work " +
+      "waits for as long as the user takes; Kiln never decides for them. " +
+      "Check the outcome with read_escalations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: str("The decision the user is asked to make"),
+        detail: str("What the user needs to know to decide"),
+        requestId: { type: "integer", description: "The request this decision concerns" },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_escalations",
+    description: "Overseer only: the escalations you raised, with whether the user approved " +
+      "or rejected each (and why), or whether it is still open.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 const view = (m: MessageRecord) => ({
@@ -101,18 +123,31 @@ async function callTool(
           }),
         ),
       };
+    case "raise_escalation":
+      return {
+        escalation: await call(paths, "escalations.raise", {
+          from: address,
+          summary: args.summary,
+          detail: args.detail,
+          requestId: args.requestId,
+        }),
+      };
+    case "read_escalations":
+      return { escalations: await call(paths, "escalations.raised", { from: address }) };
     default:
       throw new Error(`unknown tool "${name}"`);
   }
 }
 
 function validateArgs(name: string, value: unknown): Record<string, unknown> {
-  const fields: Record<string, string> = name === "read_inbox"
+  const fields: Record<string, string> = name === "read_inbox" || name === "read_escalations"
     ? {}
     : name === "send"
     ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
     : name === "raise_question"
     ? { question: "string", context: "string", assignmentId: "integer" }
+    : name === "raise_escalation"
+    ? { summary: "string", detail: "string", requestId: "integer" }
     : (() => {
       throw new Error(`unknown tool "${name}"`);
     })();
@@ -140,6 +175,8 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
       ? ["to", "kind", "body"]
       : name === "raise_question"
       ? ["question"]
+      : name === "raise_escalation"
+      ? ["summary"]
       : []
   ) {
     if (!Object.hasOwn(args, field)) throw new Error(`missing argument "${field}"`);

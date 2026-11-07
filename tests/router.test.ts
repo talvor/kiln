@@ -6,7 +6,13 @@ import { asAgent, assignment, openTeam, stopHook, waitFor } from "./router_helpe
 withWorld("tools, inbox reads, and message history", async (world) => {
   await openTeam(world);
   await asAgent(world, "dev-1", async (agent) => {
-    assertEquals((await agent.tools()).sort(), ["raise_question", "read_inbox", "send"]);
+    assertEquals((await agent.tools()).sort(), [
+      "raise_escalation",
+      "raise_question",
+      "read_escalations",
+      "read_inbox",
+      "send",
+    ]);
   });
   const sent = await asAgent(
     world,

@@ -191,6 +191,24 @@ export const MIGRATIONS: string[] = [
    alter table assignments add column started_at text;
    alter table assignments add column activity_at text;
    alter table assignments add column limit_reached text;`,
+  // 9: Escalations the Overseer brings to the user. An Escalation stays open, however long, until
+  // the user approves or rejects it; a decision is made once and never changed or removed.
+  `create table escalations (
+     id integer primary key,
+     raised_by text not null references sessions (address),
+     request_id integer references requests (id),
+     summary text not null,
+     detail text,
+     status text not null default 'open' check (status in ('open', 'approved', 'rejected')),
+     reason text,
+     created_at text not null,
+     decided_at text
+   ) strict;
+   create trigger escalations_decided_once before update on escalations
+     when old.status != 'open'
+     begin select raise(abort, 'a decided escalation is never changed'); end;
+   create trigger escalations_no_delete before delete on escalations
+     begin select raise(abort, 'escalations are never removed'); end;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -353,6 +371,43 @@ export class UnknownRequestError extends Error {
 export class UnknownAssignmentError extends Error {
   constructor(id: number) {
     super(`No assignment ${id} exists.`);
+  }
+}
+
+/** A decision the Overseer brings to the user, and what the user decided. */
+export interface EscalationRecord {
+  id: number;
+  /** The session that raised it: always the Overseer. */
+  raisedBy: string;
+  /** The Request it concerns, if any. */
+  requestId: number | null;
+  summary: string;
+  detail: string | null;
+  status: "open" | "approved" | "rejected";
+  /** Why the user rejected it. */
+  reason: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+}
+export interface NewEscalation {
+  raisedBy: string;
+  requestId?: number | null;
+  summary: string;
+  detail?: string | null;
+}
+
+export class UnknownEscalationError extends Error {
+  constructor(id: number) {
+    super(`No escalation ${id} exists.`);
+  }
+}
+/** The Escalation was decided before: a second decision is refused. */
+export class EscalationDecidedError extends Error {
+  constructor(readonly escalation: EscalationRecord) {
+    super(
+      `Escalation ${escalation.id} was already ${escalation.status}` +
+        `${escalation.decidedAt ? ` at ${escalation.decidedAt}` : ""}; a decision is final.`,
+    );
   }
 }
 
@@ -529,6 +584,17 @@ export interface Store {
   /** Count one more Nudge for each of these Messages. */
   recordDelivery(ids: number[]): void;
   deadLetter(id: number): void;
+  /** Record an Escalation as open. */
+  addEscalation(escalation: NewEscalation): EscalationRecord;
+  /** Throws UnknownEscalationError. */
+  getEscalation(id: number): EscalationRecord;
+  /** Every Escalation, oldest first; only the open ones when asked. */
+  listEscalations(opts?: { openOnly?: boolean }): EscalationRecord[];
+  /**
+   * Record the decision on an open Escalation. Throws UnknownEscalationError, or
+   * EscalationDecidedError when it was decided before.
+   */
+  decideEscalation(id: number, decision: { approved: boolean; reason?: string }): EscalationRecord;
   close(): void;
 }
 
@@ -683,6 +749,22 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
     const getMessage = (id: number): MessageRecord | undefined => {
       const row = db.prepare(`${messageSelect} where m.id = ?`).get(id);
       return row ? toMessage(row) : undefined;
+    };
+    const toEscalation = (row: Record<string, unknown>): EscalationRecord => ({
+      id: row.id as number,
+      raisedBy: row.raised_by as string,
+      requestId: row.request_id as number | null,
+      summary: row.summary as string,
+      detail: row.detail as string | null,
+      status: row.status as EscalationRecord["status"],
+      reason: row.reason as string | null,
+      createdAt: row.created_at as string,
+      decidedAt: row.decided_at as string | null,
+    });
+    const getEscalation = (id: number): EscalationRecord => {
+      const row = db.prepare("select * from escalations where id = ?").get(id);
+      if (!row) throw new UnknownEscalationError(id);
+      return toEscalation(row);
     };
     const toRequest = (row: Record<string, unknown>): RequestRecord => ({
       id: row.id as number,
@@ -1094,6 +1176,38 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
         }
         return { ...project, removedAt };
       },
+      addEscalation: (e) => {
+        const { lastInsertRowid } = db.prepare(
+          `insert into escalations (raised_by, request_id, summary, detail, created_at)
+           values (?, ?, ?, ?, ?)`,
+        ).run(
+          e.raisedBy,
+          e.requestId ?? null,
+          e.summary,
+          e.detail ?? null,
+          new Date().toISOString(),
+        );
+        return getEscalation(Number(lastInsertRowid));
+      },
+      getEscalation,
+      listEscalations: (o = {}) =>
+        db.prepare(
+          `select * from escalations ${o.openOnly ? "where status = 'open'" : ""} order by id`,
+        ).all().map(toEscalation),
+      decideEscalation: (id, d) =>
+        inTransaction(() => {
+          const before = getEscalation(id);
+          if (before.status !== "open") throw new EscalationDecidedError(before);
+          db.prepare(
+            "update escalations set status = ?, reason = ?, decided_at = ? where id = ?",
+          ).run(
+            d.approved ? "approved" : "rejected",
+            d.reason ?? null,
+            new Date().toISOString(),
+            id,
+          );
+          return getEscalation(id);
+        }),
       info: () => ({
         schemaVersion: version(),
         sqliteVersion: db.prepare("select sqlite_version() v").get()!.v as string,
