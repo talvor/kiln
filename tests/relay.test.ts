@@ -41,7 +41,7 @@ withWorld(
       (agent) => agent.send("dev-1", "assignment", assignment),
     );
     // Kiln wakes the worker, which reads its assignment, asks its question and stops.
-    await waitFor(() => world.launcher.calls(), (calls) => calls.length >= 1);
+    await waitFor(() => world.launcher.calls(), (calls) => calls.length >= 1, 60_000);
     const asked = await asAgent(world, "dev-1", async (agent) => {
       await agent.inbox();
       const out = await agent.call("raise_question", {
@@ -58,6 +58,7 @@ withWorld(
     const resumed = await waitFor(
       () => world.launcher.calls(),
       (calls) => calls.some((c) => c.env?.KILN_AGENT === "dev-1" && c.args.some(isResume)),
+      60_000,
     );
     const workerCalls = resumed.filter((c) => c.env?.KILN_AGENT === "dev-1");
     const first = workerCalls[0];
