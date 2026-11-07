@@ -13,14 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  lint:
+    name: Lint & typecheck
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest] # Kiln supports Linux and macOS
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
@@ -28,4 +24,25 @@ jobs:
           deno-version: v2.x
       - run: deno fmt --check
       - run: deno task check
-      - run: deno task test
+
+  test:
+    name: Test ${{ matrix.suite.name }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest] # Kiln supports Linux and macOS
+        # router.test.ts alone is ~40% of total test time, so it gets its own job.
+        # "rest" ignores it, so new test files are picked up automatically.
+        suite:
+          - name: router
+            args: tests/router.test.ts
+          - name: rest
+            args: --ignore=tests/router.test.ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno test -A ${{ matrix.suite.args }}
