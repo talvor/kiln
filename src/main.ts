@@ -11,6 +11,7 @@ import {
 } from "./register.ts";
 import type { Change } from "./manage.ts";
 import { runToolServer } from "./toolserver.ts";
+import { chatHook, runChat } from "./chat_cli.ts";
 import type { ProjectRecord } from "./store.ts";
 import type { StopVerdict } from "./router.ts";
 
@@ -64,6 +65,7 @@ Usage:
                          Approve an escalation; only you can
   kiln reject <escalation-id> --reason <text>
                          Reject an escalation, saying why
+  kiln chat              Talk to the Overseer: interactive Claude, with Kiln's tools and status line
   kiln session open ...
                          Open the address an agent works under (see \`kiln session\`)
   kiln tool-server --address <address>
@@ -91,6 +93,7 @@ async function main(args: string[]): Promise<number> {
     return cmd ? 0 : 2;
   }
 
+  if (cmd === "hook" && sub === "chat") return await chatHookCommand(args.slice(2));
   if (cmd === "hook") return await hookCommand(sub, args.slice(2));
 
   const paths = resolvePaths();
@@ -104,6 +107,20 @@ async function main(args: string[]): Promise<number> {
       console.log(path);
       return 0;
     }
+    case "chat":
+      if (args.length > 1) {
+        console.error("Usage: kiln chat");
+        return 2;
+      }
+      try {
+        return await runChat(paths);
+      } catch (err) {
+        if (err instanceof ClaudeNotInstalled) {
+          console.error(err.message);
+          return 1;
+        }
+        throw err;
+      }
     case "launch":
       return await launchCommand(args.slice(1));
     case "project":
@@ -310,6 +327,17 @@ async function main(args: string[]): Promise<number> {
     }
     console.log(`Opened ${values["--role"]} session "${address}".`);
     return 0;
+  }
+
+  /** The hooks and status line of the Overseer chat: `kiln hook chat <event> --chat <id>`. */
+  async function chatHookCommand(rest: string[]): Promise<number> {
+    const [event, ...flags] = rest;
+    const id = Number(flagValue(flags, "--chat"));
+    if (!["prompt", "stop", "status-line"].includes(event) || !Number.isSafeInteger(id)) {
+      console.error("Usage: kiln hook chat prompt|stop|status-line --chat <id>");
+      return 2;
+    }
+    return await chatHook(resolvePaths(), event, id);
   }
 
   /** Hook commands for an agent's Claude session; they speak Claude Code's hook protocol. */

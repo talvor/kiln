@@ -7,6 +7,7 @@ import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createEscalations } from "./escalations.ts";
 import { createPages } from "./pages.ts";
 import { createRouter } from "./router.ts";
+import { createChat } from "./chat.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
@@ -113,7 +114,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const router = createRouter({
     store,
     log,
-    hold: (m) => conductor.holds(m),
+    hold: (m) => conductor.holds(m) || chat.holds(m),
+    readRoots: (session) =>
+      session.role === "overseer"
+        ? [paths.chat, ...store.listProjects().map((p) => p.clonePath)]
+        : undefined,
     launchLimits: (session) => conductor.launchLimits(session),
     observe: (session, used) => conductor.observe(session, used),
     activity: (session) => conductor.activity(session),
@@ -159,6 +164,20 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     decide: (p) => decideEscalation(p),
   });
   const pageServer = pages.start();
+  const chat = createChat({
+    store,
+    router,
+    escalations,
+    loadConfig: () => loadConfig(paths.config),
+    chatDir: paths.chat,
+    decide: (params) => decideEscalation(params),
+  });
+  /** The Overseer's own tools: the caller must be the overseer. */
+  const asOverseer = (params: Record<string, unknown>): void => {
+    if (store.getSession(String(params.from)).role !== "overseer") {
+      throw new Error("Only the overseer may use this tool.");
+    }
+  };
   // The router and the conductor lean on each other; the router only calls back once running.
   const conductor = createConductor({
     store,
@@ -352,6 +371,54 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         reason: params.reason,
         agent: params.agent,
       }),
+    "overseer.projects": (params) => {
+      asOverseer(params);
+      return store.listProjects().map((p) => ({
+        name: p.name,
+        paused: p.paused,
+        defaultBranch: p.defaultBranch,
+        baseline: p.baseline ? (p.baseline.passed ? "passing" : "failing") : "none",
+      }));
+    },
+    "overseer.playbooks": async (params) => {
+      asOverseer(params);
+      const config = await loadConfig(paths.config);
+      return [...config.playbooks.values()].map((p) => ({
+        name: p.name,
+        description: p.description,
+        steps: p.steps.map((s) => s.name),
+      }));
+    },
+    "overseer.startRequest": (params) => {
+      asOverseer(params);
+      const project = store.getProject(String(params.project));
+      if (project.paused) {
+        throw new Error(`"${project.name}" is paused: it takes no new requests until resumed.`);
+      }
+      return handlers["requests.start"]({
+        project: params.project,
+        playbook: params.playbook,
+        description: params.description,
+        trackerItem: params.trackerItem,
+      }, {});
+    },
+    "overseer.requestStatus": (params) => {
+      asOverseer(params);
+      return requestStatus(store, Number(params.id));
+    },
+    "chat.begin": () => chat.begin(),
+    "chat.heartbeat": (params) => chat.heartbeat(Number(params.id)),
+    "chat.end": (params) =>
+      chat.end(Number(params.id), params.reason === "rollover" ? "rollover" : "exit"),
+    "chat.prompt": (params) => chat.prompt(Number(params.id), String(params.prompt ?? "")),
+    "chat.stop": (params) =>
+      chat.stop(Number(params.id), {
+        text: typeof params.text === "string" ? params.text : undefined,
+        tokens: typeof params.tokens === "number" ? params.tokens : undefined,
+        limit: typeof params.limit === "number" ? params.limit : undefined,
+        alreadyBlocked: params.alreadyBlocked === true,
+      }),
+    "chat.statusLine": () => ({ text: chat.statusLine() }),
     "messages.read": (params) => router.readInbox(String(params.address)),
     "router.police": async (params) =>
       await router.policeCall(
