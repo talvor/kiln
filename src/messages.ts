@@ -24,7 +24,7 @@ export const SCHEMAS: Record<MessageKind, Record<string, Field>> = {
     maxSeconds: { number: true },
   },
   result: {
-    status: { required: true, oneOf: ["done", "failed", "out-of-scope"] },
+    status: { required: true, oneOf: ["done", "failed", "out-of-scope", "unready", "findings"] },
     summary: { required: true },
   },
   question: { question: { required: true }, context: {} },

@@ -49,6 +49,16 @@ export interface World extends Home {
     /** From now on it fails, as if Lavish could not open anything. */
     breakDown(): Promise<void>;
   };
+  /** The scripted `gh pr create` and `gh pr comment`, which Kiln reports its work through. */
+  pullRequests: {
+    script(replies: ApiReply[]): Promise<void>;
+    /** The pull requests Kiln opened, in order. */
+    created(): Promise<
+      { title: string; body: string; head: string; base: string; draft: boolean }[]
+    >;
+    /** The comments Kiln made: the pull request and the text. */
+    comments(): Promise<{ pr: string; body: string }[]>;
+  };
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
@@ -188,6 +198,25 @@ export async function makeWorld(): Promise<World> {
           const flag = (name: string) => call.args[call.args.indexOf(name) + 1];
           return { title: flag("--title"), body: flag("--body"), cwd: call.cwd };
         }),
+    },
+    pullRequests: {
+      script: (replies) => script("pr-create", "replies", replies),
+      created: async () =>
+        (await calls("pr-create")).map((call) => {
+          const flag = (name: string) => call.args[call.args.indexOf(name) + 1];
+          return {
+            title: flag("--title"),
+            body: flag("--body"),
+            head: flag("--head"),
+            base: flag("--base"),
+            draft: call.args.includes("--draft"),
+          };
+        }),
+      comments: async () =>
+        (await calls("pr-comment")).map((call) => ({
+          pr: call.args[2],
+          body: call.args[call.args.indexOf("--body") + 1],
+        })),
     },
     prStatus: {
       script: (statuses) => script("pr-status", "statuses", statuses),

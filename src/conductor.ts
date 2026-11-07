@@ -37,7 +37,7 @@ import type {
   StepRecord,
   Store,
 } from "./store.ts";
-import { parseTicket, publishTicket } from "./tracker.ts";
+import { commentOnPr, openDraftPr, parseTicket, PublishFailed, publishTicket } from "./tracker.ts";
 import { verifyWork } from "./verify.ts";
 import {
   mergeAssignment,
@@ -163,7 +163,7 @@ export function createConductor(opts: ConductorOptions) {
       leaderName,
       project.clonePath,
     );
-    const worker = stepWorkerAddress(step.spec, step.id);
+    const worker = stepWorkerAddress(step.spec, step.id, 0, step.round);
     seat(
       (s) => s.address === worker,
       {
@@ -319,7 +319,12 @@ export function createConductor(opts: ConductorOptions) {
       );
     }
     if (!user) { for (const a of rejected) store.setAssignmentState(a.id, "failed"); }
-    const worker = stepWorkerAddress(step.spec, step.id, step.retries + step.sentBack + 1);
+    const worker = stepWorkerAddress(
+      step.spec,
+      step.id,
+      step.retries + step.sentBack + 1,
+      step.round,
+    );
     seat(
       (s) => s.address === worker,
       {
@@ -362,61 +367,154 @@ export function createConductor(opts: ConductorOptions) {
 
   const overseerSeat = () => store.listSessions().find((s) => s.role === "overseer")!;
 
+  /** What the user is asked, and told, when a leader reports a Step it cannot carry on with. */
+  const HOLDS = {
+    "out-of-scope": {
+      summary: (r: RequestRecord) =>
+        `Request ${r.id} looks out of scope for this project. Go ahead anyway?`,
+      declined: "The user declined to take the request out of scope",
+      approved: "The user approved going ahead although the request looked out of scope. " +
+        "Carry on with the step.",
+      heading:
+        "The user has approved this request although you reported it out of scope, so do the step:",
+    },
+    "blocked-on-user": {
+      summary: (r: RequestRecord) =>
+        `Request ${r.id} is blocked on you: its ticket is not ready to implement.`,
+      declined: "The user declined to unblock the request",
+      approved: "The user says the ticket is ready now (they may have updated it). Check it " +
+        "again and carry on with the step.",
+      heading: "The user has answered your report that the ticket is not ready:",
+    },
+  } as const;
+
   /**
-   * The leader says the request is outside the Project's scope: the Overseer brings the user a
-   * Gate, and the Step waits for as long as it takes. Approved, the Step goes back to the leader
-   * to carry on; rejected, the Step and the Request fail with the user's reason.
+   * The leader cannot carry on: the request is outside the Project's scope, or its ticket is not
+   * ready. The Overseer brings the user a Gate, and the Step waits for as long as it takes.
+   * Approved, the Step goes back to the leader to carry on; rejected, the Step and the Request
+   * fail with the user's reason.
    */
-  function outOfScope(
+  function holdForUser(
+    kind: keyof typeof HOLDS,
     request: RequestRecord,
     step: StepRecord,
     report: MessageRecord,
     assignments: AssignmentRecord[],
   ) {
-    const gate = gateOf(step, "out-of-scope");
+    const hold = HOLDS[kind];
+    const gate = gateOf(step, kind);
     if (!gate) {
       const raised = store.addEscalation({
         raisedBy: overseerSeat().address,
         requestId: request.id,
         stepId: step.id,
-        gate: "out-of-scope",
+        gate: kind,
         gateMessageId: step.messageId,
-        summary: `Request ${request.id} looks out of scope for this project. Go ahead anyway?`,
+        summary: hold.summary(request),
         detail: `The ${step.spec.department} leader reported, on the ${step.spec.name} step: ` +
           `${report.body.summary}\n\nThe request: ${request.description}`,
       });
       store.appendEvent("gate.raised", {
         request: request.id,
         step: step.id,
-        gate: "out-of-scope",
+        gate: kind,
         escalation: raised.id,
       });
       return false;
     }
     if (gate.status === "open") return false;
     if (gate.status === "rejected") {
-      throw new StepFailed(`The user declined to take the request out of scope: ${gate.reason}`);
+      throw new StepFailed(`${hold.declined}: ${gate.reason}`);
     }
     const mine = assignments.filter((a) => sameWorker(step, a) && a.branch);
-    reject(
-      request,
-      step,
-      projectOf(request),
-      [],
-      "The user approved going ahead although the request looked out of scope. Carry on with the step.",
-      {
-        heading:
-          "The user has approved this request although you reported it out of scope, so do the step:",
-        branch: mine.at(-1)?.branch,
-      },
-    );
+    reject(request, step, projectOf(request), [], hold.approved, {
+      heading: hold.heading,
+      branch: mine.at(-1)?.branch,
+    });
     return false;
   }
 
   /**
+   * Send the work back to an earlier Step as a new Assignment, for a fresh worker that starts from
+   * its branch: QA found problems, or the user did not accept the result. The Steps after it begin
+   * again once it is done, so the same pull request is updated and checked afresh.
+   */
+  function sendBack(
+    request: RequestRecord,
+    target: StepRecord,
+    feedback: string,
+    heading: string,
+  ) {
+    const mine = assignmentsOf(request, target).filter((a) => sameWorker(target, a) && a.branch);
+    for (const s of store.listSteps(request.id)) {
+      if (s.position > target.position && s.status !== "planned") {
+        // What the later Step's workers left unmerged is not carried into its next round.
+        for (const a of assignmentsOf(request, s)) {
+          if (!a.mergedAt && (a.status === "done" || a.status === "active")) {
+            store.setAssignmentState(a.id, "failed");
+          }
+        }
+        store.restartStep(s.id);
+      }
+    }
+    store.setStepState(target.id, "active");
+    reject(request, target, projectOf(request), [], feedback, {
+      heading,
+      branch: mine.at(-1)?.branch,
+    });
+    store.appendEvent("step.findings_returned", {
+      request: request.id,
+      step: target.id,
+    });
+  }
+
+  /** The leader reports findings on the Step: they go back to the Step that must fix them. */
+  function returnFindings(request: RequestRecord, step: StepRecord, report: MessageRecord) {
+    const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
+    if (!target) {
+      throw new StepFailed(
+        `The ${step.spec.department} leader reported findings on the ${step.spec.name} step, ` +
+          `which has no step to send them to.`,
+      );
+    }
+    if (step.round >= MAX_RETRIES) {
+      store.appendEvent("step.escalated", { request: request.id, step: step.id });
+      throw new StepFailed(
+        `QA found problems in the ${step.spec.name} step ${step.round + 1} times, ` +
+          `${MAX_RETRIES} of them after fixes; it goes up to the Overseer. The last findings:\n` +
+          `${report.body.summary}`,
+      );
+    }
+    sendBack(
+      request,
+      target,
+      String(report.body.summary ?? ""),
+      `QA (the ${step.spec.name} step) found problems with your work. Fix them on the same ` +
+        `branch, so the same pull request is updated. The findings:`,
+    );
+    return false;
+  }
+
+  /** The QA steps' artifacts, as one summary of what checked the work. */
+  async function qaSummary(request: RequestRecord): Promise<string> {
+    const wt = store.getWorktree(request.worktreeId!);
+    const steps = store.listSteps(request.id);
+    const parts: string[] = [];
+    for (const s of steps.filter((s) => s.spec.findings)) {
+      const text = await Deno.readTextFile(join(wt.path, s.spec.artifact)).catch(() => "");
+      if (text.trim()) parts.push(`### ${s.spec.name}\n\n${text.trim()}`);
+    }
+    const rounds = Math.max(0, ...steps.map((s) => s.round));
+    const again = rounds
+      ? ` after ${rounds} round${rounds === 1 ? "" : "s"} of findings fixed`
+      : "";
+    return `## QA summary\n\nQA passed${again}.\n\n${parts.join("\n\n")}`.trim();
+  }
+
+  /**
    * The Step's work is verified and merged but it holds a Gate: the Overseer brings the user the
-   * artifact to approve, and the Step waits for as long as it takes. Returns whether it passed.
-   * A rejection sends the Step back to the leader with the user's reason.
+   * result to approve, and the Step waits for as long as it takes. Returns whether it passed.
+   * A rejection sends the work back with the user's reason.
    */
   async function passGate(
     request: RequestRecord,
@@ -426,12 +524,24 @@ export function createConductor(opts: ConductorOptions) {
     if (!step.spec.gate) return true;
     const gate = gateOf(step, step.spec.gate);
     if (!gate) {
-      const wt = store.getWorktree(request.worktreeId!);
-      const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
-      const parts: string[] = [];
-      for (const file of files) {
-        const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
-        if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
+      let summary: string;
+      let detail: string;
+      if (step.spec.gate === "qa-passed") {
+        summary =
+          `Request ${request.id} passed QA: pull request ${request.prUrl} is ready for you.`;
+        detail = `${request.description}\n\nPull request: ${request.prUrl}\n\n${await qaSummary(
+          request,
+        )}`;
+      } else {
+        const wt = store.getWorktree(request.worktreeId!);
+        const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
+        const parts: string[] = [];
+        for (const file of files) {
+          const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
+          if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
+        }
+        summary = `Approve the spec for request ${request.id}?`;
+        detail = `${request.description}\n\n${parts.join("\n\n")}`;
       }
       const raised = store.addEscalation({
         raisedBy: overseerSeat().address,
@@ -439,8 +549,8 @@ export function createConductor(opts: ConductorOptions) {
         stepId: step.id,
         gate: step.spec.gate,
         gateMessageId: step.messageId,
-        summary: `Approve the spec for request ${request.id}?`,
-        detail: `${request.description}\n\n${parts.join("\n\n")}`,
+        summary,
+        detail,
       });
       store.appendEvent("gate.raised", {
         request: request.id,
@@ -452,6 +562,18 @@ export function createConductor(opts: ConductorOptions) {
     }
     if (gate.status === "open") return false;
     if (gate.status === "approved") return true;
+    if (step.spec.gate === "qa-passed") {
+      const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
+      if (!target) throw new StepFailed(`The user rejected the result: ${gate.reason}`);
+      sendBack(
+        request,
+        target,
+        gate.reason ?? "",
+        "The user rejected the pull request although it passed QA. Fix what they ask for on the " +
+          "same branch, so the same pull request is updated. Their reason:",
+      );
+      return false;
+    }
     const mine = assignments.filter((a) => sameWorker(step, a) && a.branch);
     reject(
       request,
@@ -475,7 +597,13 @@ export function createConductor(opts: ConductorOptions) {
     if (!report) return false;
     store.markRead([report.id]);
     if (report.body.status === "out-of-scope") {
-      return outOfScope(request, step, report, assignments);
+      return holdForUser("out-of-scope", request, step, report, assignments);
+    }
+    if (report.body.status === "unready") {
+      return holdForUser("blocked-on-user", request, step, report, assignments);
+    }
+    if (report.body.status === "findings" && step.spec.findings) {
+      return returnFindings(request, step, report);
     }
     if (report.body.status !== "done") {
       throw new StepFailed(
@@ -548,6 +676,47 @@ export function createConductor(opts: ConductorOptions) {
         store.appendEvent("ticket.published", { request: request.id, url });
       } catch (err) {
         throw new StepFailed((err as Error).message);
+      }
+    }
+    if (step.spec.publish === "draft-pr" && !request.prUrl) {
+      const requestWt = store.getWorktree(request.worktreeId!);
+      const text = await Deno.readTextFile(join(requestWt.path, step.spec.artifact)).catch(() =>
+        ""
+      );
+      if (!text.trim()) {
+        throw new StepFailed(
+          `Verification failed: ${step.spec.artifact} is not on the request branch.`,
+        );
+      }
+      const pr = parseTicket(text);
+      if (request.trackerItem) {
+        pr.body = `${pr.body}\n\nCloses ${request.trackerItem}`.trim();
+      }
+      try {
+        const url = await openDraftPr(project.clonePath, {
+          head: request.branch!,
+          base: project.defaultBranch,
+          ...pr,
+        });
+        store.setPrUrl(request.id, url);
+        store.appendEvent("pr.opened", { request: request.id, url });
+      } catch (err) {
+        if (err instanceof PublishFailed) throw new StepFailed(err.message);
+        throw err;
+      }
+    }
+    if (
+      step.spec.publish === "qa-summary" && (!step.spec.gate || !gateOf(step, step.spec.gate))
+    ) {
+      if (!request.prUrl) {
+        throw new StepFailed("QA passed, but Kiln has no pull request to report it on.");
+      }
+      try {
+        await commentOnPr(project.clonePath, request.prUrl, await qaSummary(request));
+        store.appendEvent("pr.commented", { request: request.id, url: request.prUrl });
+      } catch (err) {
+        if (err instanceof PublishFailed) throw new StepFailed(err.message);
+        throw err;
       }
     }
     if (!(await passGate(request, step, assignments))) return false;

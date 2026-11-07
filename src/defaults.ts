@@ -40,6 +40,33 @@ export const DEFAULT_ROLES: Record<string, unknown> = {
       "You are a seam designer. You read the spec and the code and decide where the feature meets the existing system: the modules and interfaces it touches or adds, and how each can be tested through its public interface. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
     tools: ["Read", "Glob", "Grep", "Write", "Bash"],
   },
+  "ticket-checker": {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a ticket checker. You read a ticket and decide whether an engineer could implement it as written: it says what to build, it has acceptance criteria that can be checked, and nothing it depends on is missing. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
+  implementer: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are an implementer. You build what a ticket asks for, test-first: use the tdd skill, with tests that drive the code through its public interface. Commit your work to your branch, and use the pr skill to write the pull request description. When you are sent QA findings, fix them on the same branch and update the description. Report your result to your leader.",
+  },
+  reviewer: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a reviewer. You read the change on the branch against the ticket and the project's standards and look for defects: wrong behaviour, missing tests, code that does not follow the project's conventions. You do not change the code. Work in your worktree, commit your review, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
+  gatekeeper: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a gatekeeper. You are the last check before the user hears about a change: run the project's checks, and confirm the change meets each of the ticket's acceptance criteria. You do not change the code. Work in your worktree, commit your findings, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
 };
 
 export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
@@ -85,6 +112,49 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
           "Read spec.md and the code, and write the seams the feature will be built on: the modules and interfaces it touches or adds, and how each is tested through its public interface. If the spec needs amending to fit the seams, amend spec.md too. Do not change the code. The user approves the spec and the seams once this step is verified.",
         artifact: "seams.md",
         gate: "spec-approval",
+      },
+    ],
+  },
+  "implement-a-ticket": {
+    description:
+      "Implement a ticket through to a pull request that has passed QA. The user is told once it has.",
+    steps: [
+      {
+        name: "check-ticket",
+        department: "engineering",
+        worker: "ticket-checker",
+        instructions:
+          "Read the ticket in the request (the tracker item, if there is one) and decide whether it is ready to implement: what to build is clear, the acceptance criteria can be checked, and nothing it depends on is missing. Do not change the code. Write your verdict and reasons to the artifact. If the ticket is not ready, report status unready with a summary of what the user must settle: the user is told and the request waits for them.",
+        artifact: "readiness.md",
+      },
+      {
+        name: "implement",
+        department: "engineering",
+        worker: "implementer",
+        instructions:
+          "Implement the ticket test-first with the tdd skill, committing as you go. Then use the pr skill to write the pull request description to the artifact: the first line is the pull request's title as a heading, the rest is its description. Kiln opens a draft pull request from the request branch once this step is verified. You may be sent QA findings later: fix them on the same branch and update the description.",
+        artifact: "pull-request.md",
+        publish: "draft-pr",
+      },
+      {
+        name: "review",
+        department: "engineering",
+        worker: "reviewer",
+        instructions:
+          "Review the change on the request branch against the ticket and the project's standards, and write the review to the artifact. Do not change the code. If you find problems the implementer must fix, report status findings with the findings in the summary: they go back to the implementer as a new assignment on the same pull request.",
+        artifact: "review.md",
+        findings: "implement",
+      },
+      {
+        name: "gatekeep",
+        department: "engineering",
+        worker: "gatekeeper",
+        instructions:
+          "Run the project's checks and confirm the change meets each of the ticket's acceptance criteria, then write your verdict to the artifact. Do not change the code. If it falls short, report status findings with the findings in the summary: they go back to the implementer as a new assignment on the same pull request. Once you pass it, Kiln comments a QA summary on the pull request and tells the user.",
+        artifact: "gatekeeper.md",
+        findings: "implement",
+        publish: "qa-summary",
+        gate: "qa-passed",
       },
     ],
   },

@@ -237,6 +237,35 @@ export const MIGRATIONS: string[] = [
   `alter table messages add column relay_of integer references messages (id);
    alter table escalations add column question_id integer references messages (id);
    alter table sessions add column claude_session_id text;`,
+  // 14: implementing a ticket. A Request records the pull request Kiln opened for it; a Step
+  // counts the times QA findings sent it round again; and two more kinds of Gate exist (SQLite
+  // cannot widen a check constraint, so escalations is rebuilt, rows and triggers kept).
+  `alter table requests add column pr_url text;
+   alter table steps add column round integer not null default 0;
+   create table escalations_new (
+     id integer primary key,
+     raised_by text not null references sessions (address),
+     request_id integer references requests (id),
+     summary text not null,
+     detail text,
+     status text not null default 'open' check (status in ('open', 'approved', 'rejected')),
+     reason text,
+     created_at text not null,
+     decided_at text,
+     step_id integer references steps (id),
+     gate text check (gate in ('spec-approval', 'out-of-scope', 'blocked-on-user', 'qa-passed')),
+     gate_message_id integer
+   ) strict;
+   insert into escalations_new
+     select id, raised_by, request_id, summary, detail, status, reason, created_at, decided_at,
+       step_id, gate, gate_message_id from escalations;
+   drop table escalations;
+   alter table escalations_new rename to escalations;
+   create trigger escalations_decided_once before update on escalations
+     when old.status != 'open'
+     begin select raise(abort, 'a decided escalation is never changed'); end;
+   create trigger escalations_no_delete before delete on escalations
+     begin select raise(abort, 'escalations are never removed'); end;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -326,9 +355,11 @@ export interface StepSpec {
   /** The file the worker commits; the leader's verification looks for it. */
   artifact: string;
   /** What Kiln publishes from the artifact once the step is verified. */
-  publish?: "ticket";
+  publish?: "ticket" | "draft-pr" | "qa-summary";
   /** A Gate the user must pass, once the step is verified and merged, before the step is done. */
-  gate?: "spec-approval";
+  gate?: "spec-approval" | "qa-passed";
+  /** The earlier step that findings reported on this step go back to, as a new Assignment. */
+  findings?: string;
 }
 export interface RequestRecord {
   id: number;
@@ -344,6 +375,8 @@ export interface RequestRecord {
   trackerItem: string | null;
   /** The ticket Kiln published for the Request, if its Playbook publishes one. */
   ticketUrl: string | null;
+  /** The pull request Kiln opened for the Request, if its Playbook opens one. */
+  prUrl: string | null;
   failure: string | null;
 }
 export interface NewPlaybookRun {
@@ -368,6 +401,8 @@ export interface StepRecord {
   retries: number;
   /** How many times the user sent the Step's work back; these do not count as retries. */
   sentBack: number;
+  /** How many times QA findings sent the work back to an earlier Step and this Step began again. */
+  round: number;
   failure: string | null;
 }
 export interface AssignmentRecord {
@@ -427,7 +462,7 @@ export interface EscalationRecord {
   createdAt: string;
   decidedAt: string | null;
 }
-export type GateKind = "spec-approval" | "out-of-scope";
+export type GateKind = "spec-approval" | "out-of-scope" | "blocked-on-user" | "qa-passed";
 export interface NewEscalation {
   raisedBy: string;
   stepId?: number | null;
@@ -587,6 +622,7 @@ export interface Store {
   /** Move a Request to a state; `failure` says why when it failed. */
   setRequestState(id: number, status: State, failure?: string): void;
   setTicketUrl(id: number, url: string): void;
+  setPrUrl(id: number, url: string): void;
   /** The Steps of a Request, in Playbook order. */
   listSteps(requestId: number): StepRecord[];
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
@@ -594,6 +630,8 @@ export interface Store {
   /** Hand a rejected Step back to its leader in `messageId`, to be delegated to a fresh `worker`. */
   retryStep(id: number, messageId: number, worker: string, byUser?: boolean): void;
   setStepState(id: number, status: State, failure?: string): void;
+  /** Take a Step back to planned for another round: nothing of its earlier tries carries over. */
+  restartStep(id: number): void;
   /** Begin an Assignment for a router assignment Message; a planned one becomes active. */
   addAssignment(requestId: number, messageId: number): AssignmentRecord;
   /** Queue an Assignment as planned, with the paths it owns and the budget it will run under. */
@@ -855,6 +893,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       description: row.description as string | null,
       trackerItem: row.tracker_item as string | null,
       ticketUrl: row.ticket_url as string | null,
+      prUrl: row.pr_url as string | null,
       failure: row.failure as string | null,
     });
     const toStep = (row: Record<string, unknown>): StepRecord => ({
@@ -867,6 +906,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       messageId: row.message_id as number | null,
       retries: row.retries as number,
       sentBack: row.sent_back as number,
+      round: row.round as number,
       failure: row.failure as string | null,
     });
     const toAssignment = (row: Record<string, unknown>): AssignmentRecord => ({
@@ -929,6 +969,15 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       },
       setTicketUrl: (id, url) => {
         db.prepare("update requests set ticket_url = ? where id = ?").run(url, id);
+      },
+      setPrUrl: (id, url) => {
+        db.prepare("update requests set pr_url = ? where id = ?").run(url, id);
+      },
+      restartStep: (id) => {
+        db.prepare(
+          `update steps set status = 'planned', message_id = null, worker = null, failure = null,
+             retries = 0, sent_back = 0, round = round + 1 where id = ?`,
+        ).run(id);
       },
       listSteps: (requestId) =>
         db.prepare("select * from steps where request_id = ? order by position").all(requestId)

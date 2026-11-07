@@ -1,7 +1,7 @@
 # Playbooks and the Request lifecycle
 
 A **Playbook** is the ordered list of department **Steps** Kiln follows for one type of Request.
-Kiln ships `diagnose-a-bug` and `design-a-feature`.
+Kiln ships `diagnose-a-bug`, `design-a-feature` and `implement-a-ticket`.
 
 ```
 kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>]
@@ -73,7 +73,7 @@ use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
 ```
 
 Each Step names a department with a leader and a worker role in that department. `publish` is
-optional, and so is `gate` (`"spec-approval"`, see below). A file that is not valid is refused when a Request starts, naming the file and the
+optional (`"ticket"`, `"draft-pr"` or `"qa-summary"`), and so are `gate` (`"spec-approval"` or `"qa-passed"`, see below) and `findings` (the earlier step QA findings go back to). A file that is not valid is refused when a Request starts, naming the file and the
 problem. A Request keeps the Steps it started with if the file changes later.
 
 ## Verification and retries
@@ -105,6 +105,34 @@ The **out-of-scope Gate** works in any Playbook: a leader that finds the Request
 Project's scope reports its step with status `out-of-scope` instead of `done`. The Overseer raises
 an Escalation with the leader's reason. Approved, the step goes back to the leader to carry on;
 rejected, the step and the Request fail with the user's reason.
+
+## Implementing a ticket
+
+`implement-a-ticket` takes a ticket (`--tracker-item #18`) through to a pull request that has passed
+QA. Its steps:
+
+1. **check-ticket** (Ticket Checker): is the ticket ready to implement? If not, the leader reports
+   status `unready`. The Overseer raises a **blocked-on-user** Gate with what is missing and the
+   Request waits. `kiln approve` says the ticket is ready now and the step is checked again;
+   `kiln reject --reason` fails the Request.
+2. **implement** (Implementer): builds the ticket test-first (the `tdd` skill) and writes
+   `pull-request.md` (the `pr` skill). Once verified and merged, Kiln opens a **draft** pull
+   request from the request branch (`"publish": "draft-pr"`); the tracker item is added as
+   `Closes <ref>`. The pull request is recorded on the Request (`Pull request:` in
+   `kiln request status`).
+3. **review** (Reviewer) and 4. **gatekeep** (Gatekeeper): both check the work and write their
+   verdicts. A leader that finds problems reports status `findings` with them in the summary. The
+   findings go back to the step named by `findings` (implement) as a new Assignment, from the
+   implementer's branch, for a fresh worker (`implementer-2-retry-1`); once it is merged the same
+   pull request is updated, and the QA steps begin again with new workers (`reviewer-3-round-1`).
+   Findings sent back do not count as retries, but after two rounds on the same QA step the
+   Request fails for the Overseer.
+
+The user hears nothing until QA passes. Then Kiln comments a QA summary (the QA steps' verdicts)
+on the pull request (`"publish": "qa-summary"`) and the Overseer raises the **qa-passed** Gate
+(`"gate": "qa-passed"`) with the pull request's URL. `kiln approve` finishes the Request;
+`kiln reject --reason` sends the reason back to the implement step as a new Assignment, and QA
+runs again. Merging and cleaning up the pull request are left to later tickets.
 
 ## Not covered here
 
