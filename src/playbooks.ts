@@ -95,6 +95,9 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
     if (step.publish !== undefined && step.publish !== "ticket") {
       throw fail(`${at}: "publish" can only be "ticket"`);
     }
+    if (step.gate !== undefined && step.gate !== "spec-approval") {
+      throw fail(`${at}: "gate" can only be "spec-approval"`);
+    }
     if (/^\/|(^|\/)\.\.(\/|$)/.test(spec.artifact)) {
       throw fail(`${at}: "artifact" must be a path inside the worktree`);
     }
@@ -115,6 +118,7 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
       instructions: spec.instructions,
       artifact: spec.artifact,
       ...(step.publish ? { publish: "ticket" as const } : {}),
+      ...(step.gate ? { gate: "spec-approval" as const } : {}),
     };
   });
   return { name, description, steps: parsed };

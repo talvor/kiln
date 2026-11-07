@@ -28,6 +28,7 @@ import {
 import type { Router } from "./router.ts";
 import type {
   AssignmentRecord,
+  GateKind,
   LimitKind,
   MessageRecord,
   ProjectRecord,
@@ -101,7 +102,7 @@ export function createConductor(opts: ConductorOptions) {
     step: StepRecord,
     steps: StepRecord[],
     worker: string,
-    rejection?: { feedback: string; branch: string | null },
+    rejection?: { feedback: string; branch: string | null; heading?: string },
   ) {
     const { spec } = step;
     const lines = [
@@ -115,8 +116,9 @@ export function createConductor(opts: ConductorOptions) {
     if (rejection) {
       lines.push(
         "",
-        `Retry ${step.retries + 1} of ${MAX_RETRIES}: the earlier work was rejected when Kiln ` +
-          `verified it, and nothing from it was merged. The rejection feedback:`,
+        rejection.heading ??
+          `Retry ${step.retries + 1} of ${MAX_RETRIES}: the earlier work was rejected when Kiln ` +
+            `verified it, and nothing from it was merged. The rejection feedback:`,
         "",
         rejection.feedback,
       );
@@ -133,6 +135,8 @@ export function createConductor(opts: ConductorOptions) {
         `It works on its own branch and must commit ${spec.artifact}.`,
       `When it reports done, verify ${spec.artifact} against what this step asks. Then send ` +
         `your result to the overseer with status done, or failed if the step cannot be done. ` +
+        `If what the request asks for is outside the scope of this project, report status ` +
+        `out-of-scope with a summary of why: the user decides whether it goes ahead. ` +
         `Reply to this message: inReplyTo is its id.`,
     );
     return lines.join("\n");
@@ -258,7 +262,7 @@ export function createConductor(opts: ConductorOptions) {
         if (blocked) continue;
         try {
           const mine = assignmentsOf(request, step);
-          const rejected = step.retries
+          const rejected = step.retries || step.sentBack
             ? mine.filter((b) => b.branch && !sameWorker(step, b)).at(-1)?.branch
             : undefined;
           const earlier = mine.filter((b) => b.id < a.id && b.branch);
@@ -303,17 +307,19 @@ export function createConductor(opts: ConductorOptions) {
     project: ProjectRecord,
     rejected: AssignmentRecord[],
     feedback: string,
+    /** Work the user sent back, or a go-ahead: neither counts against the retry limit. */
+    user?: { heading: string; branch?: string | null },
   ) {
     store.appendEvent("step.rejected", { request: request.id, step: step.id, feedback });
-    if (step.retries >= MAX_RETRIES) {
+    if (!user && step.retries >= MAX_RETRIES) {
       store.appendEvent("step.escalated", { request: request.id, step: step.id });
       throw new StepFailed(
         `Verification rejected the ${step.spec.name} step ${step.retries + 1} times, ` +
           `${MAX_RETRIES} of them retries; it goes up to the Overseer. The last rejection:\n${feedback}`,
       );
     }
-    for (const a of rejected) store.setAssignmentState(a.id, "failed");
-    const worker = stepWorkerAddress(step.spec, step.id, step.retries + 1);
+    if (!user) { for (const a of rejected) store.setAssignmentState(a.id, "failed"); }
+    const worker = stepWorkerAddress(step.spec, step.id, step.retries + step.sentBack + 1);
     seat(
       (s) => s.address === worker,
       {
@@ -330,13 +336,16 @@ export function createConductor(opts: ConductorOptions) {
     )!;
     const steps = store.listSteps(request.id);
     const sent = router.send(overseer.address, leader.address, "assignment", {
-      title: `${step.spec.name} (request ${request.id}), retry ${step.retries + 1}`,
+      title: `${step.spec.name} (request ${request.id}), ${
+        user ? "again" : `retry ${step.retries + 1}`
+      }`,
       instructions: describeStep(request, step, steps, worker, {
         feedback,
-        branch: rejected.at(-1)?.branch ?? null,
+        branch: user ? user.branch ?? null : rejected.at(-1)?.branch ?? null,
+        heading: user?.heading,
       }),
     });
-    store.retryStep(step.id, sent.id, worker);
+    store.retryStep(step.id, sent.id, worker, !!user);
     store.appendEvent("step.retried", {
       request: request.id,
       step: step.id,
@@ -345,11 +354,129 @@ export function createConductor(opts: ConductorOptions) {
     });
   }
 
+  /** The Gate raised for this Step on this report, if any. */
+  const gateOf = (step: StepRecord, gate: GateKind) =>
+    store.listEscalations().find((e) =>
+      e.stepId === step.id && e.gate === gate && e.gateMessageId === step.messageId
+    );
+
+  const overseerSeat = () => store.listSessions().find((s) => s.role === "overseer")!;
+
+  /**
+   * The leader says the request is outside the Project's scope: the Overseer brings the user a
+   * Gate, and the Step waits for as long as it takes. Approved, the Step goes back to the leader
+   * to carry on; rejected, the Step and the Request fail with the user's reason.
+   */
+  function outOfScope(
+    request: RequestRecord,
+    step: StepRecord,
+    report: MessageRecord,
+    assignments: AssignmentRecord[],
+  ) {
+    const gate = gateOf(step, "out-of-scope");
+    if (!gate) {
+      const raised = store.addEscalation({
+        raisedBy: overseerSeat().address,
+        requestId: request.id,
+        stepId: step.id,
+        gate: "out-of-scope",
+        gateMessageId: step.messageId,
+        summary: `Request ${request.id} looks out of scope for this project. Go ahead anyway?`,
+        detail: `The ${step.spec.department} leader reported, on the ${step.spec.name} step: ` +
+          `${report.body.summary}\n\nThe request: ${request.description}`,
+      });
+      store.appendEvent("gate.raised", {
+        request: request.id,
+        step: step.id,
+        gate: "out-of-scope",
+        escalation: raised.id,
+      });
+      return false;
+    }
+    if (gate.status === "open") return false;
+    if (gate.status === "rejected") {
+      throw new StepFailed(`The user declined to take the request out of scope: ${gate.reason}`);
+    }
+    const mine = assignments.filter((a) => sameWorker(step, a) && a.branch);
+    reject(
+      request,
+      step,
+      projectOf(request),
+      [],
+      "The user approved going ahead although the request looked out of scope. Carry on with the step.",
+      {
+        heading:
+          "The user has approved this request although you reported it out of scope, so do the step:",
+        branch: mine.at(-1)?.branch,
+      },
+    );
+    return false;
+  }
+
+  /**
+   * The Step's work is verified and merged but it holds a Gate: the Overseer brings the user the
+   * artifact to approve, and the Step waits for as long as it takes. Returns whether it passed.
+   * A rejection sends the Step back to the leader with the user's reason.
+   */
+  async function passGate(
+    request: RequestRecord,
+    step: StepRecord,
+    assignments: AssignmentRecord[],
+  ) {
+    if (!step.spec.gate) return true;
+    const gate = gateOf(step, step.spec.gate);
+    if (!gate) {
+      const wt = store.getWorktree(request.worktreeId!);
+      const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
+      const parts: string[] = [];
+      for (const file of files) {
+        const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
+        if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
+      }
+      const raised = store.addEscalation({
+        raisedBy: overseerSeat().address,
+        requestId: request.id,
+        stepId: step.id,
+        gate: step.spec.gate,
+        gateMessageId: step.messageId,
+        summary: `Approve the spec for request ${request.id}?`,
+        detail: `${request.description}\n\n${parts.join("\n\n")}`,
+      });
+      store.appendEvent("gate.raised", {
+        request: request.id,
+        step: step.id,
+        gate: step.spec.gate,
+        escalation: raised.id,
+      });
+      return false;
+    }
+    if (gate.status === "open") return false;
+    if (gate.status === "approved") return true;
+    const mine = assignments.filter((a) => sameWorker(step, a) && a.branch);
+    reject(
+      request,
+      step,
+      projectOf(request),
+      [],
+      gate.reason ?? "",
+      {
+        heading:
+          "The user rejected the spec you delivered, and nothing is final until they approve it. " +
+          "Their reason:",
+        branch: mine.at(-1)?.branch,
+      },
+    );
+    return false;
+  }
+
   /** The leader says the step is verified: merge the work back, publish, and finish the step. */
   async function close(request: RequestRecord, step: StepRecord, assignments: AssignmentRecord[]) {
     const report = store.listMessages({ kind: "result", inReplyTo: step.messageId! })[0];
     if (!report) return false;
     store.markRead([report.id]);
+    if (report.body.status === "out-of-scope") {
+      return outOfScope(request, step, report, assignments);
+    }
     if (report.body.status !== "done") {
       throw new StepFailed(
         `The ${step.spec.department} leader reported the step failed: ${report.body.summary}`,
@@ -423,6 +550,7 @@ export function createConductor(opts: ConductorOptions) {
         throw new StepFailed((err as Error).message);
       }
     }
+    if (!(await passGate(request, step, assignments))) return false;
     store.setStepState(step.id, "done");
     store.appendEvent("step.done", { request: request.id, step: step.id });
     return true;
