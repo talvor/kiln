@@ -32,5 +32,5 @@ then be registered again.
 Files in a project may have suggested commands at registration, which you confirmed. They never
 change a project's commands afterwards: re-checks run only the stored commands, and nothing
 re-reads repository files to update them.
-Stored commands run repository code with the operator's privileges. Execution confinement is
-deferred to the worker-confinement ticket (#12).
+Stored commands run repository code with the operator's privileges; they are not confined like
+agents (see [confinement](router.md#worker-confinement)).
