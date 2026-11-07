@@ -63,5 +63,6 @@ it can.
 
 ## Not covered here
 
-Nudges start a fresh Claude each time rather than resuming one, and a dead-lettered Message other
-than an assignment is only recorded. Both are left to later tickets.
+A dead-lettered Message other than an assignment is only recorded; that is left to a later ticket.
+A nudge that delivers an answer resumes the asking agent's own Claude session, and how questions
+are passed up is in [question relay](questions.md).

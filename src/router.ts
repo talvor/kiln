@@ -471,7 +471,9 @@ export function createRouter(opts: RouterOptions) {
       ? session.claudeSessionId ?? undefined
       : undefined;
     const first = await launchNudge(session, messages, resume);
-    if (first === "unstarted" && resume) return (await launchNudge(session, messages, undefined)) === "ok";
+    if (first === "unstarted" && resume) {
+      return (await launchNudge(session, messages, undefined)) === "ok";
+    }
     return first === "ok";
   }
 
