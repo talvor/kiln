@@ -1,21 +1,7 @@
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { withWorld } from "./world.ts";
-import { asAgent, assignment, openTeam, stopHook } from "./router_helpers.ts";
-
-async function waitFor<T>(
-  read: () => Promise<T>,
-  ready: (value: T) => boolean,
-  timeoutMs = 10_000,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (ready(value)) return value;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("timed out waiting for public delivery evidence");
-}
+import { asAgent, assignment, openTeam, stopHook, waitFor } from "./router_helpers.ts";
 
 withWorld("tools, inbox reads, and message history", async (world) => {
   await openTeam(world);

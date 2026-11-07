@@ -1,9 +1,10 @@
 // Roles and Playbooks, which Kiln loads from files in its config directory:
-//   <config>/roles/<name>.json      { kind, department?, prompt }
+//   <config>/roles/<name>.json      { kind, department?, prompt, tools? }
 //   <config>/playbooks/<name>.json  { description, steps: [{ name, department, worker, ... }] }
 // The file name is the role's or Playbook's name. Kiln ships defaults; a file with the same name
 // replaces the default. Files are read when a Request starts, so edits apply to the next one.
 import { join } from "@std/path";
+import { BUILTIN_TOOLS, DEFAULT_TOOLS } from "./confinement.ts";
 import { ConfigError } from "./config_error.ts";
 import { type LimitsConfig, loadLimits } from "./limits.ts";
 import { DEFAULT_PLAYBOOKS, DEFAULT_ROLES } from "./defaults.ts";
@@ -18,6 +19,8 @@ export interface RoleConfig {
   department: string | null;
   /** What the agent is told about its job whenever Kiln wakes it. */
   prompt: string;
+  /** Built-in tools the role may use; everything else is denied. Kiln's own tools always work. */
+  tools: string[];
 }
 export interface PlaybookConfig {
   name: string;
@@ -40,7 +43,7 @@ type Obj = Record<string, unknown>;
 function parseRole(name: string, source: string, raw: unknown): RoleConfig {
   const fail = (why: string) => new ConfigError(`Role "${name}" (${source}): ${why}`);
   if (!isObject(raw)) throw fail("must be a JSON object");
-  const { kind, department, prompt } = raw;
+  const { kind, department, prompt, tools } = raw;
   if (kind !== "overseer" && kind !== "leader" && kind !== "worker") {
     throw fail('"kind" must be overseer, leader or worker');
   }
@@ -52,7 +55,19 @@ function parseRole(name: string, source: string, raw: unknown): RoleConfig {
     );
   }
   if (typeof prompt !== "string" || !prompt.trim()) throw fail('"prompt" must be some text');
-  return { name, kind, department: (department as string | undefined) ?? null, prompt };
+  if (
+    tools !== undefined &&
+    (!Array.isArray(tools) || tools.some((t) => !(BUILTIN_TOOLS as readonly string[]).includes(t)))
+  ) {
+    throw fail(`"tools" must list some of: ${BUILTIN_TOOLS.join(", ")}`);
+  }
+  return {
+    name,
+    kind,
+    department: (department as string | undefined) ?? null,
+    prompt,
+    tools: (tools as string[] | undefined) ?? [...DEFAULT_TOOLS[kind]],
+  };
 }
 
 function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<string, RoleConfig>) {

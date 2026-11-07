@@ -18,6 +18,7 @@ export const DEFAULT_ROLES: Record<string, unknown> = {
     department: "engineering",
     prompt:
       "You are a diagnostician. You find the root cause of a bug and write it up. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
   },
   "ticket-planner": {
     kind: "worker",
