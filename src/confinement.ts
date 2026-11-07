@@ -140,9 +140,10 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
         .find((p) =>
           !ctx.readRoots!.some((root) => insideWorktree(root, resolve(ctx.worktree, p)))
         );
-      const reaching = [tool === "Glob" ? input.pattern : tool === "Grep" ? input.glob : undefined].find((p): p is string =>
-        typeof p === "string" && (isAbsolute(p) || p.split("/").includes(".."))
-      );
+      const reaching = [tool === "Glob" ? input.pattern : tool === "Grep" ? input.glob : undefined]
+        .find((p): p is string =>
+          typeof p === "string" && (isAbsolute(p) || p.split("/").includes(".."))
+        );
       if (!outside && reaching) {
         return deny(`${tool} for ${reaching}: you may read only the registered projects`);
       }

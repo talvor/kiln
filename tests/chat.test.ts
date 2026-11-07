@@ -6,7 +6,7 @@ import { fromFileUrl, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, openTeam, waitFor } from "./router_helpers.ts";
-import type { LauncherRun, SessionStep } from "./fakes/claude.ts";
+import type { LauncherRun } from "./fakes/claude.ts";
 
 const MAIN = fromFileUrl(new URL("../src/main.ts", import.meta.url));
 
