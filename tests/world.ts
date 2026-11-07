@@ -42,6 +42,13 @@ export interface World extends Home {
     /** The tickets Kiln published, in order. */
     issues(): Promise<{ title: string; body: string; cwd?: string }[]>;
   };
+  /** The fake `lavish-axi`, which Kiln opens Escalation pages with. */
+  lavish: {
+    /** The arguments of every call, in order. */
+    calls(): Promise<string[][]>;
+    /** From now on it fails, as if Lavish could not open anything. */
+    breakDown(): Promise<void>;
+  };
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
@@ -65,7 +72,9 @@ export async function makeWorld(): Promise<World> {
   await Deno.mkdir(bin, { recursive: true });
 
   // Shims: executable files named after the real tools that hand over to the fakes.
-  for (const [name, script] of [["claude", "claude.ts"], ["gh", "gh.ts"]]) {
+  for (
+    const [name, script] of [["claude", "claude.ts"], ["gh", "gh.ts"], ["lavish-axi", "lavish.ts"]]
+  ) {
     const file = join(bin, name);
     await Deno.writeTextFile(
       file,
@@ -142,6 +151,13 @@ export async function makeWorld(): Promise<World> {
           .stdout.split("\n").filter(Boolean),
     },
     project: { path: projectPath },
+    lavish: {
+      calls: async () => (await calls("lavish")).map((c) => c.args),
+      breakDown: async () => {
+        await Deno.mkdir(join(fakeDir, "lavish"), { recursive: true });
+        await Deno.writeTextFile(join(fakeDir, "lavish", "broken"), "");
+      },
+    },
     launcher: {
       script: (runs) => script("launcher", "runs", runs),
       calls: () => calls("launcher"),

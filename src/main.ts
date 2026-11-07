@@ -668,6 +668,7 @@ interface EscalationView {
   detail: string | null;
   status: string;
   reason: string | null;
+  page?: string | null;
 }
 
 function describeEscalation(e: EscalationView): string {
@@ -678,6 +679,10 @@ function describeEscalation(e: EscalationView): string {
   ];
   if (e.detail) lines.push(`  ${e.detail}`);
   if (e.reason) lines.push(`  Reason: ${e.reason}`);
+  if (e.status === "open") {
+    if (e.page) lines.push(`  Page: ${e.page}`);
+    lines.push(`  Decide: kiln approve ${e.id}  or  kiln reject ${e.id} --reason <text>`);
+  }
   return lines.join("\n");
 }
 
