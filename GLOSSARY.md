@@ -72,6 +72,10 @@ _Avoid_: approval step, checkpoint
 A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make. The Overseer records each one it brings the user; it stays open, however long, until the user approves or rejects it. A rejection carries the user's reason, a decision is final, and an open one whose Request has ended is stale.
 _Avoid_: alert, handoff up
 
+**Question relay**:
+How a question travels up the chain and its answer comes back down. It is answered at the first level that can; otherwise it is passed up with the chain recorded, ending at the user as an Escalation. The answer reaches the Worker that asked, and wakes the Worker's own Claude session again.
+_Avoid_: forwarding, ticket routing
+
 **Inbox**:
 The place where messages addressed to one agent wait to be read. Assignments, results, questions and answers all travel as messages in inboxes.
 _Avoid_: mailbox, queue, channel
