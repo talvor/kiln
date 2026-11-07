@@ -5,7 +5,7 @@
 //   - Deny rules keep secrets unread and destructive commands unrun.
 //   - The policing hook checks each tool call against the same rules (a file tool is not covered
 //     by the sandbox, which only confines commands) and a refusal goes up as a question.
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Role } from "./store.ts";
 
 /** Built-in Claude tools a role can be given. */
@@ -32,7 +32,7 @@ const FILE_READERS = ["Read", "Glob", "Grep", "NotebookEdit", ...FILE_WRITERS];
 
 /** Files and folders that hold secrets: never read, never written. */
 const SECRET_PATH = [
-  /(^|\/)\.env(\..*)?$/,
+  /(^|\/)\.env(\.(?!example$|sample$|template$).*)?$/,
   /(^|\/)\.(ssh|aws|gnupg|kube|docker|npmrc|netrc|pypirc)(\/|$)/,
   /(^|\/)\.config\/(gh|gcloud)(\/|$)/,
   /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/,
@@ -44,11 +44,11 @@ export const isSecretPath = (path: string): boolean => SECRET_PATH.some((re) => 
 /** Shell commands a worker must never run, by what they would do. */
 const DESTRUCTIVE: [RegExp, string][] = [
   [
-    /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z]*\s+)*(\/|~|\$HOME|\*)(\s|$)/,
-    "recursive delete of a root, home or wildcard",
+    /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z]*\s+)*(\/|~|\$HOME|\*|\.{1,2}\/?)(\s|$)/,
+    "recursive delete of a root, home, parent or wildcard",
   ],
   [/\bsudo\b/, "privilege escalation"],
-  [/\bgit\s+push\b/, "pushing is Kiln's job, not a worker's"],
+  [/\bgit\b[^;&|]*\bpush\b/, "pushing is Kiln's job, not a worker's"],
   [/\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.)/, "discarding work in the tree"],
   [/\bgit\s+(branch\s+-D|worktree\s+(remove|prune))/, "removing branches or worktrees"],
   [/\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(sh|bash|zsh)\b/, "piping a download into a shell"],
@@ -75,9 +75,22 @@ export interface CallContext {
   worktree: string;
 }
 
+/** `path` with symlinks resolved, as far as it exists: a link cannot lead out of the Worktree. */
+function realpath(path: string): string {
+  const missing: string[] = [];
+  for (let at = resolve(path);; at = dirname(at)) {
+    try {
+      return resolve(Deno.realPathSync(at), ...missing.reverse());
+    } catch {
+      if (dirname(at) === at) return resolve(path);
+      missing.push(at.slice(dirname(at).length + 1));
+    }
+  }
+}
+
 /** Whether `path` (absolute, or relative to the Worktree) lies inside the Worktree. */
 export function insideWorktree(worktree: string, path: string): boolean {
-  const rel = relative(resolve(worktree), resolve(worktree, path));
+  const rel = relative(realpath(worktree), realpath(resolve(worktree, path)));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
@@ -90,10 +103,12 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
   const target = [input.file_path, input.notebook_path, input.path]
     .find((p): p is string => typeof p === "string");
   if (FILE_READERS.includes(tool)) {
-    const where = target ? resolve(ctx.worktree, target) : undefined;
+    const where = target ? realpath(resolve(ctx.worktree, target)) : undefined;
     if (where && isSecretPath(where)) return deny(`${tool} on ${target}: that file holds secrets`);
-    if (typeof input.glob === "string" && isSecretPath(input.glob)) {
-      return deny(`${tool} for ${input.glob}: that would reach secrets`);
+    for (const pattern of [input.glob, input.pattern]) {
+      if (typeof pattern === "string" && isSecretPath(pattern.replaceAll("*", "x"))) {
+        return deny(`${tool} for ${pattern}: that would reach secrets`);
+      }
     }
     if (FILE_WRITERS.includes(tool)) {
       if (!target) return deny(`${tool} without a file path`);

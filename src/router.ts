@@ -129,6 +129,8 @@ export function createRouter(opts: RouterOptions) {
     const configured = session.roleName
       ? await opts.roleTools?.(session.roleName).catch(() => undefined)
       : undefined;
+    // A role whose configuration cannot be read gets no built-in tools, never more than it had.
+    if (session.roleName && configured === undefined) return [];
     return configured ?? [...DEFAULT_TOOLS[session.role]];
   }
 
