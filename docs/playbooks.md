@@ -1,7 +1,7 @@
 # Playbooks and the Request lifecycle
 
 A **Playbook** is the ordered list of department **Steps** Kiln follows for one type of Request.
-Kiln ships one, `diagnose-a-bug`.
+Kiln ships `diagnose-a-bug` and `design-a-feature`.
 
 ```
 kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>]
@@ -90,7 +90,23 @@ worktree starts from the rejected branch, and reports on the Step again. Nothing
 merged. After two retries a third rejection fails the Step and the Request, with the last feedback,
 for the Overseer. `kiln request status` shows each try's Assignment and the Step's retries.
 
+## Designing a feature
+
+`design-a-feature` ends at an approved spec and plans no tickets. The Spec Writer writes `spec.md`;
+the Seam Designer reads it and the code and writes `seams.md`: where the feature meets the existing
+system and how each seam is tested. Once the Seam Designer's work is verified and merged, the step
+holds a **Gate** (`"gate": "spec-approval"` in the step): the Overseer raises an Escalation with the
+spec and the seams, and the Request waits for as long as it takes. `kiln approve` finishes the
+Request; `kiln reject --reason` sends the step back to the leader with the reason, for a fresh
+worker, and the Gate is raised again for the new work. Rejections by the user do not count against
+the retry limit.
+
+The **out-of-scope Gate** works in any Playbook: a leader that finds the Request outside the
+Project's scope reports its step with status `out-of-scope` instead of `done`. The Overseer raises
+an Escalation with the leader's reason. Approved, the step goes back to the leader to carry on;
+rejected, the step and the Request fail with the user's reason.
+
 ## Not covered here
 
-Following a diagnosis with a fix Request is left to a later ticket.
+Following a diagnosis with a fix Request, and planning tickets from an approved spec, are left to later tickets.
 Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.

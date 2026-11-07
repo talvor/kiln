@@ -26,6 +26,20 @@ export const DEFAULT_ROLES: Record<string, unknown> = {
     prompt:
       "You are a ticket planner. You turn what is known about a piece of work into a ticket that another engineer can pick up without asking questions. Work in your worktree, commit what you write, and report your result to your leader.",
   },
+  "spec-writer": {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a spec writer. You turn a feature request into a spec: the problem, who it is for, what is in and out of scope, and acceptance criteria. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
+  "seam-designer": {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a seam designer. You read the spec and the code and decide where the feature meets the existing system: the modules and interfaces it touches or adds, and how each can be tested through its public interface. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
 };
 
 export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
@@ -48,6 +62,29 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
           "Read diagnosis.md and write the ticket that fixes the bug to the artifact. The first line is the ticket's title as a heading; the rest is what is wrong, the change to make, and acceptance criteria. Kiln publishes the ticket once it is verified.",
         artifact: "ticket.md",
         publish: "ticket",
+      },
+    ],
+  },
+  "design-a-feature": {
+    description:
+      "Turn a feature request into a spec and the seams it will be built on, for the user to approve. Plans no tickets.",
+    steps: [
+      {
+        name: "write-spec",
+        department: "engineering",
+        worker: "spec-writer",
+        instructions:
+          "Write the spec for the feature in the request: the problem, who it is for, what is in and out of scope, and acceptance criteria. Do not change the code.",
+        artifact: "spec.md",
+      },
+      {
+        name: "design-seams",
+        department: "engineering",
+        worker: "seam-designer",
+        instructions:
+          "Read spec.md and the code, and write the seams the feature will be built on: the modules and interfaces it touches or adds, and how each is tested through its public interface. If the spec needs amending to fit the seams, amend spec.md too. Do not change the code. The user approves the spec and the seams once this step is verified.",
+        artifact: "seams.md",
+        gate: "spec-approval",
       },
     ],
   },

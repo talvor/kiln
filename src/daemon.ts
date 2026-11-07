@@ -300,13 +300,19 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     "escalations.raise": (params) => escalations.raise(String(params.from), params),
     "escalations.raised": (params) => escalations.raisedBy(String(params.from)),
     "escalations.list": (params) => escalations.list(params.all !== true),
-    "escalations.decide": (params) =>
-      escalations.decide({
+    "escalations.decide": (params) => {
+      const decided = escalations.decide({
         id: params.id,
         approved: params.approved === true,
         reason: params.reason,
         agent: params.agent,
-      }),
+      });
+      // A Gate waits on this decision: let the conductor carry on at once.
+      if (decided.gate) {
+        conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+      }
+      return decided;
+    },
     "messages.read": (params) => router.readInbox(String(params.address)),
     "router.police": async (params) =>
       await router.policeCall(

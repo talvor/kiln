@@ -209,6 +209,11 @@ export const MIGRATIONS: string[] = [
      begin select raise(abort, 'a decided escalation is never changed'); end;
    create trigger escalations_no_delete before delete on escalations
      begin select raise(abort, 'escalations are never removed'); end;`,
+  // 10: Gates. An Escalation the conductor raises at a point in a Step names the Step, the kind of
+  // Gate and the leader's report (a Step message) it was raised for.
+  `alter table escalations add column step_id integer references steps (id);
+   alter table escalations add column gate text check (gate in ('spec-approval', 'out-of-scope'));
+   alter table escalations add column gate_message_id integer;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -299,6 +304,8 @@ export interface StepSpec {
   artifact: string;
   /** What Kiln publishes from the artifact once the step is verified. */
   publish?: "ticket";
+  /** A Gate the user must pass, once the step is verified and merged, before the step is done. */
+  gate?: "spec-approval";
 }
 export interface RequestRecord {
   id: number;
@@ -386,11 +393,19 @@ export interface EscalationRecord {
   status: "open" | "approved" | "rejected";
   /** Why the user rejected it. */
   reason: string | null;
+  /** For a Gate: the Step it holds, which kind it is, and the Step message it was raised on. */
+  stepId: number | null;
+  gate: GateKind | null;
+  gateMessageId: number | null;
   createdAt: string;
   decidedAt: string | null;
 }
+export type GateKind = "spec-approval" | "out-of-scope";
 export interface NewEscalation {
   raisedBy: string;
+  stepId?: number | null;
+  gate?: GateKind | null;
+  gateMessageId?: number | null;
   requestId?: number | null;
   summary: string;
   detail?: string | null;
@@ -758,6 +773,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       detail: row.detail as string | null,
       status: row.status as EscalationRecord["status"],
       reason: row.reason as string | null,
+      stepId: row.step_id as number | null,
+      gate: row.gate as GateKind | null,
+      gateMessageId: row.gate_message_id as number | null,
       createdAt: row.created_at as string,
       decidedAt: row.decided_at as string | null,
     });
@@ -1178,13 +1196,17 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       },
       addEscalation: (e) => {
         const { lastInsertRowid } = db.prepare(
-          `insert into escalations (raised_by, request_id, summary, detail, created_at)
-           values (?, ?, ?, ?, ?)`,
+          `insert into escalations
+             (raised_by, request_id, summary, detail, step_id, gate, gate_message_id, created_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           e.raisedBy,
           e.requestId ?? null,
           e.summary,
           e.detail ?? null,
+          e.stepId ?? null,
+          e.gate ?? null,
+          e.gateMessageId ?? null,
           new Date().toISOString(),
         );
         return getEscalation(Number(lastInsertRowid));
