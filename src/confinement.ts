@@ -55,6 +55,10 @@ const DESTRUCTIVE: [RegExp, string][] = [
     "recursive delete of a root, home, parent or wildcard",
   ],
   [new RegExp(AT + String.raw`sudo\b`), "privilege escalation"],
+  [
+    new RegExp(AT + String.raw`(?:\S*\/)?kiln\s+(?:approve|reject)\b`),
+    "only the user approves or rejects an escalation",
+  ],
   [new RegExp(AT + GIT + String.raw`push\b`), "pushing is Kiln's job, not a worker's"],
   [
     new RegExp(AT + GIT + String.raw`(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.)`),

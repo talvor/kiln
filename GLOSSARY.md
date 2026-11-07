@@ -69,7 +69,7 @@ A point in a request where the overseer must bring the user a decision before wo
 _Avoid_: approval step, checkpoint
 
 **Escalation**:
-A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make.
+A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make. The Overseer records each one it brings the user; it stays open, however long, until the user approves or rejects it. A rejection carries the user's reason, a decision is final, and an open one whose Request has ended is stale.
 _Avoid_: alert, handoff up
 
 **Inbox**:

@@ -40,3 +40,6 @@ published fix ticket. See [the playbook guide](docs/playbooks.md).
 
 Each Assignment runs under turn, spend and time limits, and a cap keeps only so many running at
 once; the rest wait as planned. See [the limits guide](docs/limits.md).
+
+Decisions that are the user's to make wait in `kiln escalations`; only `kiln approve <id>` and
+`kiln reject <id> --reason <text>` settle them. See [the escalation guide](docs/escalations.md).

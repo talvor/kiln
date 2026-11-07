@@ -4,6 +4,7 @@ import { run } from "./checks.ts";
 import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
+import { createEscalations } from "./escalations.ts";
 import { createRouter } from "./router.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
@@ -120,7 +121,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       const wt = store.findLiveWorktree(resolve(req.cwd));
       return launch({
         ...req,
-        env: wt ? infoOf(wt).env : undefined,
+        env: { ...(wt ? infoOf(wt).env : {}), ...req.env },
         sandbox: wt ? await sandboxFor(req.sandbox, wt.path) : req.sandbox,
       });
     },
@@ -128,6 +129,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     rolePrompt: async (name) => (await loadConfig(paths.config)).roles.get(name)?.prompt,
     selfCommand,
   });
+  const escalations = createEscalations(store);
   // The router and the conductor lean on each other; the router only calls back once running.
   const conductor = createConductor({
     store,
@@ -295,6 +297,16 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.context,
         params.assignmentId as number | undefined,
       ),
+    "escalations.raise": (params) => escalations.raise(String(params.from), params),
+    "escalations.raised": (params) => escalations.raisedBy(String(params.from)),
+    "escalations.list": (params) => escalations.list(params.all !== true),
+    "escalations.decide": (params) =>
+      escalations.decide({
+        id: params.id,
+        approved: params.approved === true,
+        reason: params.reason,
+        agent: params.agent,
+      }),
     "messages.read": (params) => router.readInbox(String(params.address)),
     "router.police": async (params) =>
       await router.policeCall(

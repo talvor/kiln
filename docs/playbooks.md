@@ -92,5 +92,5 @@ for the Overseer. `kiln request status` shows each try's Assignment and the Step
 
 ## Not covered here
 
-Escalation to the user is left to a later ticket, as is following a
-diagnosis with a fix Request. Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.
+Following a diagnosis with a fix Request is left to a later ticket.
+Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.

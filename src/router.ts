@@ -17,7 +17,13 @@ import {
 
 /** A Message is dead-lettered once this many Nudges have gone unanswered. */
 export const MAX_DELIVERIES = 3;
-export const TOOL_NAMES = ["read_inbox", "send", "raise_question"] as const;
+export const TOOL_NAMES = [
+  "read_inbox",
+  "send",
+  "raise_question",
+  "raise_escalation",
+  "read_escalations",
+] as const;
 const LAUNCH_TIMEOUT_MS = 30_000;
 const RENUDGE_AFTER_MS = 60_000;
 
@@ -407,6 +413,8 @@ export function createRouter(opts: RouterOptions) {
             `You have ${count} unread message(s) in your Kiln inbox. ` +
             `Call the read_inbox tool now and act on what it returns.`,
           cwd: session.cwd,
+          // Marks every command the agent runs as the agent's: `kiln approve` refuses it.
+          env: { KILN_AGENT: session.address },
           mcpServers: { kiln: { command: server.cmd, args: server.args } },
           allowedTools: [...confinement.allowedTools, ...TOOL_NAMES.map((t) => `mcp__kiln__${t}`)],
           tools: confinement.tools,
