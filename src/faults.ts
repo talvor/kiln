@@ -235,12 +235,14 @@ export function createFaults(deps: FaultDeps) {
       );
     }
     try {
-      for (const { wt, base } of broken) await recreate(project, wt, base);
+      for (const { wt, base } of broken) {
+        await recreate(project, wt, base);
+        failAffected([wt]);
+      }
     } catch (err) {
       log.error("cannot recreate a worktree", { project: project.name, err });
       return;
     }
-    failAffected(broken.map((b) => b.wt));
     if (fault) {
       recovered(
         project,
