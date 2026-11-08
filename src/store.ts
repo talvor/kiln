@@ -254,11 +254,12 @@ export const MIGRATIONS: string[] = [
      decided_at text,
      step_id integer references steps (id),
      gate text check (gate in ('spec-approval', 'out-of-scope', 'blocked-on-user', 'qa-passed')),
-     gate_message_id integer
+     gate_message_id integer,
+     question_id integer references messages (id)
    ) strict;
    insert into escalations_new
      select id, raised_by, request_id, summary, detail, status, reason, created_at, decided_at,
-       step_id, gate, gate_message_id from escalations;
+       step_id, gate, gate_message_id, question_id from escalations;
    drop table escalations;
    alter table escalations_new rename to escalations;
    create trigger escalations_decided_once before update on escalations
