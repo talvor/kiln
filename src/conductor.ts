@@ -80,7 +80,12 @@ export interface StartPlaybookRequest {
   playbook: string;
   description: string;
   trackerItem: string | null;
+  /** Follow the Request with a fix Request, built from the ticket it publishes. */
+  andFix?: boolean;
 }
+
+/** The Playbook a fix Request follows. */
+export const FIX_PLAYBOOK = "implement-a-ticket";
 
 /** How many times a rejected Step goes back to its leader before it goes up to the Overseer. */
 export const MAX_RETRIES = 2;
@@ -903,6 +908,28 @@ export function createConductor(opts: ConductorOptions) {
     if (changed) await react();
   }
 
+  /** "And fix it": a diagnosis that published its fix ticket is followed by a Request to implement it. */
+  async function chainFix(request: RequestRecord) {
+    if (!request.andFix || request.fixRequestId !== null || !request.ticketUrl) return;
+    try {
+      const project = projectOf(request);
+      const fix = await begin({
+        project: project.name,
+        playbook: FIX_PLAYBOOK,
+        description: `Fix the bug diagnosed in request ${request.id}: ${request.description ?? ""}`
+          .trim(),
+        trackerItem: ticketRef(request.ticketUrl),
+      });
+      store.setFixRequest(request.id, fix.requestId);
+      store.appendEvent("request.fix-started", { id: request.id, fix: fix.requestId });
+      // This pass is the one running; the fix Request is advanced by the next.
+      void react();
+    } catch (err) {
+      log.error("could not start the fix request", { request: request.id, err });
+      store.appendEvent("request.fix-failed", { id: request.id, error: (err as Error).message });
+    }
+  }
+
   async function advance(request: RequestRecord) {
     for (let guard = 0; guard < 100; guard++) {
       request = store.getRequest(request.id);
@@ -912,6 +939,7 @@ export function createConductor(opts: ConductorOptions) {
         if (request.prMergedAt) await cleanUp(request);
         store.setRequestState(request.id, "done");
         store.appendEvent("request.done", { id: request.id });
+        await chainFix(store.getRequest(request.id));
         return;
       }
       try {
@@ -1070,40 +1098,57 @@ export function createConductor(opts: ConductorOptions) {
 
     /** Start a Request on a Project that follows a Playbook. */
     async startRequest(req: StartPlaybookRequest): Promise<StartedRequest> {
-      if (!req.description.trim()) throw new RequestRefused("A request needs a description.");
-      let playbook: PlaybookConfig | undefined;
-      try {
-        const config = await opts.loadConfig();
-        const broken = config.broken.get(req.playbook);
-        if (broken) throw broken;
-        playbook = config.playbooks.get(req.playbook);
-        if (!playbook) {
-          const names = [...config.playbooks.keys()].join(", ");
-          throw new RequestRefused(`No playbook named "${req.playbook}". Available: ${names}.`);
-        }
-      } catch (err) {
-        if (err instanceof ConfigError) throw new RequestRefused(err.message);
-        throw err;
-      }
-      const project = store.getProject(req.project);
-      const started = await opts.withProject(
-        project.name,
-        () => startRequest(store, project, opts.worktreesDir),
-      );
-      // A research ticket's step goes to its Researcher; every other ticket to the wayfinder.
-      const research = !!req.trackerItem && playbook.steps.some((s) => s.researchWorker) &&
-        await isResearchTicket(project.clonePath, req.trackerItem);
-      store.setPlaybook(started.requestId, {
-        playbook: playbook.name,
-        description: req.description,
-        trackerItem: req.trackerItem,
-        steps: research
-          ? playbook.steps.map((s) => s.researchWorker ? { ...s, worker: s.researchWorker } : s)
-          : playbook.steps,
-      });
-      store.appendEvent("request.started", { id: started.requestId, playbook: playbook.name });
+      const started = await begin(req);
       await react();
       return started;
     },
   };
+
+  async function begin(req: StartPlaybookRequest): Promise<StartedRequest> {
+    if (!req.description.trim()) throw new RequestRefused("A request needs a description.");
+    let playbook: PlaybookConfig | undefined;
+    try {
+      const config = await opts.loadConfig();
+      const broken = config.broken.get(req.playbook);
+      if (broken) throw broken;
+      playbook = config.playbooks.get(req.playbook);
+      if (!playbook) {
+        const names = [...config.playbooks.keys()].join(", ");
+        throw new RequestRefused(`No playbook named "${req.playbook}". Available: ${names}.`);
+      }
+    } catch (err) {
+      if (err instanceof ConfigError) throw new RequestRefused(err.message);
+      throw err;
+    }
+    if (req.andFix) {
+      if (!playbook.steps.some((s) => s.publish === "ticket")) {
+        throw new RequestRefused(
+          `"${playbook.name}" publishes no fix ticket, so there is nothing to fix from.`,
+        );
+      }
+      const config = await opts.loadConfig();
+      if (config.broken.get(FIX_PLAYBOOK) || !config.playbooks.has(FIX_PLAYBOOK)) {
+        throw new RequestRefused(`Cannot chain a fix: no usable "${FIX_PLAYBOOK}" playbook.`);
+      }
+    }
+    const project = store.getProject(req.project);
+    const started = await opts.withProject(
+      project.name,
+      () => startRequest(store, project, opts.worktreesDir),
+    );
+    // A research ticket's step goes to its Researcher; every other ticket to the wayfinder.
+    const research = !!req.trackerItem && playbook.steps.some((s) => s.researchWorker) &&
+      await isResearchTicket(project.clonePath, req.trackerItem);
+    store.setPlaybook(started.requestId, {
+      playbook: playbook.name,
+      description: req.description,
+      trackerItem: req.trackerItem,
+      andFix: req.andFix,
+      steps: research
+        ? playbook.steps.map((s) => s.researchWorker ? { ...s, worker: s.researchWorker } : s)
+        : playbook.steps,
+    });
+    store.appendEvent("request.started", { id: started.requestId, playbook: playbook.name });
+    return started;
+  }
 }

@@ -296,6 +296,10 @@ export const MIGRATIONS: string[] = [
    alter table requests add column pr_block_id integer references escalations (id);`,
   // 17: planning a spec into tickets. A Request records every ticket Kiln published for it.
   `alter table requests add column ticket_urls text not null default '[]';`,
+  // 18: chaining "and fix it" onto a diagnosis. A Request can ask for a fix Request once its fix
+  // ticket is published, and remembers the one Kiln started.
+  `alter table requests add column and_fix integer not null default 0;
+   alter table requests add column fix_request_id integer references requests (id);`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -411,6 +415,10 @@ export interface RequestRecord {
   ticketUrl: string | null;
   /** The tickets Kiln published for the Request's breakdown of a spec, in the order opened. */
   ticketUrls: string[];
+  /** Whether a fix Request is to follow, from the ticket this Request publishes. */
+  andFix: boolean;
+  /** The fix Request Kiln started from the published ticket; null until it has. */
+  fixRequestId: number | null;
   /** The pull request Kiln opened for the Request, if its Playbook opens one. */
   prUrl: string | null;
   /** The state Kiln last saw the pull request in: OPEN, MERGED or CLOSED; null before it looked. */
@@ -426,6 +434,8 @@ export interface NewPlaybookRun {
   playbook: string;
   description: string;
   trackerItem: string | null;
+  /** Follow the Request with a fix Request from the ticket it publishes. */
+  andFix?: boolean;
   steps: StepSpec[];
 }
 /** A department step of a Request: handed to the department's leader as one assignment. */
@@ -695,6 +705,8 @@ export interface Store {
   /** Note a ticket published for the Request's breakdown. */
   addTicketUrl(id: number, url: string): void;
   setPrUrl(id: number, url: string): void;
+  /** Note the fix Request started from this Request's ticket. */
+  setFixRequest(id: number, fixRequestId: number): void;
   /** Note the state the Request's pull request is in; a merged one is stamped as merged. */
   setPrState(id: number, state: PrState | null): void;
   /** Note the Escalation raised for a closed pull request, or that it is settled (null). */
@@ -1001,6 +1013,8 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       trackerItem: row.tracker_item as string | null,
       ticketUrl: row.ticket_url as string | null,
       ticketUrls: JSON.parse(row.ticket_urls as string) as string[],
+      andFix: row.and_fix === 1,
+      fixRequestId: row.fix_request_id as number | null,
       prUrl: row.pr_url as string | null,
       prState: row.pr_state as PrState | null,
       prMergedAt: row.pr_merged_at as string | null,
@@ -1067,8 +1081,8 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       setPlaybook: (requestId, run) =>
         inTransaction(() => {
           db.prepare(
-            "update requests set playbook = ?, description = ?, tracker_item = ? where id = ?",
-          ).run(run.playbook, run.description, run.trackerItem, requestId);
+            "update requests set playbook = ?, description = ?, tracker_item = ?, and_fix = ? where id = ?",
+          ).run(run.playbook, run.description, run.trackerItem, run.andFix ? 1 : 0, requestId);
           run.steps.forEach((spec, i) => {
             db.prepare("insert into steps (request_id, position, spec) values (?, ?, ?)")
               .run(requestId, i + 1, JSON.stringify(spec));
@@ -1090,6 +1104,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           JSON.stringify(urls),
           id,
         );
+      },
+      setFixRequest: (id, fixRequestId) => {
+        db.prepare("update requests set fix_request_id = ? where id = ?").run(fixRequestId, id);
       },
       setPrUrl: (id, url) => {
         db.prepare("update requests set pr_url = ? where id = ?").run(url, id);
