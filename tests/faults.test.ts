@@ -3,7 +3,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
-import { openTeam, waitFor } from "./router_helpers.ts";
+import { asAgent, assignment, openTeam, waitFor } from "./router_helpers.ts";
 
 const COMMANDS = { setup: null, test: null, lint: null, build: null };
 
@@ -33,6 +33,7 @@ interface Listed {
   summary: string;
   status: string;
   reason: string | null;
+  detail: string | null;
 }
 async function escalations(world: World): Promise<Listed[]> {
   const r = await world.kiln("escalations", "--all", "--json");
@@ -134,4 +135,30 @@ withWorld("recovering does not resume a project the user paused", async (w) => {
     20_000,
   );
   assert(await paused(w), "the user's pause stays");
+});
+
+withWorld("a worktree made again fails the assignment standing on it", async (w) => {
+  await register(w);
+  const request = await startRequest(w);
+  assert(request);
+  const sent = await asAgent(
+    w,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
+  await asAgent(w, "dev-1", (agent) => agent.inbox());
+  const started = await w.kiln("assignment", "start", "1", String(sent.id));
+  assertEquals(started.code, 0, started.stderr);
+  const worktree = started.stdout.match(/^Worktree: (.*)$/m)![1];
+
+  await Deno.remove(worktree, { recursive: true });
+  const escalation = await recovered(w);
+  assertStringIncludes(escalation.detail ?? "", `failed because of it: ${sent.id}`);
+
+  const inbox = await asAgent(w, "dev-lead", (agent) => agent.inbox());
+  const result = inbox.find((m) => m.kind === "result" && m.inReplyTo === sent.id);
+  assert(result, "the leader is told the assignment failed");
+  assertStringIncludes(JSON.stringify(result.body), "unpushed work");
+  const overseer = await asAgent(w, "overseer", (agent) => agent.inbox());
+  assert(overseer.some((m) => m.kind === "question" && /stuck/.test(JSON.stringify(m.body))));
 });

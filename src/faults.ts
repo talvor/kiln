@@ -14,6 +14,10 @@ export interface FaultDeps {
   log: Logger;
   /** Close an Escalation with Kiln's own word that the fault is gone. */
   close(escalationId: number, reason: string): void;
+  /** Fail an open Assignment on behalf of its worker, with Kiln's own word why. */
+  failAssignment(assignmentId: number, why: string): void;
+  /** Tell the Overseer the worker of an Assignment is stuck. */
+  reportStuck(workerAddress: string, why: string): void;
 }
 
 const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
@@ -136,20 +140,27 @@ export function createFaults(deps: FaultDeps) {
   }
 
   /** Pause the Project and tell the user, once; or find that the fault was already raised. */
-  function raise(project: ProjectRecord, kind: FaultRecord["kind"], detail: string): FaultRecord {
+  function raise(
+    project: ProjectRecord,
+    kind: FaultRecord["kind"],
+    detail: string,
+    standing: WorktreeRecord[],
+  ): FaultRecord {
     const open = store.getOpenFault(project.id);
     if (open) {
       if (open.kind !== kind || open.detail !== detail) store.updateFault(open.id, kind, detail);
       return open;
     }
+    const lost = standingOn(standing).map((a) => a.id);
     const overseer = store.listSessions().find((s) => s.role === "overseer");
     const escalation = overseer
       ? store.addEscalation({
         raisedBy: overseer.address,
         summary: `Environment fault on ${project.name}: ${detail}`,
         detail: `${project.name} is paused while Kiln puts this right. Kiln recovers on its own ` +
-          `and resumes the project; this escalation closes itself then. Nothing is needed from ` +
-          `you unless Kiln cannot recover.`,
+          `and resumes the project; this escalation closes itself then. Work that was never ` +
+          `pushed from a clone or worktree that had to be made again may be lost.` +
+          (lost.length ? ` Assignments failed because of it: ${lost.join(", ")}.` : ""),
       })
       : null;
     const fault = store.openFault({
@@ -175,11 +186,33 @@ export function createFaults(deps: FaultDeps) {
     log.info("environment fault recovered", { project: project.name, what });
   }
 
+  /** The active Assignments standing on these Worktrees. */
+  function standingOn(wts: WorktreeRecord[]) {
+    const ids = new Set(wts.map((wt) => wt.id));
+    return store.listActiveAssignments().filter((a) =>
+      a.worktreeId !== null && ids.has(a.worktreeId)
+    );
+  }
+
+  /** Fail the active Assignments standing on Worktrees that were made again. */
+  function failAffected(made: WorktreeRecord[]): void {
+    for (const a of standingOn(made)) {
+      const wt = store.getWorktree(a.worktreeId!);
+      const worker = store.getMessage(a.id)!.to;
+      deps.failAssignment(
+        a.id,
+        `The worktree ${wt.path} was made again after an environment fault, so unpushed work ` +
+          `in it may be lost.`,
+      );
+      deps.reportStuck(worker, `its worktree ${wt.path} was made again and its work may be lost`);
+    }
+  }
+
   async function lookAt(project: ProjectRecord): Promise<void> {
     let fault = store.getOpenFault(project.id);
     const damaged = await cloneProblem(project);
     if (damaged) {
-      fault = raise(project, "clone", damaged);
+      fault = raise(project, "clone", damaged, liveWorktrees(project).map((l) => l.wt));
       try {
         await reclone(project);
       } catch (err) {
@@ -198,6 +231,7 @@ export function createFaults(deps: FaultDeps) {
           `worktree${broken.length > 1 ? "s" : ""} ${
             broken.map((b) => b.wt.path).join(", ")
           } deleted`,
+        broken.map((b) => b.wt),
       );
     }
     try {
@@ -206,6 +240,7 @@ export function createFaults(deps: FaultDeps) {
       log.error("cannot recreate a worktree", { project: project.name, err });
       return;
     }
+    failAffected(broken.map((b) => b.wt));
     if (fault) {
       recovered(
         project,

@@ -171,6 +171,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const faults = createFaults({
     store,
     log,
+    failAssignment: (id, why) => void router.failAssignment(id, why),
+    reportStuck: (address, why) => router.reportStuck(store.getSession(address), why),
     close: (id, reason) => {
       try {
         decideEscalation({ id, approved: true, reason });
