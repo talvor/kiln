@@ -11,7 +11,7 @@ import { DEFAULT_PLAYBOOKS, DEFAULT_ROLES } from "./defaults.ts";
 import type { Role, StepSpec } from "./store.ts";
 
 const NAME = /^[a-z][a-z0-9-]*$/;
-const PUBLISH = ["ticket", "draft-pr", "qa-summary", "close-ticket"];
+const PUBLISH = ["ticket", "tickets", "draft-pr", "qa-summary", "close-ticket"];
 const GATES = ["spec-approval", "qa-passed"];
 
 export interface RoleConfig {

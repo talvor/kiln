@@ -18,7 +18,7 @@ const ATTACHED_MS = 15_000;
 const HISTORY_TURNS = 20;
 const TURN_CHARS = 600;
 /** Events that tell the user something happened to their work. */
-const NEWS_EVENTS = ["request.done", "step.failed", "step.escalated"];
+const NEWS_EVENTS = ["request.done", "step.failed", "step.escalated", "breakdown.approved"];
 
 /** The words the user types that Kiln answers itself, without a model. */
 export const COMMANDS = ["status", "escalations", "projects", "approve", "reject", "help"] as const;
@@ -135,9 +135,13 @@ export function createChat(opts: ChatOptions) {
     const open = waitingOnUser();
     for (const e of open) news.push(`Decision waiting for the user: ${describeEscalation(e)}`);
     for (const e of store.listEvents(sinceEvent, NEWS_EVENTS)) {
-      const d = e.data as { id?: number; request?: number; why?: string };
+      const d = e.data as { id?: number; request?: number; why?: string; tickets?: string[] };
       news.push(
-        e.kind === "request.done"
+        e.kind === "breakdown.approved"
+          ? `Request ${d.request}: the Overseer approved the breakdown of the spec into ${
+            d.tickets?.length ?? 0
+          } ticket(s): ${(d.tickets ?? []).join(", ")}.`
+          : e.kind === "request.done"
           ? `Request ${d.id} finished.`
           : e.kind === "step.failed"
           ? `Request ${d.request} failed: ${d.why ?? "a step failed"}.`

@@ -3,6 +3,7 @@
 // step's acceptance criteria. What comes back is the feedback for a rejection, or nothing.
 import { SETUP_TIMEOUT_MS, shell, TEST_TIMEOUT_MS } from "./checks.ts";
 import type { ProjectRecord, StepSpec } from "./store.ts";
+import { checkBreakdown, parseBreakdown } from "./breakdown.ts";
 import { parseTicket } from "./tracker.ts";
 
 const CHECK_TIMEOUT_MS = 15 * 60_000;
@@ -25,6 +26,13 @@ export async function verifyWork(
     problems.push(`Acceptance criteria: ${spec.artifact} was not committed, or is empty.`);
   } else if (spec.publish === "ticket" && !parseTicket(artifact).title) {
     problems.push(`Acceptance criteria: ${spec.artifact} must start with the ticket's title.`);
+  } else if (spec.publish === "tickets") {
+    // The Leader's checks on a breakdown: it reads, covers the spec, and has no dependency cycle.
+    const parsed = parseBreakdown(artifact);
+    const found = "problems" in parsed ? parsed.problems : checkBreakdown(parsed);
+    for (const problem of found) {
+      problems.push(`Acceptance criteria: ${spec.artifact}: ${problem}`);
+    }
   }
 
   if (project.setupCommand) {

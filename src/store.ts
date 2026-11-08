@@ -294,6 +294,8 @@ export const MIGRATIONS: string[] = [
   `alter table requests add column pr_state text;
    alter table requests add column pr_merged_at text;
    alter table requests add column pr_block_id integer references escalations (id);`,
+  // 17: planning a spec into tickets. A Request records every ticket Kiln published for it.
+  `alter table requests add column ticket_urls text not null default '[]';`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -383,7 +385,7 @@ export interface StepSpec {
   /** The file the worker commits; the leader's verification looks for it. */
   artifact: string;
   /** What Kiln publishes from the artifact once the step is verified. */
-  publish?: "ticket" | "draft-pr" | "qa-summary" | "close-ticket";
+  publish?: "ticket" | "tickets" | "draft-pr" | "qa-summary" | "close-ticket";
   /** The step waits to begin until the Request's pull request has been merged. */
   after?: "merge";
   /** A Gate the user must pass, once the step is verified and merged, before the step is done. */
@@ -405,6 +407,8 @@ export interface RequestRecord {
   trackerItem: string | null;
   /** The ticket Kiln published for the Request, if its Playbook publishes one. */
   ticketUrl: string | null;
+  /** The tickets Kiln published for the Request's breakdown of a spec, in the order opened. */
+  ticketUrls: string[];
   /** The pull request Kiln opened for the Request, if its Playbook opens one. */
   prUrl: string | null;
   /** The state Kiln last saw the pull request in: OPEN, MERGED or CLOSED; null before it looked. */
@@ -686,6 +690,8 @@ export interface Store {
   /** Move a Request to a state; `failure` says why when it failed. */
   setRequestState(id: number, status: State, failure?: string): void;
   setTicketUrl(id: number, url: string): void;
+  /** Note a ticket published for the Request's breakdown. */
+  addTicketUrl(id: number, url: string): void;
   setPrUrl(id: number, url: string): void;
   /** Note the state the Request's pull request is in; a merged one is stamped as merged. */
   setPrState(id: number, state: PrState | null): void;
@@ -992,6 +998,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       description: row.description as string | null,
       trackerItem: row.tracker_item as string | null,
       ticketUrl: row.ticket_url as string | null,
+      ticketUrls: JSON.parse(row.ticket_urls as string) as string[],
       prUrl: row.pr_url as string | null,
       prState: row.pr_state as PrState | null,
       prMergedAt: row.pr_merged_at as string | null,
@@ -1071,6 +1078,16 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       },
       setTicketUrl: (id, url) => {
         db.prepare("update requests set ticket_url = ? where id = ?").run(url, id);
+      },
+      addTicketUrl: (id, url) => {
+        const row = db.prepare("select ticket_urls from requests where id = ?").get(id) as
+          | { ticket_urls: string }
+          | undefined;
+        const urls = [...JSON.parse(row?.ticket_urls ?? "[]"), url];
+        db.prepare("update requests set ticket_urls = ? where id = ?").run(
+          JSON.stringify(urls),
+          id,
+        );
       },
       setPrUrl: (id, url) => {
         db.prepare("update requests set pr_url = ? where id = ?").run(url, id);

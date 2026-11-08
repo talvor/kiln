@@ -122,6 +122,21 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
       },
     ],
   },
+  "plan-a-spec-into-tickets": {
+    description:
+      "Break an approved spec into tickets in the project's tracker. The Overseer approves the breakdown and the user is told afterwards.",
+    steps: [
+      {
+        name: "plan-tickets",
+        department: "engineering",
+        worker: "ticket-planner",
+        instructions:
+          'Break the spec in the request (the tracker item, or spec.md on the branch) into tickets, each one an engineer can pick up without asking questions. Write them to the artifact as JSON: {"criteria": {"c1": "<an acceptance criterion of the spec>", ...}, "tickets": [{"key": "a", "title": "...", "body": "what to build and acceptance criteria", "covers": ["c1"], "blockedBy": ["<key of a ticket that must be done first>"]}]}. Every acceptance criterion of the spec must be covered by at least one ticket, and the dependencies must not form a cycle. Kiln rejects a breakdown that does not, and opens the tickets in the tracker once it is verified.',
+        artifact: "tickets.json",
+        publish: "tickets",
+      },
+    ],
+  },
   "implement-a-ticket": {
     description:
       "Implement a ticket through to a pull request that has passed QA, then wrap the ticket up once the user has merged it. The user is told once QA has passed.",
