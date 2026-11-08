@@ -27,7 +27,7 @@ A step that fails is logged, and the daemon starts regardless.
 Kiln looks at every Project's clone and the Worktrees of its active Requests at startup and every
 30 seconds (`KILN_FAULT_CHECK_SECONDS`), and puts right what it finds:
 
-- **Damaged clone** (gone, not a git repository, or failing `git fsck`): cloned again from the
+- **Damaged clone** (gone, not a git repository, or its history cannot be read): cloned again from the
   remote. Work that was never pushed is not in the new clone; the Worktrees are made again on their
   branches, which come back from the remote if pushed, otherwise from the Project's default branch.
 - **Deleted Worktree**: made again on its branch, with what was committed there. Whatever was

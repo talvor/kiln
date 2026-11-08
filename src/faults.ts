@@ -28,11 +28,20 @@ export function createFaults(deps: FaultDeps) {
     if (!await exists(project.clonePath)) return `its clone ${project.clonePath} is gone`;
     const inside = await git(project.clonePath, "rev-parse", "--git-dir");
     if (inside.code !== 0) return `its clone ${project.clonePath} is no longer a git repository`;
-    const fsck = await git(project.clonePath, "fsck", "--connectivity-only", "--no-dangling");
-    if (fsck.code !== 0) {
-      return `its clone ${project.clonePath} is damaged: ${firstLine(fsck.stderr || fsck.stdout)}`;
+    // A clone whose objects are damaged cannot resolve its own HEAD. Ask twice, so a lock held by
+    // a git command that is running right now is not taken for damage.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const head = await git(
+        project.clonePath,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "HEAD^{commit}",
+      );
+      if (head.code === 0) return undefined;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    return undefined;
+    return `its clone ${project.clonePath} is damaged: its history cannot be read`;
   }
 
   /** The Worktrees active Requests stand on, with what each should be on. */
@@ -60,10 +69,14 @@ export function createFaults(deps: FaultDeps) {
 
   async function worktreeProblems(project: ProjectRecord) {
     const listed = await git(project.clonePath, "worktree", "list", "--porcelain", "-z");
-    const registered = listed.code === 0 ? listed.stdout.split("\0") : [];
+    // If git cannot say which Worktrees it knows, only what is missing from disk is certain.
+    const registered = listed.code === 0 ? listed.stdout.split("\0") : null;
     const broken: { wt: WorktreeRecord; base: string[] }[] = [];
     for (const item of liveWorktrees(project)) {
-      if (!await exists(item.wt.path) || !registered.includes(`worktree ${item.wt.path}`)) {
+      if (
+        !await exists(item.wt.path) ||
+        (registered && !registered.includes(`worktree ${item.wt.path}`))
+      ) {
         broken.push(item);
       }
     }
