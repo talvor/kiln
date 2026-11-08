@@ -121,12 +121,23 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
     if (![...roles.values()].some((r) => r.kind === "leader" && r.department === spec.department)) {
       throw fail(`${at}: department "${spec.department}" has no leader role`);
     }
+    if (step.researchWorker !== undefined) {
+      const researcher = typeof step.researchWorker === "string"
+        ? roles.get(step.researchWorker)
+        : undefined;
+      if (
+        !researcher || researcher.kind !== "worker" || researcher.department !== spec.department
+      ) {
+        throw fail(`${at}: "researchWorker" must be a worker role in "${spec.department}"`);
+      }
+    }
     const made: StepSpec = {
       name: spec.name,
       department: spec.department,
       worker: spec.worker,
       instructions: spec.instructions,
       artifact: spec.artifact,
+      ...(step.researchWorker ? { researchWorker: step.researchWorker as string } : {}),
       ...(step.publish ? { publish: step.publish as StepSpec["publish"] } : {}),
       ...(step.gate ? { gate: step.gate as StepSpec["gate"] } : {}),
       ...(step.findings ? { findings: step.findings as string } : {}),

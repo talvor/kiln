@@ -47,6 +47,20 @@ export const DEFAULT_ROLES: Record<string, unknown> = {
       "You are a ticket checker. You read a ticket and decide whether an engineer could implement it as written: it says what to build, it has acceptance criteria that can be checked, and nothing it depends on is missing. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
     tools: ["Read", "Glob", "Grep", "Write", "Bash"],
   },
+  wayfinder: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a wayfinder. You take one ticket and either chart it or resolve it. If it can be settled by reading the code and thinking, resolve it: write the answer. If it is bigger than that, chart it: write the route, the smaller pieces of work in order and what each depends on. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
+  researcher: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a researcher. You take one research ticket and answer its question from primary sources, the code and the documentation, citing where each fact came from. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
   implementer: {
     kind: "worker",
     department: "engineering",
@@ -134,6 +148,21 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
           'Break the spec in the request (the tracker item, or spec.md on the branch) into tickets, each one an engineer can pick up without asking questions. Write them to the artifact as JSON: {"criteria": {"c1": "<an acceptance criterion of the spec>", ...}, "tickets": [{"key": "a", "title": "...", "body": "what to build and acceptance criteria", "covers": ["c1"], "blockedBy": ["<key of a ticket that must be done first>"]}]}. Every acceptance criterion of the spec must be covered by at least one ticket, and the dependencies must not form a cycle. Kiln rejects a breakdown that does not, and opens the tickets in the tracker once it is verified.',
         artifact: "tickets.json",
         publish: "tickets",
+      },
+    ],
+  },
+  wayfind: {
+    description:
+      "Chart or resolve one ticket with a wayfinder. A research ticket (labelled research) goes to the Researcher instead.",
+    steps: [
+      {
+        name: "wayfind",
+        department: "engineering",
+        worker: "wayfinder",
+        researchWorker: "researcher",
+        instructions:
+          "Read the ticket in the request (the tracker item, if there is one) and chart or resolve it. Resolve it when reading the code settles it: write the answer. Otherwise chart it: write the route, the pieces of work in order and what each depends on. If you are the researcher, write what you found and where each fact came from. Do not change the code. Write it to the artifact.",
+        artifact: "wayfinding.md",
       },
     ],
   },

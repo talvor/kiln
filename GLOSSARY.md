@@ -107,3 +107,7 @@ _Avoid_: closing step, finalisation
 **Breakdown**:
 A spec split into tickets: each ticket says which of the spec's acceptance criteria it covers and which tickets it is blocked by. The Leader accepts it only when every criterion is covered and the dependencies have no cycle; once its tickets are in the tracker the Overseer approves it and tells the user afterwards.
 _Avoid_: plan, decomposition
+
+**Wayfinder**:
+The worker that takes one ticket in a Request and either charts it (the route: the pieces of work in order) or resolves it (the answer). There is one Wayfinder session per Request. A ticket labelled `research` goes to the **Researcher** instead, who answers its question from primary sources.
+_Avoid_: scout, navigator

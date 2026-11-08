@@ -161,3 +161,20 @@ export const ticketRef = (url: string): string => {
   const n = url.match(/\/(\d+)\/?$/)?.[1];
   return n ? `#${n}` : url;
 };
+
+/** Whether the ticket is labelled `research`; false when its labels cannot be read. */
+export async function isResearchTicket(clonePath: string, item: string): Promise<boolean> {
+  try {
+    const result = await run(
+      "gh",
+      ["issue", "view", item, "--json", "labels"],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+    if (result.code !== 0) return false;
+    const labels: { name?: unknown }[] = JSON.parse(result.stdout).labels ?? [];
+    return labels.some((l) => typeof l.name === "string" && l.name.toLowerCase() === "research");
+  } catch {
+    return false;
+  }
+}
