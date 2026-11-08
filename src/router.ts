@@ -1,6 +1,7 @@
 // The message router: sessions, Messages between them, and the rules that keep work from
 // falling on the floor. Messages are validated and routed on the way in, read tracked, and
 // when nobody picks one up Kiln Nudges the recipient, then gives up and dead-letters it.
+import { DEFAULT_LIMITS } from "./limits.ts";
 import type { Logger } from "./log.ts";
 import type { LaunchRequest, LaunchResult } from "./launcher.ts";
 import { confine, DEFAULT_TOOLS, judgeCall } from "./confinement.ts";
@@ -293,7 +294,7 @@ export function createRouter(opts: RouterOptions) {
 
   /** A launch failed for infrastructure reasons: retry later, or give up and report it. */
   async function launchFailed(session: SessionRecord, why: string): Promise<void> {
-    const policy = await opts.infrastructure?.() ?? { retries: 4, backoffSeconds: 30 };
+    const policy = await opts.infrastructure?.() ?? DEFAULT_LIMITS.infrastructure;
     const failures = session.launchFailures + 1;
     if (failures > policy.retries) {
       store.recordLaunchFailure(session.address, { stuck: true });
@@ -618,6 +619,11 @@ export function createRouter(opts: RouterOptions) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     store.setLaunching(session.address, true);
     try {
+      // A halt that landed while this launch was being set up found nothing in flight to stop.
+      if (opts.halted?.()) {
+        abortController.abort("halt");
+        throw new Error("Kiln is halted");
+      }
       const launched = await Promise.race([
         opts.launch({
           prompt: (rolePrompt ? `${rolePrompt}\n\n` : "") +
