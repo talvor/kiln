@@ -243,6 +243,36 @@ withWorld("news already told is not repeated in the next session", async (world)
   assert(!(await world.launcher.calls())[1].args[0].includes("has just opened the chat"));
 });
 
+withWorld("news after a crashed chat is told in the next session", async (world) => {
+  await openTeam(world);
+  await world.launcher.script([{ session: [{ wait: 4_000 }] }]);
+  const chatting = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", MAIN, "chat"],
+    env: world.env,
+    clearEnv: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  chatting.kill("SIGKILL");
+  await chatting.output();
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  try {
+    db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
+      .run();
+  } finally {
+    db.close();
+  }
+
+  await chat(world, [{}]);
+  assertStringIncludes(
+    (await claudeArg(world, 1, "--append-system-prompt"))!,
+    "Request 7 finished.",
+  );
+  assertStringIncludes((await world.launcher.calls())[1].args[0], "has just opened the chat");
+});
+
 withWorld("the chat is kept in the store and seeds the next session", async (world) => {
   await chat(world, [{
     session: [
@@ -272,7 +302,7 @@ withWorld(
           said: "Noted: the blue door.",
           tokens: 5000,
         }, {
-          wait: 30_000,
+          wait: 4_000,
         }],
       },
       { session: [{ statusLine: true }] },

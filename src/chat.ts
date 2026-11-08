@@ -232,10 +232,13 @@ export function createChat(opts: ChatOptions) {
       const config = await opts.loadConfig();
       const previous = store.latestChat();
       // A session that never said goodbye (a crash) is over.
-      if (previous && previous.endedAt === null) store.endChat(previous.id, "exit");
-      const since = previous
+      const crashed = !!previous && previous.endedAt === null;
+      const since = crashed
+        ? previous.eventsThrough
+        : previous
         ? store.getChat(previous.id).eventsThrough
         : (store.listEvents(0).at(-1)?.id ?? 0);
+      if (crashed) store.endChat(previous.id, "exit");
       const role = overseerRole(config);
       if (!overseer()) {
         router.openSession({
