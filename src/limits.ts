@@ -2,6 +2,7 @@
 //   {
 //     "defaults":    { "turns": 50, "spendUsd": 1, "seconds": 1800, "idleSeconds": 600 },
 //     "concurrency": { "global": 4, "perProject": 2 },
+//     "infrastructure": { "retries": 4, "backoffSeconds": 30 },
 //     "projects":    { "<name>": { "ceiling": { "turns": 80, "spendUsd": 2, "seconds": 3600 },
 //                                  "maxActive": 3 } }
 //   }
@@ -31,6 +32,8 @@ export interface LimitsConfig {
   /** Assignments active at once in one Project, unless the Project says otherwise. */
   perProject: number;
   projects: Map<string, { ceiling: Ceiling; maxActive?: number }>;
+  /** How Kiln retries waking an agent whose launch fails for reasons outside the work. */
+  infrastructure: { retries: number; backoffSeconds: number };
 }
 
 export const DEFAULT_LIMITS: LimitsConfig = {
@@ -38,6 +41,7 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   global: 4,
   perProject: 2,
   projects: new Map(),
+  infrastructure: { retries: 4, backoffSeconds: 30 },
 };
 
 /** The Budget fields a leader may ask for in an assignment, by the field's name there. */
@@ -79,9 +83,13 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
     }
     return v;
   };
-  only("the file", raw, ["defaults", "concurrency", "projects"]);
+  only("the file", raw, ["defaults", "concurrency", "infrastructure", "projects"]);
 
-  const limits: LimitsConfig = { ...DEFAULT_LIMITS, defaults: { ...DEFAULT_LIMITS.defaults } };
+  const limits: LimitsConfig = {
+    ...DEFAULT_LIMITS,
+    defaults: { ...DEFAULT_LIMITS.defaults },
+    infrastructure: { ...DEFAULT_LIMITS.infrastructure },
+  };
   if (raw.defaults !== undefined) {
     const d = only('"defaults"', raw.defaults, ["turns", "spendUsd", "seconds", "idleSeconds"]);
     for (const key of Object.keys(d) as (keyof Budget)[]) {
@@ -93,6 +101,18 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
     if (c.global !== undefined) limits.global = number('"concurrency.global"', c.global, true);
     if (c.perProject !== undefined) {
       limits.perProject = number('"concurrency.perProject"', c.perProject, true);
+    }
+  }
+  if (raw.infrastructure !== undefined) {
+    const i = only('"infrastructure"', raw.infrastructure, ["retries", "backoffSeconds"]);
+    if (i.retries !== undefined) {
+      limits.infrastructure.retries = number('"infrastructure.retries"', i.retries, true);
+    }
+    if (i.backoffSeconds !== undefined) {
+      limits.infrastructure.backoffSeconds = number(
+        '"infrastructure.backoffSeconds"',
+        i.backoffSeconds,
+      );
     }
   }
   if (raw.projects !== undefined) {

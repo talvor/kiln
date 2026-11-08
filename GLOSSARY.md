@@ -111,3 +111,19 @@ _Avoid_: plan, decomposition
 **Wayfinder**:
 The worker that takes one ticket in a Request and either charts it (the route: the pieces of work in order) or resolves it (the answer). There is one Wayfinder session per Request. A ticket labelled `research` goes to the **Researcher** instead, who answers its question from primary sources.
 _Avoid_: scout, navigator
+
+**Halt**:
+The user's model-free stop of all work (`kiln halt`): agents are stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
+_Avoid_: pause, freeze
+
+**Interruption**:
+A crash of Kiln under an agent's launch. The work is resumed once; interrupted a second time it fails.
+_Avoid_: restart failure
+
+**Stuck**:
+An agent Kiln stopped waking because its launches kept failing for infrastructure reasons past the retry budget (with backoff), or because its work was interrupted twice. The Overseer is told.
+_Avoid_: dead, hung
+
+**Cancel**:
+Ending a Request at the user's word (`kiln request cancel`). Its workers stop and it fails; its branches and worktrees are kept.
+_Avoid_: abort, delete

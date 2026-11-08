@@ -55,6 +55,10 @@ export interface DaemonStatus {
   startedAt: string;
   paths: KilnPaths;
   store: ReturnType<Store["info"]>;
+  /** The startup steps that have run, in order. */
+  startup: string[];
+  /** When Kiln was halted, if it is. */
+  haltedSince: string | null;
 }
 
 /** Run the daemon in this process until it is told to stop. */
@@ -87,13 +91,17 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   }
 
   const startedAt = new Date().toISOString();
+  const started: string[] = ["store"]; // opened and migrated above, before anything else
   const status = (): DaemonStatus => ({
     pid: Deno.pid,
     version: VERSION,
     startedAt,
     paths,
     store: store.info(),
+    startup: [...started],
+    haltedSince: store.haltedSince(),
   });
+  const halted = () => store.haltedSince() !== null;
 
   const projectQueues = new Map<string, Promise<void>>();
   const projectReplies = new Set<Promise<void>>();
@@ -119,6 +127,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       session.role === "overseer"
         ? [paths.chat, ...store.listProjects().map((p) => p.clonePath)]
         : undefined,
+    halted,
+    infrastructure: async () => (await loadConfig(paths.config)).limits.infrastructure,
     launchLimits: (session) => conductor.launchLimits(session),
     observe: (session, used) => conductor.observe(session, used),
     activity: (session) => conductor.activity(session),
@@ -171,6 +181,17 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     loadConfig: () => loadConfig(paths.config),
     chatDir: paths.chat,
     decide: (params) => decideEscalation(params),
+    control: {
+      halt: () =>
+        (handlers["kiln.halt"]({}, {}) as { changed: boolean }).changed
+          ? "Kiln is halted: running agents were stopped and nobody will be woken. " +
+            "Type `kiln resume` to carry on."
+          : "Kiln is already halted.",
+      resume: () => {
+        const r = handlers["kiln.resume"]({}, {}) as { wasHalted: boolean; stuck: number };
+        return r.wasHalted || r.stuck ? "Kiln is resumed." : "Kiln is not halted.";
+      },
+    },
   });
   /** The Overseer's own tools: the caller must be the overseer. */
   const asOverseer = (params: Record<string, unknown>): void => {
@@ -186,44 +207,50 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     loadConfig: () => loadConfig(paths.config),
     worktreesDir: paths.worktrees,
     withProject: withProjectQueue,
+    halted,
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated. The conductor reacts
   // on its own clock, so a worker that takes long to wake does not hold up the other Assignments,
-  // and the limit watch runs apart from both, so a hung worker cannot hide from it.
+  // and the limit watch runs apart from both, so a hung worker cannot hide from it. The clocks are
+  // the last thing to start (see the startup steps below).
   let pass: Promise<void> | undefined;
   const deliver = (): Promise<void> => pass ??= router.tick().finally(() => pass = undefined);
-  const ticker = setInterval(
-    () => {
-      deliver().catch((err) => log.error("delivery pass failed", { err }));
-      conductor.react().catch((err) => log.error("conductor pass failed", { err }));
-      try {
-        pages.sync();
-      } catch (err) {
-        log.error("page pass failed", { err });
-      }
-    },
-    2_000,
-  );
-  const watcher = setInterval(() => {
-    try {
-      conductor.watch();
-    } catch (err) {
-      log.error("limit watch failed", { err });
-    }
-  }, 500);
-
+  const clocks: ReturnType<typeof setInterval>[] = [];
   // Pull requests waiting to be merged are looked at on their own, slower clock: one `gh pr view`
   // each, no model involved. A look that is still running is not started again.
   const prSeconds = Number(Deno.env.get("KILN_PR_POLL_SECONDS"));
   let polling: Promise<void> | undefined;
-  const prWatcher = setInterval(
-    () => {
-      polling ??= conductor.pollPrs()
-        .catch((err) => log.error("pull request poll failed", { err }))
-        .finally(() => polling = undefined);
-    },
-    (prSeconds > 0 ? prSeconds : 60) * 1000,
-  );
+  const startClocks = () => {
+    clocks.push(
+      setInterval(
+        () => {
+          deliver().catch((err) => log.error("delivery pass failed", { err }));
+          conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+          try {
+            pages.sync();
+          } catch (err) {
+            log.error("page pass failed", { err });
+          }
+        },
+        2_000,
+      ),
+      setInterval(() => {
+        try {
+          conductor.watch();
+        } catch (err) {
+          log.error("limit watch failed", { err });
+        }
+      }, 500),
+      setInterval(
+        () => {
+          polling ??= conductor.pollPrs()
+            .catch((err) => log.error("pull request poll failed", { err }))
+            .finally(() => polling = undefined);
+        },
+        (prSeconds > 0 ? prSeconds : 60) * 1000,
+      ),
+    );
+  };
 
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
@@ -231,9 +258,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     if (stopping) return;
     stopping = true;
     log.info("daemon stopping", { reason });
-    clearInterval(ticker);
-    clearInterval(watcher);
-    clearInterval(prWatcher);
+    for (const clock of clocks) clearInterval(clock);
     await polling;
     await pass?.catch(() => {});
     await conductor.idle();
@@ -312,8 +337,34 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "kiln.halt": () => {
+      if (halted()) return { changed: false, since: store.haltedSince() };
+      store.setHalted(true);
+      store.appendEvent("kiln.halted");
+      log.warn("Kiln halted");
+      router.abortAll("halt");
+      return { changed: true, since: store.haltedSince() };
+    },
+    "kiln.resume": () => {
+      const since = store.haltedSince();
+      if (since) {
+        store.delayActiveAssignments(Date.now() - Date.parse(since));
+        store.setHalted(false);
+      }
+      const stuck = router.clearStuck();
+      if (since || stuck) {
+        store.appendEvent("kiln.resumed", { wasHalted: !!since, stuck });
+        log.info("Kiln resumed", { wasHalted: !!since, stuck });
+        deliver().catch((err) => log.error("delivery pass failed", { err }));
+        conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+      }
+      return { wasHalted: !!since, stuck };
+    },
+    "requests.cancel": (params) => conductor.cancel(Number(params.id)),
     "requests.start": (params) =>
-      params.playbook === undefined
+      halted()
+        ? Promise.reject(new Error("Kiln is halted: it takes no new requests until `kiln resume`."))
+        : params.playbook === undefined
         ? withProjectQueue(
           String(params.project),
           () => startRequest(store, store.getProject(String(params.project)), paths.worktrees),
@@ -452,12 +503,46 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   };
 
   store.appendEvent("daemon.started", { pid: Deno.pid, version: VERSION });
-  conductor.react().catch((err) => log.error("startup pass failed", { err }));
-  try {
-    pages.sync({ rewrite: true });
-  } catch (err) {
-    log.error("startup page pass failed", { err });
-  }
+  await runStartup(
+    [
+      // Whether Kiln was halted comes first: while it is, nothing below wakes anyone.
+      ["halt", () => {
+        const since = store.haltedSince();
+        if (since) log.warn("Kiln is halted; run `kiln resume` to carry on", { since });
+      }],
+      // Launches the crash cut short: resume their work once, or fail it the second time.
+      ["interrupted-launches", () => {
+        const recovered = router.recoverInterrupted();
+        if (recovered.resumed || recovered.failed) {
+          store.appendEvent("startup.recovered", recovered);
+          log.warn("recovered launches a crash interrupted", recovered);
+        }
+      }],
+      // The checkouts active work stands on must still be there.
+      ["worktrees", async () => {
+        for (const a of store.listActiveAssignments()) {
+          if (a.worktreeId === null) continue;
+          const wt = store.getWorktree(a.worktreeId);
+          if (await Deno.stat(wt.path).then(() => true, () => false)) continue;
+          const worker = store.getMessage(a.id)!.to;
+          store.appendEvent("worktree.missing", { assignment: a.id, path: wt.path });
+          router.failAssignment(
+            a.id,
+            `The worktree ${wt.path} is gone, so the work in it is lost.`,
+          );
+          router.reportStuck(store.getSession(worker), `its worktree ${wt.path} is gone`);
+        }
+      }],
+      // What is due, now that the store is true to what is running.
+      ["conductor", () => {
+        conductor.react().catch((err) => log.error("startup pass failed", { err }));
+      }],
+      ["pages", () => pages.sync({ rewrite: true })],
+      ["clocks", startClocks],
+    ],
+    started,
+    log,
+  );
   log.info("daemon started", { pid: Deno.pid, version: VERSION, socket: paths.socket });
 
   while (!stopping) {
@@ -474,6 +559,22 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     serve(conn, handlers, log, projectReplies);
   }
   if (shutdownTask) await shutdownTask;
+}
+
+/** Run the startup steps in order. One that fails is logged, and the daemon starts regardless. */
+async function runStartup(
+  steps: [string, () => unknown][],
+  done: string[],
+  log: Logger,
+): Promise<void> {
+  for (const [name, step] of steps) {
+    try {
+      await step();
+    } catch (err) {
+      log.error(`startup step "${name}" failed`, { err });
+    }
+    done.push(name);
+  }
 }
 
 /** A Request with its Steps and their Assignments, as `kiln request status` shows it. */

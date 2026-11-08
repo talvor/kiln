@@ -73,6 +73,8 @@ export interface ConductorOptions {
   worktreesDir: string;
   /** Run Git work on a Project one piece at a time. */
   withProject: <T>(name: string, work: () => Promise<T>) => Promise<T>;
+  /** Kiln is halted: nothing moves on until it is resumed. */
+  halted?: () => boolean;
 }
 
 export interface StartPlaybookRequest {
@@ -889,6 +891,7 @@ export function createConductor(opts: ConductorOptions) {
    * `gh pr view` each, on a clock. A change of state is recorded and acted on by the next pass.
    */
   async function pollPrs() {
+    if (opts.halted?.()) return;
     let changed = false;
     for (const request of store.listRequests("active")) {
       if (!request.prUrl || request.prMergedAt || request.prBlockId !== null) continue;
@@ -1016,6 +1019,7 @@ export function createConductor(opts: ConductorOptions) {
 
   /** Stop the workers of Assignments over a limit. Runs on a clock, apart from `react`. */
   function watch() {
+    if (opts.halted?.()) return;
     for (const a of store.listActiveAssignments()) {
       const kind = limitOf(a);
       if (kind) reachLimit(a, kind);
@@ -1026,6 +1030,7 @@ export function createConductor(opts: ConductorOptions) {
   /** Do whatever is due for active Requests that follow a Playbook. Passes never overlap. */
   function react(): Promise<void> {
     const pass = queue.then(async () => {
+      if (opts.halted?.()) return;
       for (const request of store.listRequests("active")) {
         if (!request.playbook) continue;
         try {
@@ -1044,13 +1049,53 @@ export function createConductor(opts: ConductorOptions) {
     return pass;
   }
 
+  /** Whether the Message is work for a Request the user cancelled: nobody is woken for it. */
+  function forCancelled(m: MessageRecord): boolean {
+    return store.listRequests("failed").some((r) =>
+      r.cancelledAt !== null &&
+      store.listSteps(r.id).some((s) =>
+        s.messageId === m.id || (m.kind === "assignment" && s.worker === m.to)
+      )
+    );
+  }
+
+  /**
+   * Cancel a Request: its workers are stopped and it fails as the user's doing. Everything it made
+   * stays: its branches, its Worktrees and what was pushed.
+   */
+  async function cancel(id: number): Promise<void> {
+    await queue; // not in the middle of a pass over the Request
+    const request = store.getRequest(id);
+    if (request.status === "done" || request.status === "failed") {
+      throw new RequestRefused(
+        `Request ${id} has already ${request.status === "done" ? "finished" : "ended"}.`,
+      );
+    }
+    const why = "Cancelled by the user.";
+    const workers = new Set<string>();
+    for (const a of store.listAssignments(id).filter((a) => a.status === "active")) {
+      store.setAssignmentState(a.id, "failed");
+      workers.add(store.getMessage(a.id)!.to);
+    }
+    for (const step of store.listSteps(id).filter((s) => s.status === "active")) {
+      store.setStepState(step.id, "failed", why);
+      if (step.worker) workers.add(step.worker);
+    }
+    store.cancelRequest(id, why);
+    store.appendEvent("request.cancelled", { id });
+    log.info("request cancelled", { request: id });
+    for (const address of workers) router.abort(address);
+  }
+
   return {
     react,
     watch,
     pollPrs,
+    cancel,
     /** Whether an Assignment is still queued, so its worker is not to be woken. */
     holds: (m: MessageRecord): boolean => {
       if (m.kind !== "assignment") return false;
+      if (forCancelled(m)) return true;
       try {
         return store.getAssignment(m.id).status === "planned";
       } catch {
