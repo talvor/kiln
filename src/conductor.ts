@@ -37,9 +37,18 @@ import type {
   StepRecord,
   Store,
 } from "./store.ts";
-import { commentOnPr, openDraftPr, parseTicket, PublishFailed, publishTicket } from "./tracker.ts";
+import {
+  closeTicket,
+  commentOnPr,
+  openDraftPr,
+  parseTicket,
+  PublishFailed,
+  publishTicket,
+  pullRequestState,
+} from "./tracker.ts";
 import { verifyWork } from "./verify.ts";
 import {
+  cleanUpRequest,
   clearFromRequestBranch,
   mergeAssignment,
   MergeConflict,
@@ -538,9 +547,11 @@ export function createConductor(opts: ConductorOptions) {
       if (step.spec.gate === "qa-passed") {
         summary =
           `Request ${request.id} passed QA: pull request ${request.prUrl} is ready for you.`;
-        detail = `${request.description}\n\nPull request: ${request.prUrl}\n\n${await qaSummary(
-          request,
-        )}`;
+        detail = `${request.description}\n\nPull request: ${request.prUrl}\n\n` +
+          `Kiln does not merge. Merge the pull request when you are happy with it and Kiln ` +
+          `carries on; approving it here while it is open asks you to confirm.\n\n${await qaSummary(
+            request,
+          )}`;
       } else {
         const wt = store.getWorktree(request.worktreeId!);
         const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
@@ -569,7 +580,8 @@ export function createConductor(opts: ConductorOptions) {
       });
       return false;
     }
-    if (gate.status === "open") return false;
+    // Merging the pull request is the user's go-ahead, whether or not they also said so here.
+    if (gate.status === "open") return step.spec.gate === "qa-passed" && !!request.prMergedAt;
     if (gate.status === "approved") return true;
     if (step.spec.gate === "qa-passed") {
       const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
@@ -728,23 +740,135 @@ export function createConductor(opts: ConductorOptions) {
         throw err;
       }
     }
+    if (step.spec.publish === "close-ticket") {
+      if (request.trackerItem) {
+        const requestWt = store.getWorktree(request.worktreeId!);
+        const note = await Deno.readTextFile(join(requestWt.path, step.spec.artifact)).catch(() =>
+          ""
+        );
+        try {
+          await closeTicket(project.clonePath, request.trackerItem, note.trim());
+          store.appendEvent("ticket.closed", { request: request.id, item: request.trackerItem });
+        } catch (err) {
+          if (err instanceof PublishFailed) throw new StepFailed(err.message);
+          throw err;
+        }
+      }
+    }
     if (!(await passGate(request, step, assignments))) return false;
     store.setStepState(step.id, "done");
     store.appendEvent("step.done", { request: request.id, step: step.id });
     return true;
   }
 
+  /**
+   * The pull request was closed without being merged: the Request is blocked on the user, who
+   * says it is open again (Kiln looks at it afresh) or declines. Returns whether the Request
+   * must wait. Nothing is removed while it does.
+   */
+  function watchPr(request: RequestRecord): boolean {
+    if (!request.prUrl || request.prMergedAt) return false;
+    if (request.prBlockId !== null) {
+      const block = store.getEscalation(request.prBlockId);
+      if (block.status === "open") return true;
+      store.setPrBlock(request.id, null);
+      if (block.status === "rejected") {
+        throw new StepFailed(
+          `The user declined to carry on after the pull request was closed: ${block.reason}`,
+        );
+      }
+      store.setPrState(request.id, null);
+      return false;
+    }
+    if (request.prState !== "CLOSED") return false;
+    const raised = store.addEscalation({
+      raisedBy: overseerSeat().address,
+      requestId: request.id,
+      gate: "blocked-on-user",
+      summary: `Request ${request.id} is blocked on you: its pull request was closed without ` +
+        `being merged.`,
+      detail: `Pull request: ${request.prUrl}\n\nThe request: ${request.description}\n\n` +
+        `Kiln has kept the branches and worktrees. Reopen the pull request and approve this to ` +
+        `have Kiln look at it again, or reject it (with a reason) to end the request.`,
+    });
+    store.setPrBlock(request.id, raised.id);
+    store.appendEvent("gate.raised", {
+      request: request.id,
+      gate: "blocked-on-user",
+      escalation: raised.id,
+    });
+    return true;
+  }
+
+  /** Remove what a merged Request left behind. A part that stays is logged, not a failure. */
+  async function cleanUp(request: RequestRecord) {
+    let problems: string[];
+    try {
+      const project = projectOf(request);
+      problems = await opts.withProject(
+        project.name,
+        () => cleanUpRequest(store, project, request.id),
+      );
+    } catch (err) {
+      problems = [(err as Error).message];
+    }
+    if (problems.length) {
+      log.warn("could not clean up after a request", { request: request.id, problems });
+    }
+    store.appendEvent(problems.length ? "request.cleanup_incomplete" : "request.cleaned_up", {
+      request: request.id,
+      problems,
+    });
+  }
+
+  /** Whether the user has been told the pull request passed QA, and not turned it down. */
+  function awaitsMerge(request: RequestRecord): boolean {
+    const told = store.listEscalations().filter((e) =>
+      e.requestId === request.id && e.gate === "qa-passed"
+    ).at(-1);
+    return !!told && told.status !== "rejected";
+  }
+
+  /**
+   * Look at the pull requests of Requests that wait for the user to merge them. Model-free: one
+   * `gh pr view` each, on a clock. A change of state is recorded and acted on by the next pass.
+   */
+  async function pollPrs() {
+    let changed = false;
+    for (const request of store.listRequests("active")) {
+      if (!request.prUrl || request.prMergedAt || request.prBlockId !== null) continue;
+      if (!awaitsMerge(request)) continue;
+      let project: ProjectRecord;
+      try {
+        project = projectOf(request);
+      } catch {
+        continue;
+      }
+      const state = await pullRequestState(project.clonePath, request.prUrl);
+      if (!state || state === request.prState) continue;
+      store.setPrState(request.id, state);
+      store.appendEvent("pr.state", { request: request.id, url: request.prUrl, state });
+      changed = true;
+    }
+    if (changed) await react();
+  }
+
   async function advance(request: RequestRecord) {
     for (let guard = 0; guard < 100; guard++) {
+      request = store.getRequest(request.id);
       const steps = store.listSteps(request.id);
       const step = steps.find((s) => s.status === "planned" || s.status === "active");
       if (!step) {
+        if (request.prMergedAt) await cleanUp(request);
         store.setRequestState(request.id, "done");
         store.appendEvent("request.done", { id: request.id });
         return;
       }
       try {
+        if (watchPr(request)) return;
         if (step.status === "planned") {
+          // A step that follows the merge begins once the user has merged the pull request.
+          if (step.spec.after === "merge" && !request.prMergedAt) return;
           await activate(request, step, steps);
           continue;
         }
@@ -845,6 +969,7 @@ export function createConductor(opts: ConductorOptions) {
   return {
     react,
     watch,
+    pollPrs,
     /** Whether an Assignment is still queued, so its worker is not to be woken. */
     holds: (m: MessageRecord): boolean => {
       if (m.kind !== "assignment") return false;

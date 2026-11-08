@@ -41,6 +41,8 @@ export interface World extends Home {
     script(replies: ApiReply[]): Promise<void>;
     /** The tickets Kiln published, in order. */
     issues(): Promise<{ title: string; body: string; cwd?: string }[]>;
+    /** The tickets Kiln closed, in order: the tracker item and the closing comment. */
+    closed(): Promise<{ item: string; comment: string }[]>;
   };
   /** The fake `lavish-axi`, which Kiln opens Escalation pages with. */
   lavish: {
@@ -99,6 +101,8 @@ export async function makeWorld(): Promise<World> {
     ...base.env,
     PATH: `${bin}:${base.env.PATH}`,
     KILN_FAKE_DIR: fakeDir,
+    // Look at pull requests every second rather than every minute.
+    KILN_PR_POLL_SECONDS: "1",
     // Hermetic git: no user config (signing, hooks), fixed identity.
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_SYSTEM: "/dev/null",
@@ -198,6 +202,11 @@ export async function makeWorld(): Promise<World> {
           const flag = (name: string) => call.args[call.args.indexOf(name) + 1];
           return { title: flag("--title"), body: flag("--body"), cwd: call.cwd };
         }),
+      closed: async () =>
+        (await calls("issue-close")).map((call) => ({
+          item: call.args[2],
+          comment: call.args[call.args.indexOf("--comment") + 1],
+        })),
     },
     pullRequests: {
       script: (replies) => script("pr-create", "replies", replies),

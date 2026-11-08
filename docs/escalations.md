@@ -7,7 +7,7 @@ cannot raise one: they ask their superior a question.
 
 ```
 kiln escalations [--all] [--json]       # what waits for you; --all adds the decided ones
-kiln approve <escalation-id>
+kiln approve <escalation-id> [--confirm]
 kiln reject <escalation-id> --reason <text>
 ```
 

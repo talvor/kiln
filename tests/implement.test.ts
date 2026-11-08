@@ -2,7 +2,7 @@
 // user passes with `kiln escalations|approve|reject`, the agents' tool servers (the test plays the
 // leader and the workers), the fake remote and the fake launcher and `gh`.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, waitFor } from "./router_helpers.ts";
 
@@ -139,6 +139,55 @@ async function implement(world: World) {
 const show = (world: World, file: string) =>
   world.exec(world.remote.path, "git", "show", `kiln/request-1:${file}`);
 
+const OPEN = { state: "OPEN", checks: "SUCCESS" } as const;
+const MERGED = { state: "MERGED", checks: "SUCCESS" } as const;
+const CLOSED = { state: "CLOSED", checks: "SUCCESS" } as const;
+const SHIPPED = "Shipped the CSV export in pull request 7.\n";
+
+/** The wrap-up step: the leader hands it to the closer, who writes up what shipped. */
+async function wrapUp(world: World) {
+  const wrap = await nextForLeader(world);
+  assertStringIncludes(String(wrap.body.instructions), "closer-5");
+  await deliver(world, {
+    worker: "closer-5",
+    stepMessage: wrap.id,
+    files: { "wrap-up.md": SHIPPED },
+  });
+}
+
+/** Run the QA steps; return the Gate the Overseer raised for the user. */
+async function passQa(world: World): Promise<Escalation> {
+  const review = await implement(world);
+  await deliver(world, {
+    worker: "reviewer-3",
+    stepMessage: review.id,
+    files: { "review.md": "No defects found.\n" },
+  });
+  const gatekeep = await nextForLeader(world);
+  await deliver(world, {
+    worker: "gatekeeper-4",
+    stepMessage: gatekeep.id,
+    files: { "gatekeeper.md": "All acceptance criteria met.\n" },
+  });
+  return (await waitFor(() => escalations(world), (e) => e.length > 0))[0];
+}
+
+/** Kiln's own clone of the Project, found through the request's worktree (while it exists). */
+async function kilnClone(world: World) {
+  const assignment = (await statusOf(world)).steps[0].assignments[0];
+  const requestWorktree = join(dirname(assignment.worktree), "request-1");
+  const common = await world.git(
+    requestWorktree,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  );
+  return { requestWorktree, gitDir: common.stdout.trim() };
+}
+const branchesOf = async (world: World, gitDir: string) =>
+  (await world.git(world.root, "--git-dir", gitDir, "branch", "--format=%(refname:short)"))
+    .stdout.split("\n").filter(Boolean);
+
 withWorld(
   "a ticket goes through readiness, a draft PR, review and the gatekeeper, and only then the user hears",
   async (world) => {
@@ -187,10 +236,15 @@ withWorld(
     assertStringIncludes(told.detail!, "No defects found.");
     assertEquals((await statusOf(world)).status, "active");
 
-    assertEquals((await world.kiln("approve", String(told.id))).code, 0);
+    // Kiln never merges. The user merges the pull request, and that is the go-ahead.
+    await world.prStatus.script([OPEN, MERGED]);
+    await wrapUp(world);
     const done = await waitFor(() => statusOf(world), (s) => s.status === "done");
-    assertEquals(done.steps.map((s) => s.status), ["done", "done", "done", "done"]);
+    assertEquals(done.steps.map((s) => s.status), ["done", "done", "done", "done", "done"]);
     assertEquals((await world.pullRequests.created()).length, 1);
+    assertEquals(await world.tracker.closed(), [{ item: "#18", comment: SHIPPED.trim() }]);
+    // The Gate was never decided by anyone, and is now moot.
+    assertEquals(await escalations(world), []);
   },
 );
 
@@ -216,7 +270,13 @@ withWorld("a ticket that is not ready blocks the request on the user", async (wo
   assertEquals(declined.code, 0, declined.stderr);
   const status = await waitFor(() => statusOf(world), (s) => s.status === "failed");
   assertStringIncludes(status.failure!, "Drop this ticket");
-  assertEquals(status.steps.map((s) => s.status), ["failed", "planned", "planned", "planned"]);
+  assertEquals(status.steps.map((s) => s.status), [
+    "failed",
+    "planned",
+    "planned",
+    "planned",
+    "planned",
+  ]);
   assertEquals(await world.pullRequests.created(), []);
 });
 
@@ -264,7 +324,13 @@ withWorld("review findings return as a new assignment that updates the same PR",
   assertStringIncludes(String(fix.body.instructions), "implementer-2-retry-1");
   assertEquals(await escalations(world), []);
   let status = await statusOf(world);
-  assertEquals(status.steps.map((s) => s.status), ["done", "active", "planned", "planned"]);
+  assertEquals(status.steps.map((s) => s.status), [
+    "done",
+    "active",
+    "planned",
+    "planned",
+    "planned",
+  ]);
 
   await deliver(world, {
     worker: "implementer-2-retry-1",
@@ -298,9 +364,10 @@ withWorld("review findings return as a new assignment that updates the same PR",
   const comments = await world.pullRequests.comments();
   assertEquals(comments.length, 1);
   assertStringIncludes(comments[0].body, "Quoting fixed.");
-  await world.kiln("approve", String(told.id));
+  await world.prStatus.script([MERGED]);
+  await wrapUp(world);
   status = await waitFor(() => statusOf(world), (s) => s.status === "done");
-  assertEquals(status.steps.map((s) => s.status), ["done", "done", "done", "done"]);
+  assertEquals(status.steps.map((s) => s.status), ["done", "done", "done", "done", "done"]);
 });
 
 withWorld(
@@ -368,7 +435,9 @@ withWorld(
     assertEquals(all.map((e) => e.status), ["rejected", "open"]);
     assertEquals((await world.pullRequests.created()).length, 1);
     assertEquals((await world.pullRequests.comments()).length, 2);
-    await world.kiln("approve", String(all[1].id));
+    assertEquals((await world.kiln("approve", String(all[1].id), "--confirm")).code, 0);
+    await world.prStatus.script([MERGED]);
+    await wrapUp(world);
     const status = await waitFor(() => statusOf(world), (s) => s.status === "done");
     assert(status.prUrl);
   },
@@ -415,8 +484,112 @@ withWorld(
       "done",
       "active",
       "planned",
+      "planned",
     ]);
     assertEquals(await escalations(world), []);
     assertEquals(await world.pullRequests.comments(), []);
   },
 );
+
+withWorld("approving while the pull request is open asks to confirm first", async (world) => {
+  await startTicket(world);
+  const told = await passQa(world);
+  await world.prStatus.script([OPEN]);
+
+  const asked = await world.kiln("approve", String(told.id));
+  assertEquals(asked.code, 1);
+  assertStringIncludes(asked.stderr, "still open");
+  assertStringIncludes(asked.stderr, "--confirm");
+  assertEquals((await escalations(world)).map((e) => e.status), ["open"]);
+
+  // Confirmed, the approval stands, but Kiln still waits for the merge and keeps the branches.
+  const approved = await world.kiln("approve", String(told.id), "--confirm");
+  assertEquals(approved.code, 0, approved.stderr);
+  const waiting = await waitFor(() => statusOf(world), (s) => s.steps[3].status === "done");
+  assertEquals(waiting.status, "active");
+  assertEquals(waiting.steps.map((s) => s.status), ["done", "done", "done", "done", "planned"]);
+  assert((await world.remote.branches()).includes("kiln/request-1"));
+  assertEquals(await world.tracker.closed(), []);
+
+  await world.prStatus.script([MERGED]);
+  await wrapUp(world);
+  await waitFor(() => statusOf(world), (s) => s.status === "done");
+});
+
+withWorld(
+  "a merged pull request is wrapped up, then everything it left behind is cleaned up",
+  async (world) => {
+    await startTicket(world);
+    await passQa(world);
+    const { requestWorktree, gitDir } = await kilnClone(world);
+    assert((await world.remote.branches()).includes("kiln/request-1"));
+    assert((await branchesOf(world, gitDir)).includes("kiln/request-1"));
+    await Deno.stat(requestWorktree);
+
+    await world.prStatus.script([MERGED]);
+    // Merged, the ticket is wrapped up before anything is removed.
+    const wrap = await nextForLeader(world);
+    assertStringIncludes(String(wrap.body.instructions), "closer-5");
+    assert((await world.remote.branches()).includes("kiln/request-1"));
+    await deliver(world, {
+      worker: "closer-5",
+      stepMessage: wrap.id,
+      files: { "wrap-up.md": SHIPPED },
+    });
+    await waitFor(() => statusOf(world), (s) => s.status === "done");
+
+    assertEquals((await world.remote.branches()).filter((b) => b.startsWith("kiln/")), []);
+    assertEquals((await branchesOf(world, gitDir)).filter((b) => b.startsWith("kiln/")), []);
+    await Deno.stat(requestWorktree).then(
+      () => assert(false, "the request's worktree is still there"),
+      (err) => assert(err instanceof Deno.errors.NotFound),
+    );
+    assertEquals((await world.tracker.closed()).length, 1);
+  },
+);
+
+withWorld(
+  "a closed pull request blocks the request on the user and keeps the branches",
+  async (world) => {
+    await startTicket(world);
+    await passQa(world);
+    const { gitDir } = await kilnClone(world);
+    await world.prStatus.script([CLOSED]);
+
+    const blocked = await waitFor(
+      () => escalations(world),
+      (e) => e.some((x) => x.summary.includes("closed")),
+    );
+    const gate = blocked.find((e) => e.summary.includes("closed"))!;
+    assertStringIncludes(gate.summary, "blocked on you");
+    assertStringIncludes(gate.detail!, PR_URL);
+    assertEquals((await statusOf(world)).status, "active");
+    assert((await world.remote.branches()).includes("kiln/request-1"));
+    assertEquals(await world.tracker.closed(), []);
+
+    const declined = await world.kiln("reject", String(gate.id), "--reason", "Dropping this work");
+    assertEquals(declined.code, 0, declined.stderr);
+    const failed = await waitFor(() => statusOf(world), (s) => s.status === "failed");
+    assertStringIncludes(failed.failure!, "Dropping this work");
+    assert((await world.remote.branches()).includes("kiln/request-1"));
+    assert((await branchesOf(world, gitDir)).includes("kiln/request-1"));
+    assertEquals(await world.tracker.closed(), []);
+  },
+);
+
+withWorld("a pull request the user reopens is watched again until it merges", async (world) => {
+  await startTicket(world);
+  await passQa(world);
+  await world.prStatus.script([CLOSED]);
+  const gate = (await waitFor(
+    () => escalations(world),
+    (e) => e.some((x) => x.summary.includes("closed")),
+  )).find((e) => e.summary.includes("closed"))!;
+
+  // "Approve" says the pull request is open again; Kiln looks at it again.
+  await world.prStatus.script([OPEN, MERGED]);
+  assertEquals((await world.kiln("approve", String(gate.id))).code, 0);
+  await wrapUp(world);
+  await waitFor(() => statusOf(world), (s) => s.status === "done");
+  assertEquals((await world.tracker.closed()).length, 1);
+});

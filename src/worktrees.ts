@@ -322,3 +322,70 @@ export async function mergeAssignment(
   store.releaseWorktree(assignmentWt.id);
   return result;
 }
+
+/**
+ * Clean up after a Request whose pull request was merged: every Worktree it still holds, its
+ * local branches and the request branch on the remote. Returns what could not be removed; a
+ * failure leaves that part behind rather than failing a Request that has shipped.
+ */
+export async function cleanUpRequest(
+  store: Store,
+  project: ProjectRecord,
+  requestId: number,
+): Promise<string[]> {
+  const request = store.getRequest(requestId);
+  const problems: string[] = [];
+  const attempt = async (what: string, work: () => Promise<{ code: number; stderr: string }>) => {
+    try {
+      const done = await work();
+      if (done.code !== 0) problems.push(`${what}: ${firstLine(done.stderr)}`);
+    } catch (err) {
+      problems.push(`${what}: ${(err as Error).message}`);
+    }
+  };
+  const assignments = store.listAssignments(requestId);
+  const worktreeIds = [...assignments.map((a) => a.worktreeId), request.worktreeId];
+  for (const id of worktreeIds) {
+    if (id === null) continue;
+    const wt = store.getWorktree(id);
+    if (wt.releasedAt) continue;
+    if (await exists(wt.path)) {
+      await attempt(
+        `remove worktree ${wt.path}`,
+        () => git(project.clonePath, "worktree", "remove", "--force", wt.path),
+      );
+    }
+    if (!(await exists(wt.path))) {
+      await removeIfPresent(`${wt.path}.kiln`);
+      store.releaseWorktree(wt.id);
+    }
+  }
+  await attempt("prune worktrees", () => git(project.clonePath, "worktree", "prune"));
+  const branches = [...assignments.map((a) => a.branch), request.branch];
+  for (const branch of branches) {
+    if (!branch) continue;
+    const known = await git(project.clonePath, "rev-parse", "--verify", "--quiet", branch);
+    if (known.code !== 0) continue;
+    await attempt(`delete branch ${branch}`, () => git(project.clonePath, "branch", "-D", branch));
+  }
+  if (request.branch) {
+    const gone = async () => {
+      const listed = await git(
+        project.clonePath,
+        "ls-remote",
+        "--heads",
+        "origin",
+        request.branch!,
+      );
+      return listed.code === 0 && !listed.stdout.trim();
+    };
+    // The forge may have deleted the branch when the pull request merged.
+    if (!(await gone())) {
+      await attempt(
+        `delete ${request.branch} on the remote`,
+        () => git(project.clonePath, "push", "origin", "--delete", request.branch!),
+      );
+    }
+  }
+  return problems;
+}

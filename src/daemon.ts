@@ -212,6 +212,19 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }
   }, 500);
 
+  // Pull requests waiting to be merged are looked at on their own, slower clock: one `gh pr view`
+  // each, no model involved. A look that is still running is not started again.
+  const prSeconds = Number(Deno.env.get("KILN_PR_POLL_SECONDS"));
+  let polling: Promise<void> | undefined;
+  const prWatcher = setInterval(
+    () => {
+      polling ??= conductor.pollPrs()
+        .catch((err) => log.error("pull request poll failed", { err }))
+        .finally(() => polling = undefined);
+    },
+    (prSeconds > 0 ? prSeconds : 60) * 1000,
+  );
+
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   const shutdown = async (reason: string) => {
@@ -220,6 +233,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log.info("daemon stopping", { reason });
     clearInterval(ticker);
     clearInterval(watcher);
+    clearInterval(prWatcher);
+    await polling;
     await pass?.catch(() => {});
     await conductor.idle();
     while (projectQueues.size || projectReplies.size) {
@@ -370,6 +385,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         approved: params.approved === true,
         reason: params.reason,
         agent: params.agent,
+        confirm: params.confirm,
       }),
     "overseer.projects": (params) => {
       asOverseer(params);

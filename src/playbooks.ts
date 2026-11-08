@@ -11,7 +11,7 @@ import { DEFAULT_PLAYBOOKS, DEFAULT_ROLES } from "./defaults.ts";
 import type { Role, StepSpec } from "./store.ts";
 
 const NAME = /^[a-z][a-z0-9-]*$/;
-const PUBLISH = ["ticket", "draft-pr", "qa-summary"];
+const PUBLISH = ["ticket", "draft-pr", "qa-summary", "close-ticket"];
 const GATES = ["spec-approval", "qa-passed"];
 
 export interface RoleConfig {
@@ -101,6 +101,9 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
     if (step.gate !== undefined && !GATES.includes(step.gate as string)) {
       throw fail(`${at}: "gate" can only be ${GATES.map((g) => `"${g}"`).join(" or ")}`);
     }
+    if (step.after !== undefined && step.after !== "merge") {
+      throw fail(`${at}: "after" can only be "merge"`);
+    }
     if (step.findings !== undefined) {
       const earlier = parsedSoFar.find((s) => s.name === step.findings);
       if (!earlier) throw fail(`${at}: "findings" must name an earlier step`);
@@ -127,6 +130,7 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
       ...(step.publish ? { publish: step.publish as StepSpec["publish"] } : {}),
       ...(step.gate ? { gate: step.gate as StepSpec["gate"] } : {}),
       ...(step.findings ? { findings: step.findings as string } : {}),
+      ...(step.after ? { after: step.after as StepSpec["after"] } : {}),
     };
     parsedSoFar.push(made);
     return made;

@@ -37,7 +37,7 @@ const SESSION_USAGE =
   "Usage: kiln session open <address> --role overseer|leader|worker [--department <name>] [--cwd <dir>]";
 const ESCALATION_USAGE = `Usage:
   kiln escalations [--all] [--json]
-  kiln approve <escalation-id>
+  kiln approve <escalation-id> [--confirm]
   kiln reject <escalation-id> --reason <text>`;
 const USAGE = `kiln ${VERSION}
 
@@ -61,7 +61,7 @@ Usage:
                          Merge a verified assignment into its request branch and push it
   kiln escalations [--all] [--json]
                          Show the decisions waiting for you (--all: decided ones too)
-  kiln approve <escalation-id>
+  kiln approve <escalation-id> [--confirm]
                          Approve an escalation; only you can
   kiln reject <escalation-id> --reason <text>
                          Reject an escalation, saying why
@@ -281,13 +281,14 @@ async function main(args: string[]): Promise<number> {
         console.error("Say why with --reason <text>: a rejection needs a reason.");
         return 2;
       }
-    } else if (flags.length) return usage();
+    } else if (flags.length > 1 || (flags.length && flags[0] !== "--confirm")) return usage();
     await ensureDaemon(paths);
     try {
       const e = await call<EscalationView>(paths, "escalations.decide", {
         id: Number(target),
         approved: verb === "approve",
         reason,
+        confirm: flags[0] === "--confirm",
         // Set for anything an agent runs, so that the daemon can tell it from the user.
         agent: Deno.env.get("KILN_AGENT"),
       });

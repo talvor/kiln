@@ -96,3 +96,46 @@ export async function commentOnPr(clonePath: string, prUrl: string, body: string
     );
   }
 }
+
+/** Close a ticket in the Project's tracker with a closing comment. */
+export async function closeTicket(clonePath: string, item: string, comment: string): Promise<void> {
+  let result;
+  try {
+    result = await run(
+      "gh",
+      ["issue", "close", item, "--comment", comment],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+  } catch {
+    throw new PublishFailed("Could not close the ticket: the gh command is not available.");
+  }
+  if (result.code !== 0) {
+    throw new PublishFailed(
+      `Could not close the ticket: ${firstLine(result.stderr || result.stdout)}`,
+    );
+  }
+}
+
+/**
+ * The state a pull request is in, as the forge reports it; null when it cannot be told (gh
+ * failed, or said something unexpected), so the caller just looks again later.
+ */
+export async function pullRequestState(
+  clonePath: string,
+  prUrl: string,
+): Promise<"OPEN" | "MERGED" | "CLOSED" | null> {
+  try {
+    const result = await run(
+      "gh",
+      ["pr", "view", prUrl, "--json", "state"],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+    if (result.code !== 0) return null;
+    const state = JSON.parse(result.stdout).state;
+    return state === "OPEN" || state === "MERGED" || state === "CLOSED" ? state : null;
+  } catch {
+    return null;
+  }
+}
