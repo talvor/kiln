@@ -4,7 +4,7 @@ A **Playbook** is the ordered list of department **Steps** Kiln follows for one 
 Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets`, `wayfind` and `implement-a-ticket`.
 
 ```
-kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>]
+kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]
 kiln request status <request-id> [--json]
 ```
 
@@ -187,7 +187,16 @@ passed QA and is waiting, with no model involved.
   Kiln asks the user to confirm: it refuses until the command is repeated with `--confirm`.
   Confirmed, the Gate is approved and Kiln keeps the branches and waits for the merge.
 
+## Diagnosing and fixing
+
+`kiln request start <project> --playbook diagnose-a-bug --description "..." --and-fix` chains
+"and fix it" onto a diagnosis. Once the diagnosis Request is done and its fix ticket is published,
+Kiln starts a second Request on the same Project that follows `implement-a-ticket` with the
+published ticket as its tracker item (`kiln request status` on the diagnosis shows `Fix request:`).
+The fix Request is an ordinary one: it goes through QA and waits for the user to merge.
+`--and-fix` is refused for a Playbook that publishes no ticket. If the fix Request cannot be started
+the diagnosis stays done, the failure is logged, and no fix Request is recorded.
+
 ## Not covered here
 
-Following a diagnosis with a fix Request is left to a later ticket.
 Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.

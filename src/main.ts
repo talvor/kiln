@@ -28,7 +28,7 @@ const PROJECT_USAGE = `Usage:
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
 const REQUEST_USAGE = `Usage:
-  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>]]
+  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]]
   kiln request status <request-id> [--json]`;
 const ASSIGNMENT_USAGE = `Usage:
   kiln assignment start <request-id> <assignment-message-id>
@@ -50,7 +50,7 @@ Usage:
                          Register a project: Kiln clones it, checks it, and records its commands
   kiln project list|pause|resume|edit|baseline|default-branch|remove ...
                          Manage registered projects (see \`kiln project\`)
-  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>]]
+  kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]]
                          Start a request: a request branch in its own worktree, and with a
                          playbook, the steps Kiln walks through for it
   kiln request status <request-id> [--json]
@@ -220,6 +220,10 @@ async function main(args: string[]): Promise<number> {
         return 1;
       }
     }
+    // --and-fix takes no value: once the playbook has published a fix ticket, a fix request follows.
+    const andFix = flags.includes("--and-fix");
+    if (andFix) flags.splice(flags.indexOf("--and-fix"), 1);
+    if (flags.includes("--and-fix")) return usage();
     const values: Record<string, string> = {};
     for (let i = 0; i < flags.length; i += 2) {
       if (!["--playbook", "--description", "--tracker-item"].includes(flags[i])) return usage();
@@ -238,6 +242,7 @@ async function main(args: string[]): Promise<number> {
           playbook: values["--playbook"],
           description: values["--description"],
           trackerItem: values["--tracker-item"],
+          andFix,
         },
       );
       console.log(`Started request ${r.requestId} on ${target}, playbook ${values["--playbook"]}.`);
@@ -725,6 +730,8 @@ interface RequestStatus {
   branch: string | null;
   ticketUrl: string | null;
   ticketUrls: string[];
+  andFix?: boolean;
+  fixRequestId?: number | null;
   prUrl: string | null;
   failure: string | null;
   steps: {
@@ -770,6 +777,7 @@ function describeRequest(r: RequestStatus): string {
   }
   if (r.ticketUrl) lines.push(`Ticket: ${r.ticketUrl}`);
   for (const url of r.ticketUrls ?? []) lines.push(`Ticket: ${url}`);
+  if (r.fixRequestId) lines.push(`Fix request: ${r.fixRequestId}`);
   if (r.prUrl) lines.push(`Pull request: ${r.prUrl}`);
   if (r.failure) lines.push(`Failure: ${r.failure}`);
   return lines.join("\n");

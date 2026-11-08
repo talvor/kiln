@@ -323,6 +323,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
           playbook: String(params.playbook),
           description: String(params.description),
           trackerItem: typeof params.trackerItem === "string" ? params.trackerItem : null,
+          andFix: params.andFix === true,
         }),
     "requests.status": (params) => requestStatus(store, Number(params.id)),
     "assignments.start": (params) => {
@@ -492,6 +493,8 @@ function requestStatus(store: Store, id: number) {
     branch: request.branch,
     ticketUrl: request.ticketUrl,
     ticketUrls: request.ticketUrls,
+    andFix: request.andFix,
+    fixRequestId: request.fixRequestId,
     prUrl: request.prUrl,
     failure: request.failure,
     steps: store.listSteps(id).map((step) => ({
