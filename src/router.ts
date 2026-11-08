@@ -60,7 +60,19 @@ export interface RouterOptions {
   activity?: (session: SessionRecord) => void;
   /** The caller watches this session's launches, so they are not cut short after a fixed time. */
   watched?: (session: SessionRecord) => boolean;
+  /** Kiln is halted: nobody is woken until it is resumed. */
+  halted?: () => boolean;
+  /** How many times, and how soon, to retry waking an agent whose launch fails. */
+  infrastructure?: () => Promise<{ retries: number; backoffSeconds: number }>;
 }
+
+/** Why a launch ended without the agent having done its part. */
+type Outcome = "ok" | "failed" | "unstarted" | "stopped";
+
+/** A launch that never gets going is retried at most this far apart, however many times it fails. */
+const MAX_BACKOFF_SECONDS = 3600;
+/** How many times the same work may be interrupted by a crash before Kiln fails it. */
+export const MAX_INTERRUPTIONS = 2;
 
 export interface StopVerdict {
   block: boolean;
@@ -257,6 +269,57 @@ export function createRouter(opts: RouterOptions) {
     });
   }
 
+  /** Tell the Overseer an agent is stuck, as a question from the agent's leader. */
+  function reportStuck(session: SessionRecord, why: string): void {
+    const sessions = store.listSessions();
+    const overseer = sessions.find((s) => s.role === "overseer");
+    const sender = session.role === "leader"
+      ? session
+      : sessions.find((s) => s.role === "leader" && s.department === session.department);
+    store.appendEvent("agent.stuck", { address: session.address, why });
+    log.warn("agent is stuck", { address: session.address, why });
+    if (!overseer || !sender || session.role === "overseer") return;
+    append({
+      from: sender.address,
+      to: overseer.address,
+      kind: "question",
+      body: {
+        question: `${session.address} is stuck: ${why}. Kiln has stopped waking it; ` +
+          `\`kiln resume\` tries again.`,
+      },
+      synthesised: true,
+    });
+  }
+
+  /** A launch failed for infrastructure reasons: retry later, or give up and report it. */
+  async function launchFailed(session: SessionRecord, why: string): Promise<void> {
+    const policy = await opts.infrastructure?.() ?? { retries: 4, backoffSeconds: 30 };
+    const failures = session.launchFailures + 1;
+    if (failures > policy.retries) {
+      store.recordLaunchFailure(session.address, { stuck: true });
+      const reason = `${failures} launches in a row failed (${why})`;
+      for (const m of openAssignments(session.address)) {
+        if (m.deadLetteredAt === null && !opts.hold?.(m)) {
+          synthesiseFailure(m, `Kiln could not wake ${session.address}: ${reason}.`);
+        }
+      }
+      reportStuck(session, reason);
+      return;
+    }
+    const seconds = Math.min(
+      policy.backoffSeconds * 2 ** (failures - 1),
+      MAX_BACKOFF_SECONDS,
+    );
+    store.recordLaunchFailure(session.address, {
+      retryAt: new Date(Date.now() + seconds * 1000).toISOString(),
+    });
+    store.appendEvent("launch.failed", {
+      address: session.address,
+      failures,
+      retryInSeconds: seconds,
+    });
+  }
+
   return {
     openSession(s: NewSession): SessionRecord {
       if (!/^[a-z][a-z0-9-]*$/.test(s.address)) {
@@ -282,9 +345,48 @@ export function createRouter(opts: RouterOptions) {
     send,
 
     /** Stop whatever is running for the session at `address`. */
-    abort(address: string): void {
-      for (const controller of inFlight.get(address) ?? []) controller.abort();
+    abort(address: string, reason = "stopped"): void {
+      for (const controller of inFlight.get(address) ?? []) controller.abort(reason);
     },
+
+    /** Stop every launch in flight; the work they were doing is put back for a later wake. */
+    abortAll(reason: string): void {
+      for (const controllers of inFlight.values()) {
+        for (const controller of controllers) controller.abort(reason);
+      }
+    },
+
+    /**
+     * After a crash: launches that began and never ended were interrupted. The work they were on
+     * is put back in the agent's inbox to be resumed once; a second interruption of the same work
+     * fails it, and the failure is reported to the Overseer. Returns what became of each.
+     */
+    recoverInterrupted(): { resumed: number; failed: number } {
+      const outcome = { resumed: 0, failed: 0 };
+      for (const session of store.listLaunching()) {
+        store.setLaunching(session.address, false);
+        for (const m of openAssignments(session.address)) {
+          if (m.deadLetteredAt !== null || opts.hold?.(m)) continue;
+          if (m.interruptions + 1 >= MAX_INTERRUPTIONS) {
+            const why = `assignment ${m.id} ("${m.body.title}") was interrupted twice`;
+            synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
+            reportStuck(session, why);
+            outcome.failed++;
+          } else {
+            store.requeueMessage(m.id, true);
+            store.appendEvent("assignment.resumed", { id: m.id, to: session.address });
+            outcome.resumed++;
+          }
+        }
+      }
+      return outcome;
+    },
+
+    /** Tell the Overseer an agent is stuck. */
+    reportStuck,
+
+    /** Put the agents Kiln gave up on back in play, so they are woken again. */
+    clearStuck: () => store.clearStuck(),
 
     /** Report an open assignment as failed on behalf of its worker, saying why. */
     failAssignment(assignmentId: number, why: string): MessageRecord | undefined {
@@ -438,6 +540,7 @@ export function createRouter(opts: RouterOptions) {
      * MAX_DELIVERIES times without being read.
      */
     async tick(): Promise<void> {
+      if (opts.halted?.()) return;
       const now = Date.now();
       const due = store.listMessages({ waiting: true }).filter((m) =>
         !opts.hold?.(m) &&
@@ -466,32 +569,38 @@ export function createRouter(opts: RouterOptions) {
         const current = messages.filter((m) => waiting.has(m.id));
         // Still being woken: the next pass delivers what has arrived since, in the same session.
         if (!current.length || inFlight.has(address)) return;
-        if (await nudge(sessionAt(address), current)) {
+        const session = sessionAt(address);
+        // Waiting out a backoff, or given up on until the user resumes Kiln.
+        if (session.stuckAt !== null) return;
+        if (session.retryAt !== null && Date.parse(session.retryAt) > Date.now()) return;
+        const outcome = await nudge(session, current);
+        if (outcome === "ok") {
+          store.recordLaunchSuccess(address);
           store.recordDelivery(current.map((m) => m.id));
           store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
+        } else if (outcome !== "stopped") {
+          await launchFailed(sessionAt(address), "the launcher did not complete");
         }
       }));
     },
   };
 
-  async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<boolean> {
+  async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<Outcome> {
     // An answer to the agent's own question wakes the same Claude session that asked it; if that
     // session cannot be resumed, a fresh one still reads the answer from the inbox.
     const resume = messages.some((m) => m.kind === "answer")
       ? session.claudeSessionId ?? undefined
       : undefined;
     const first = await launchNudge(session, messages, resume);
-    if (first === "unstarted" && resume) {
-      return (await launchNudge(session, messages, undefined)) === "ok";
-    }
-    return first === "ok";
+    if (first === "unstarted" && resume) return await launchNudge(session, messages, undefined);
+    return first;
   }
 
   async function launchNudge(
     session: SessionRecord,
     messages: MessageRecord[],
     resume: string | undefined,
-  ): Promise<"ok" | "failed" | "unstarted"> {
+  ): Promise<Outcome> {
     const count = messages.length;
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
@@ -507,10 +616,16 @@ export function createRouter(opts: RouterOptions) {
       ? await opts.rolePrompt?.(session.roleName).catch(() => undefined)
       : undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    store.setLaunching(session.address, true);
     try {
       const launched = await Promise.race([
         opts.launch({
           prompt: (rolePrompt ? `${rolePrompt}\n\n` : "") +
+            (messages.some((m) => m.interruptions > 0)
+              ? "Kiln was interrupted while you were working, and put your unfinished assignment " +
+                "back in your inbox. What you had already committed or changed in your " +
+                "worktree is still there: carry on from it. "
+              : "") +
             `You have ${count} unread message(s) in your Kiln inbox. ` +
             `Call the read_inbox tool now and act on what it returns.`,
           cwd: session.cwd,
@@ -552,7 +667,7 @@ export function createRouter(opts: RouterOptions) {
           );
           if (opts.watched?.(session)) return;
           timeout = setTimeout(() => {
-            abortController.abort();
+            abortController.abort("timeout");
             reject(new Error("launch timed out"));
           }, LAUNCH_TIMEOUT_MS);
         }),
@@ -566,18 +681,35 @@ export function createRouter(opts: RouterOptions) {
       if (!launched.ok) {
         log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
       }
+      // A limit, a cancel or a halt may have stopped it while its usage was being charged.
+      if (stoppedByKiln(abortController)) return "stopped";
       if (launched.ok) return "ok";
-      return launched.turns === 0 && !abortController.signal.aborted ? "unstarted" : "failed";
+      return launched.turns === 0 ? "unstarted" : "failed";
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
       opts.observe?.(session, { turns: 0, costUsd: 0, outcome: "aborted" });
+      if (stoppedByKiln(abortController)) return "stopped";
       return abortController.signal.aborted ? "failed" : "unstarted";
     } finally {
+      // A halt cut the agent off mid-work: what it had been given is put back for after the resume.
+      if (abortController.signal.reason === "halt") {
+        const open = openAssignments(session.address).filter((m) =>
+          m.deadLetteredAt === null && !opts.hold?.(m)
+        );
+        for (const m of [...messages, ...open]) {
+          if (store.getMessage(m.id)?.readAt) store.requeueMessage(m.id, false);
+        }
+      }
+      store.setLaunching(session.address, false);
       clearTimeout(timeout);
       controllers.delete(abortController);
       if (!controllers.size) inFlight.delete(session.address);
     }
   }
 }
+
+/** Kiln itself stopped the launch (a limit, a cancel, a halt), not the infrastructure. */
+const stoppedByKiln = (c: AbortController) =>
+  c.signal.aborted && (c.signal.reason === "stopped" || c.signal.reason === "halt");
 
 export type Router = ReturnType<typeof createRouter>;

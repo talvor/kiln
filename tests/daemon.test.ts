@@ -110,7 +110,7 @@ withHome("the store is SQLite in WAL mode at the current schema version", async 
   await home.kiln("daemon", "start");
   const info = (await status(home)).info;
   assertEquals(info.store.journalMode, "wal");
-  assertEquals(info.store.schemaVersion, 18);
+  assertEquals(info.store.schemaVersion, 19);
   assert(/^3\.\d+\.\d+/.test(info.store.sqliteVersion));
 });
 
@@ -121,7 +121,7 @@ withHome("kiln backup writes a consistent copy of the store", async (home) => {
   assert(path.startsWith(home.dirs.data), "backup lives in the data location");
   const copy = new DatabaseSync(path, { readOnly: true });
   try {
-    assertEquals(copy.prepare("pragma user_version").get()!.user_version, 18);
+    assertEquals(copy.prepare("pragma user_version").get()!.user_version, 19);
     assertEquals(copy.prepare("pragma integrity_check").get()!.integrity_check, "ok");
   } finally {
     copy.close();
@@ -137,7 +137,7 @@ withHome("an older store is backed up and then migrated when the daemon starts",
 
   const r = await home.kiln("daemon", "start");
   assertEquals(r.code, 0, r.stderr);
-  assertEquals((await status(home)).info.store.schemaVersion, 18);
+  assertEquals((await status(home)).info.store.schemaVersion, 19);
 
   const backups = [...Deno.readDirSync(join(home.dirs.data, "backups"))].map((e) => e.name);
   assertEquals(backups.length, 1);

@@ -22,6 +22,8 @@ export interface LauncherRun {
   /** SDK mode: how the run ended; default "success". */
   outcome?: "success" | "error_max_budget_usd" | "error_max_turns" | "error_during_execution";
   hang?: boolean;
+  /** SDK mode: the process dies as soon as it is given the prompt, without a result. */
+  crash?: boolean;
   /**
    * Interactive mode: what happens in the session, in order, using the hooks and status line
    * Kiln configured with --settings. Each step prints what the hook said, as the user would see it.
@@ -46,6 +48,7 @@ Deno.writeTextFileSync(
   join(dir, "calls.jsonl"),
   JSON.stringify({
     args: Deno.args,
+    at: Date.now(),
     cwd: Deno.cwd(),
     env: Object.fromEntries(
       [
@@ -107,6 +110,7 @@ async function speakSdkProtocol(run: LauncherRun): Promise<void> {
           JSON.stringify(msg) + "\n",
           { append: true },
         );
+        if (run.crash) Deno.exit(1);
         if (run.hang) await new Promise((resolve) => setTimeout(resolve, 60_000));
         const base = {
           type: "result",

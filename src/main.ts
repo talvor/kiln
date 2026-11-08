@@ -29,7 +29,8 @@ const PROJECT_USAGE = `Usage:
   kiln project remove <name> [--force]`;
 const REQUEST_USAGE = `Usage:
   kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]]
-  kiln request status <request-id> [--json]`;
+  kiln request status <request-id> [--json]
+  kiln request cancel <request-id>`;
 const ASSIGNMENT_USAGE = `Usage:
   kiln assignment start <request-id> <assignment-message-id>
   kiln assignment merge <assignment-id>`;
@@ -55,6 +56,11 @@ Usage:
                          playbook, the steps Kiln walks through for it
   kiln request status <request-id> [--json]
                          Show a request, its steps and their assignments
+  kiln request cancel <request-id>
+                         Cancel a request: its workers stop and it fails; its branches and
+                         worktrees stay
+  kiln halt              Stop all work: running agents are stopped and nobody is woken until resumed
+  kiln resume            Carry on after a halt, and try again the agents Kiln gave up on
   kiln assignment start <request-id> <assignment-message-id>
                          Start an assignment: its own branch and worktree off the request branch
   kiln assignment merge <assignment-id>
@@ -125,8 +131,12 @@ async function main(args: string[]): Promise<number> {
       return await launchCommand(args.slice(1));
     case "project":
       return await projectCommand(sub, args.slice(2));
+    case "halt":
+    case "resume":
+      return await haltCommand(cmd, args.slice(1));
     case "request":
-      return sub === "status" || (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
+      return sub === "status" || sub === "cancel" ||
+          (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
         ? await requestCommand(sub, args.slice(2))
         : await worktreeCommand(sub === "start" ? "requests.start" : "", args.slice(2));
     case "assignment":
@@ -201,6 +211,37 @@ async function main(args: string[]): Promise<number> {
     }
   }
 
+  async function haltCommand(verb: "halt" | "resume", rest: string[]): Promise<number> {
+    if (rest.length) {
+      console.error(`Usage: kiln ${verb}`);
+      return 2;
+    }
+    await ensureDaemon(paths);
+    try {
+      if (verb === "halt") {
+        const r = await call<{ changed: boolean }>(paths, "kiln.halt");
+        console.log(
+          r.changed
+            ? "Kiln is halted: running agents were stopped and nobody will be woken. " +
+              "Run `kiln resume` to carry on."
+            : "Kiln is already halted.",
+        );
+      } else {
+        const r = await call<{ wasHalted: boolean; stuck: number }>(paths, "kiln.resume");
+        console.log(
+          r.wasHalted || r.stuck
+            ? "Kiln is resumed." +
+              (r.stuck ? ` ${r.stuck} agent(s) Kiln had given up on will be tried again.` : "")
+            : "Kiln is not halted.",
+        );
+      }
+      return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
+  }
+
   async function requestCommand(sub: string, rest: string[]): Promise<number> {
     const usage = () => {
       console.error(REQUEST_USAGE);
@@ -214,6 +255,20 @@ async function main(args: string[]): Promise<number> {
       try {
         const r = await call<RequestStatus>(paths, "requests.status", { id: Number(target) });
         console.log(flags.length ? JSON.stringify(r) : describeRequest(r));
+        return 0;
+      } catch (err) {
+        console.error((err as Error).message);
+        return 1;
+      }
+    }
+    if (sub === "cancel") {
+      if (!/^\d+$/.test(target) || flags.length) return usage();
+      await ensureDaemon(paths);
+      try {
+        await call(paths, "requests.cancel", { id: Number(target) });
+        console.log(
+          `Cancelled request ${target}. Its branches and worktrees are kept; nothing was removed.`,
+        );
         return 0;
       } catch (err) {
         console.error((err as Error).message);
@@ -669,6 +724,7 @@ async function main(args: string[]): Promise<number> {
           );
           console.log(`  socket  ${s.paths.socket}`);
           console.log(`  log     ${s.paths.log}`);
+          if (s.haltedSince) console.log(`  HALTED  since ${s.haltedSince}; run \`kiln resume\``);
         }
         return 0;
       }

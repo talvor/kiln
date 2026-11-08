@@ -18,6 +18,8 @@ export interface ApiReply {
   exit?: number;
 }
 interface Call {
+  /** When the call was made, in milliseconds since the epoch (the launcher records it). */
+  at?: number;
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;

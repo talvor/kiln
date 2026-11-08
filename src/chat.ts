@@ -18,10 +18,25 @@ const ATTACHED_MS = 15_000;
 const HISTORY_TURNS = 20;
 const TURN_CHARS = 600;
 /** Events that tell the user something happened to their work. */
-const NEWS_EVENTS = ["request.done", "step.failed", "step.escalated", "breakdown.approved"];
+const NEWS_EVENTS = [
+  "request.done",
+  "step.failed",
+  "step.escalated",
+  "breakdown.approved",
+  "agent.stuck",
+];
 
 /** The words the user types that Kiln answers itself, without a model. */
-export const COMMANDS = ["status", "escalations", "projects", "approve", "reject", "help"] as const;
+export const COMMANDS = [
+  "status",
+  "escalations",
+  "projects",
+  "approve",
+  "reject",
+  "halt",
+  "resume",
+  "help",
+] as const;
 const COMMAND = new RegExp(`^kiln\\s+(${COMMANDS.join("|")})\\b\\s*(.*)$`, "is");
 
 export const CHAT_HELP = [
@@ -31,6 +46,8 @@ export const CHAT_HELP = [
   "  kiln projects             the registered projects",
   "  kiln approve <id>         approve an escalation",
   "  kiln reject <id> <why>    reject an escalation, saying why",
+  "  kiln halt                 stop all work until you resume",
+  "  kiln resume               carry on after a halt",
   "Anything else goes to the Overseer.",
 ].join("\n");
 
@@ -60,7 +77,7 @@ the user asks for the state of things, answer from request_status; do not volunt
 
 ## Commands
 The user can type "kiln status", "kiln escalations", "kiln projects", "kiln approve <id>", \
-"kiln reject <id> <why>" and "kiln help" in this chat. Kiln answers them itself and they never \
+"kiln reject <id> <why>", "kiln halt", "kiln resume" and "kiln help" in this chat. Kiln answers them itself and they never \
 reach you.`;
 
 export interface ChatOptions {
@@ -72,6 +89,8 @@ export interface ChatOptions {
   chatDir: string;
   /** Record the user's decision on an escalation, as the CLI would. */
   decide: (params: { id: number; approved: boolean; reason?: string }) => unknown;
+  /** Halt or resume Kiln, as the commands do; says what happened. */
+  control: { halt: () => string; resume: () => string };
 }
 
 export interface ChatBegun {
@@ -135,9 +154,17 @@ export function createChat(opts: ChatOptions) {
     const open = waitingOnUser();
     for (const e of open) news.push(`Decision waiting for the user: ${describeEscalation(e)}`);
     for (const e of store.listEvents(sinceEvent, NEWS_EVENTS)) {
-      const d = e.data as { id?: number; request?: number; why?: string; tickets?: string[] };
+      const d = e.data as {
+        id?: number;
+        request?: number;
+        why?: string;
+        tickets?: string[];
+        address?: string;
+      };
       news.push(
-        e.kind === "breakdown.approved"
+        e.kind === "agent.stuck"
+          ? `${d.address} is stuck: ${d.why}. Kiln has stopped waking it; the user can type "kiln resume" to try again.`
+          : e.kind === "breakdown.approved"
           ? `Request ${d.request}: the Overseer approved the breakdown of the spec into ${
             d.tickets?.length ?? 0
           } ticket(s): ${(d.tickets ?? []).join(", ")}.`
@@ -197,6 +224,10 @@ export function createChat(opts: ChatOptions) {
         }
         case "status":
           return statusText();
+        case "halt":
+          return opts.control.halt();
+        case "resume":
+          return opts.control.resume();
         default: {
           const [id, ...why] = rest.split(/\s+/);
           if (!/^\d+$/.test(id ?? "")) {

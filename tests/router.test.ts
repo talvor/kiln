@@ -273,6 +273,11 @@ withWorld("automatic delivery nudges each recipient with its tools and hook", as
 
 withWorld("failed launches do not count toward dead letters", async (world) => {
   await openTeam(world);
+  await Deno.mkdir(world.dirs.config, { recursive: true });
+  await Deno.writeTextFile(
+    join(world.dirs.config, "limits.json"),
+    JSON.stringify({ infrastructure: { retries: 10, backoffSeconds: 1 } }),
+  );
   await world.launcher.script(
     Array.from({ length: 4 }, () => ({ outcome: "error_during_execution" as const })),
   );

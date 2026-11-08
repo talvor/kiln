@@ -300,6 +300,16 @@ export const MIGRATIONS: string[] = [
   // ticket is published, and remembers the one Kiln started.
   `alter table requests add column and_fix integer not null default 0;
    alter table requests add column fix_request_id integer references requests (id);`,
+  // 19: recovery. A session notes when a launch for it began (a launch still marked after a crash
+  // was interrupted), how many launches in a row failed for infrastructure reasons, when it may be
+  // tried again, and when Kiln gave up on it; a Message counts the times its work was interrupted;
+  // a Request records when the user cancelled it.
+  `alter table sessions add column launching_since text;
+   alter table sessions add column launch_failures integer not null default 0;
+   alter table sessions add column retry_at text;
+   alter table sessions add column stuck_at text;
+   alter table message_status add column interruptions integer not null default 0;
+   alter table requests add column cancelled_at text;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -428,6 +438,8 @@ export interface RequestRecord {
   /** The Escalation raised because the pull request was closed, while the user has not settled it. */
   prBlockId: number | null;
   failure: string | null;
+  /** When the user cancelled the Request; null if they did not. */
+  cancelledAt: string | null;
 }
 export type PrState = "OPEN" | "MERGED" | "CLOSED";
 export interface NewPlaybookRun {
@@ -599,10 +611,29 @@ export interface SessionRecord {
   /** The Claude session of its last launch, resumed to deliver an answer to its own question. */
   claudeSessionId: string | null;
   openedAt: string;
+  /** When a launch for the session began and has not ended; set after a crash, it was interrupted. */
+  launchingSince: string | null;
+  /** Launches in a row that failed for infrastructure reasons. */
+  launchFailures: number;
+  /** Kiln does not wake the session again before this time. */
+  retryAt: string | null;
+  /** When Kiln stopped waking the session for good (until the user resumes Kiln). */
+  stuckAt: string | null;
 }
-export type NewSession = Omit<SessionRecord, "openedAt" | "roleName" | "claudeSessionId"> & {
-  roleName?: string | null;
-};
+export type NewSession =
+  & Omit<
+    SessionRecord,
+    | "openedAt"
+    | "roleName"
+    | "claudeSessionId"
+    | "launchingSince"
+    | "launchFailures"
+    | "retryAt"
+    | "stuckAt"
+  >
+  & {
+    roleName?: string | null;
+  };
 
 /** A Message and what has happened to it since it was sent. */
 export interface MessageRecord {
@@ -625,6 +656,8 @@ export interface MessageRecord {
   deliveries: number;
   lastDeliveryAt: string | null;
   deadLetteredAt: string | null;
+  /** How many times the work this Message asks for was interrupted by a crash. */
+  interruptions: number;
 }
 export type NewMessage = Pick<MessageRecord, "from" | "to" | "kind" | "body"> & {
   inReplyTo?: number | null;
@@ -762,6 +795,25 @@ export interface Store {
   listSessions(): SessionRecord[];
   /** Throws UnknownSessionError. */
   getSession(address: string): SessionRecord;
+  /** Note that a launch for the session began, or ended. */
+  setLaunching(address: string, on: boolean): void;
+  /** Sessions with a launch that began and never ended: the daemon stopped under them. */
+  listLaunching(): SessionRecord[];
+  /** The session was woken: its infrastructure failures are forgotten. */
+  recordLaunchSuccess(address: string): void;
+  /** A launch failed for infrastructure reasons; `retryAt` is when to try again, or Kiln gives up. */
+  recordLaunchFailure(address: string, next: { retryAt: string } | { stuck: true }): SessionRecord;
+  /** Forget every session's failures and give-up, so they are woken again; how many were stuck. */
+  clearStuck(): number;
+  /** Put a Message back in its inbox unread, counting an interruption if that is why. */
+  requeueMessage(id: number, interrupted: boolean): number;
+  /** Whether Kiln is halted, and since when. */
+  haltedSince(): string | null;
+  setHalted(on: boolean): void;
+  /** Move the clocks of active Assignments on by `ms`, e.g. past the time Kiln was halted. */
+  delayActiveAssignments(ms: number): void;
+  /** Cancel a Request: it fails, as the user's doing. Its branches and Worktrees stay. */
+  cancelRequest(id: number, why: string): void;
   /** Point a session at another directory, e.g. its worker's Assignment Worktree. */
   setSessionCwd(address: string, cwd: string): void;
   /** Remember the Claude session an agent was last launched in. */
@@ -931,6 +983,10 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       roleName: row.role_name as string | null,
       claudeSessionId: row.claude_session_id as string | null,
       openedAt: row.opened_at as string,
+      launchingSince: row.launching_since as string | null,
+      launchFailures: row.launch_failures as number,
+      retryAt: row.retry_at as string | null,
+      stuckAt: row.stuck_at as string | null,
     });
     const toMessage = (row: Record<string, unknown>): MessageRecord => ({
       id: row.id as number,
@@ -947,9 +1003,10 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       deliveries: row.deliveries as number,
       lastDeliveryAt: row.last_delivery_at as string | null,
       deadLetteredAt: row.dead_lettered_at as string | null,
+      interruptions: row.interruptions as number,
     });
     const messageSelect =
-      `select m.*, s.read_at, s.deliveries, s.last_delivery_at, s.dead_lettered_at
+      `select m.*, s.read_at, s.deliveries, s.last_delivery_at, s.dead_lettered_at, s.interruptions
        from messages m join message_status s on s.message_id = m.id`;
     const inTransaction = <T>(work: () => T): T => {
       db.exec("begin");
@@ -1020,6 +1077,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       prMergedAt: row.pr_merged_at as string | null,
       prBlockId: row.pr_block_id as number | null,
       failure: row.failure as string | null,
+      cancelledAt: row.cancelled_at as string | null,
     });
     const toStep = (row: Record<string, unknown>): StepRecord => ({
       id: row.id as number,
@@ -1291,10 +1349,90 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           }
           throw err;
         }
-        return { ...s, roleName: s.roleName ?? null, claudeSessionId: null, openedAt };
+        return {
+          ...s,
+          roleName: s.roleName ?? null,
+          claudeSessionId: null,
+          openedAt,
+          launchingSince: null,
+          launchFailures: 0,
+          retryAt: null,
+          stuckAt: null,
+        };
       },
       setSessionCwd: (address, cwd) => {
         db.prepare("update sessions set cwd = ? where address = ?").run(cwd, address);
+      },
+      setLaunching: (address, on) => {
+        db.prepare("update sessions set launching_since = ? where address = ?")
+          .run(on ? new Date().toISOString() : null, address);
+      },
+      listLaunching: () =>
+        db.prepare("select * from sessions where launching_since is not null order by opened_at")
+          .all().map(toSession),
+      recordLaunchSuccess: (address) => {
+        db.prepare(
+          `update sessions set launch_failures = 0, retry_at = null, stuck_at = null
+           where address = ? and (launch_failures != 0 or retry_at is not null)`,
+        ).run(address);
+      },
+      recordLaunchFailure: (address, next) => {
+        db.prepare(
+          `update sessions set launch_failures = launch_failures + 1, retry_at = ?,
+             stuck_at = ? where address = ?`,
+        ).run(
+          "retryAt" in next ? next.retryAt : null,
+          "stuck" in next ? new Date().toISOString() : null,
+          address,
+        );
+        return toSession(db.prepare("select * from sessions where address = ?").get(address)!);
+      },
+      clearStuck: () => {
+        const stuck = Number(
+          db.prepare("select count(*) n from sessions where stuck_at is not null").get()!.n,
+        );
+        db.exec("update sessions set launch_failures = 0, retry_at = null, stuck_at = null");
+        return stuck;
+      },
+      requeueMessage: (id, interrupted) =>
+        inTransaction(() => {
+          db.prepare(
+            `update message_status set read_at = null, deliveries = 0, last_delivery_at = null,
+               interruptions = interruptions + ? where message_id = ?`,
+          ).run(interrupted ? 1 : 0, id);
+          return Number(
+            db.prepare("select interruptions n from message_status where message_id = ?").get(id)!
+              .n,
+          );
+        }),
+      haltedSince: () => {
+        const row = db.prepare("select value from meta where key = 'halted_at'").get();
+        return row ? row.value as string : null;
+      },
+      setHalted: (on) => {
+        if (on) {
+          db.prepare("insert or ignore into meta (key, value) values ('halted_at', ?)")
+            .run(new Date().toISOString());
+        } else db.prepare("delete from meta where key = 'halted_at'").run();
+      },
+      delayActiveAssignments: (ms) =>
+        inTransaction(() => {
+          const shift = (at: unknown) =>
+            typeof at === "string" ? new Date(Date.parse(at) + ms).toISOString() : null;
+          for (
+            const row of db.prepare(
+              "select id, started_at, activity_at from assignments where status = 'active'",
+            )
+              .all()
+          ) {
+            db.prepare("update assignments set started_at = ?, activity_at = ? where id = ?")
+              .run(shift(row.started_at), shift(row.activity_at), row.id as number);
+          }
+        }),
+      cancelRequest: (id, why) => {
+        db.prepare(
+          "update requests set status = 'failed', failure = ?, cancelled_at = ? where id = ?",
+        ).run(why, new Date().toISOString(), id);
       },
       setClaudeSession: (address, id) => {
         db.prepare("update sessions set claude_session_id = ? where address = ?").run(id, address);
