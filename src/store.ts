@@ -310,6 +310,20 @@ export const MIGRATIONS: string[] = [
    alter table sessions add column stuck_at text;
    alter table message_status add column interruptions integer not null default 0;
    alter table requests add column cancelled_at text;`,
+  // 20: environment faults. A damaged clone or a deleted Worktree pauses its Project with one
+  // Escalation until Kiln has put it right; the fault remembers whether it was the one that
+  // paused the Project, so recovering never resumes a Project the user paused.
+  `create table project_faults (
+     id integer primary key,
+     project_id integer not null references projects (id),
+     kind text not null check (kind in ('clone', 'worktree')),
+     detail text not null,
+     escalation_id integer references escalations (id),
+     paused_by_fault integer not null,
+     raised_at text not null,
+     recovered_at text
+   ) strict;
+   create unique index project_faults_open on project_faults (project_id) where recovered_at is null;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -537,6 +551,19 @@ export interface NewEscalation {
   summary: string;
   detail?: string | null;
   questionId?: number | null;
+}
+
+/** An environment fault on a Project: open until Kiln has put the environment right. */
+export interface FaultRecord {
+  id: number;
+  projectId: number;
+  kind: "clone" | "worktree";
+  detail: string;
+  escalationId: number | null;
+  /** The fault paused the Project (it was not already paused by the user). */
+  pausedByFault: boolean;
+  raisedAt: string;
+  recoveredAt: string | null;
 }
 
 /** The page of an Escalation: the token is good for one decision. */
@@ -828,6 +855,14 @@ export interface Store {
   deadLetter(id: number): void;
   /** Record an Escalation as open. */
   addEscalation(escalation: NewEscalation): EscalationRecord;
+  /** Record an open fault on a Project; a Project has at most one open fault. */
+  openFault(
+    fault: Pick<FaultRecord, "projectId" | "kind" | "detail" | "escalationId" | "pausedByFault">,
+  ): FaultRecord;
+  getOpenFault(projectId: number): FaultRecord | undefined;
+  /** Update what an open fault says is wrong. */
+  updateFault(id: number, kind: FaultRecord["kind"], detail: string): void;
+  recoverFault(id: number): void;
   /** Throws UnknownEscalationError. */
   getEscalation(id: number): EscalationRecord;
   /** Every Escalation, oldest first; only the open ones when asked. */
@@ -1634,6 +1669,45 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
           );
           return getEscalation(id);
         }),
+      openFault: (f) => {
+        const raisedAt = new Date().toISOString();
+        const { lastInsertRowid } = db.prepare(
+          `insert into project_faults
+             (project_id, kind, detail, escalation_id, paused_by_fault, raised_at)
+           values (?, ?, ?, ?, ?, ?)`,
+        ).run(f.projectId, f.kind, f.detail, f.escalationId, f.pausedByFault ? 1 : 0, raisedAt);
+        return { ...f, id: Number(lastInsertRowid), raisedAt, recoveredAt: null };
+      },
+      getOpenFault: (projectId) => {
+        const row = db.prepare(
+          "select * from project_faults where project_id = ? and recovered_at is null",
+        ).get(projectId);
+        return row
+          ? {
+            id: Number(row.id),
+            projectId: Number(row.project_id),
+            kind: row.kind as FaultRecord["kind"],
+            detail: String(row.detail),
+            escalationId: row.escalation_id === null ? null : Number(row.escalation_id),
+            pausedByFault: row.paused_by_fault === 1,
+            raisedAt: String(row.raised_at),
+            recoveredAt: null,
+          }
+          : undefined;
+      },
+      updateFault: (id, kind, detail) => {
+        db.prepare("update project_faults set kind = ?, detail = ? where id = ?").run(
+          kind,
+          detail,
+          id,
+        );
+      },
+      recoverFault: (id) => {
+        db.prepare("update project_faults set recovered_at = ? where id = ?").run(
+          new Date().toISOString(),
+          id,
+        );
+      },
       getEscalationPage: (id) => {
         const row = db.prepare("select * from escalation_pages where escalation_id = ?").get(id);
         return row
