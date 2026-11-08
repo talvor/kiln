@@ -35,3 +35,64 @@ export async function publishTicket(
   }
   return url;
 }
+
+/** Open a draft pull request for `head` against `base`; returns its URL. */
+export async function openDraftPr(
+  clonePath: string,
+  pr: { head: string; base: string; title: string; body: string },
+): Promise<string> {
+  let result;
+  try {
+    result = await run(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--draft",
+        "--head",
+        pr.head,
+        "--base",
+        pr.base,
+        "--title",
+        pr.title,
+        "--body",
+        pr.body,
+      ],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+  } catch {
+    throw new PublishFailed("Could not open the pull request: the gh command is not available.");
+  }
+  const url = result.stdout.trim().split("\n").at(-1)?.trim();
+  if (result.code !== 0 || !url) {
+    throw new PublishFailed(
+      `Could not open the pull request: ${
+        firstLine(result.stderr || result.stdout) || "gh failed"
+      }`,
+    );
+  }
+  return url;
+}
+
+/** Comment on a pull request. */
+export async function commentOnPr(clonePath: string, prUrl: string, body: string): Promise<void> {
+  let result;
+  try {
+    result = await run(
+      "gh",
+      ["pr", "comment", prUrl, "--body", body],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+  } catch {
+    throw new PublishFailed(
+      "Could not comment on the pull request: the gh command is not available.",
+    );
+  }
+  if (result.code !== 0) {
+    throw new PublishFailed(
+      `Could not comment on the pull request: ${firstLine(result.stderr || result.stdout)}`,
+    );
+  }
+}

@@ -20,7 +20,7 @@ const TOOLS = [
     name: "send",
     description: "Send a message to a direct report (assignment, answer) or your direct " +
       "superior (result, question). Kiln refuses any other route. " +
-      "assignment body: {title, instructions}. result body: {status: done|failed, summary; a leader may report out-of-scope to the overseer when the work asked for is outside the project's scope}, " +
+      "assignment body: {title, instructions}. result body: {status: done|failed, summary; a leader may report out-of-scope to the overseer when the work asked for is outside the project's scope, unready when the ticket is not ready to implement, or findings when QA found problems for the implementer to fix}, " +
       "inReplyTo the assignment's id. question body: {question, context?}, " +
       "assignmentId when asking about an assignment. " +
       "answer body: {answer}, inReplyTo the question's id.",

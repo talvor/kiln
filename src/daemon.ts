@@ -408,6 +408,7 @@ function requestStatus(store: Store, id: number) {
     trackerItem: request.trackerItem,
     branch: request.branch,
     ticketUrl: request.ticketUrl,
+    prUrl: request.prUrl,
     failure: request.failure,
     steps: store.listSteps(id).map((step) => ({
       position: step.position,

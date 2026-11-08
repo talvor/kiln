@@ -11,6 +11,8 @@ import { DEFAULT_PLAYBOOKS, DEFAULT_ROLES } from "./defaults.ts";
 import type { Role, StepSpec } from "./store.ts";
 
 const NAME = /^[a-z][a-z0-9-]*$/;
+const PUBLISH = ["ticket", "draft-pr", "qa-summary"];
+const GATES = ["spec-approval", "qa-passed"];
 
 export interface RoleConfig {
   name: string;
@@ -79,6 +81,7 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
   }
   if (!Array.isArray(steps) || !steps.length) throw fail('"steps" must list at least one step');
   const seen = new Set<string>();
+  const parsedSoFar: StepSpec[] = [];
   const parsed = steps.map((step, i): StepSpec => {
     const at = `step ${i + 1}`;
     if (!isObject(step)) throw fail(`${at} must be an object`);
@@ -92,11 +95,15 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
       throw fail(`${at}: "${spec.name}" must be a unique name of lowercase letters and dashes`);
     }
     seen.add(spec.name);
-    if (step.publish !== undefined && step.publish !== "ticket") {
-      throw fail(`${at}: "publish" can only be "ticket"`);
+    if (step.publish !== undefined && !PUBLISH.includes(step.publish as string)) {
+      throw fail(`${at}: "publish" can only be ${PUBLISH.map((p) => `"${p}"`).join(", ")}`);
     }
-    if (step.gate !== undefined && step.gate !== "spec-approval") {
-      throw fail(`${at}: "gate" can only be "spec-approval"`);
+    if (step.gate !== undefined && !GATES.includes(step.gate as string)) {
+      throw fail(`${at}: "gate" can only be ${GATES.map((g) => `"${g}"`).join(" or ")}`);
+    }
+    if (step.findings !== undefined) {
+      const earlier = parsedSoFar.find((s) => s.name === step.findings);
+      if (!earlier) throw fail(`${at}: "findings" must name an earlier step`);
     }
     if (/^\/|(^|\/)\.\.(\/|$)/.test(spec.artifact)) {
       throw fail(`${at}: "artifact" must be a path inside the worktree`);
@@ -111,15 +118,18 @@ function parsePlaybook(name: string, source: string, raw: unknown, roles: Map<st
     if (![...roles.values()].some((r) => r.kind === "leader" && r.department === spec.department)) {
       throw fail(`${at}: department "${spec.department}" has no leader role`);
     }
-    return {
+    const made: StepSpec = {
       name: spec.name,
       department: spec.department,
       worker: spec.worker,
       instructions: spec.instructions,
       artifact: spec.artifact,
-      ...(step.publish ? { publish: "ticket" as const } : {}),
-      ...(step.gate ? { gate: "spec-approval" as const } : {}),
+      ...(step.publish ? { publish: step.publish as StepSpec["publish"] } : {}),
+      ...(step.gate ? { gate: step.gate as StepSpec["gate"] } : {}),
+      ...(step.findings ? { findings: step.findings as string } : {}),
     };
+    parsedSoFar.push(made);
+    return made;
   });
   return { name, description, steps: parsed };
 }
@@ -216,12 +226,22 @@ export function overseerRole(config: Config): RoleConfig {
   return [...config.roles.values()].find((r) => r.kind === "overseer")!;
 }
 
-/** The address of the worker session for a Step's first try, or for its `retry`th retry. */
-export function stepWorkerAddress(spec: StepSpec, stepId: number, retry = 0): string {
-  return retry ? `${spec.worker}-${stepId}-retry-${retry}` : `${spec.worker}-${stepId}`;
+/**
+ * The address of the worker session for a Step's first try, or for its `retry`th retry. A Step
+ * that began again after QA findings (its `round`) has fresh workers for that round.
+ */
+export function stepWorkerAddress(
+  spec: StepSpec,
+  stepId: number,
+  retry = 0,
+  round = 0,
+): string {
+  const base = `${spec.worker}-${stepId}${round ? `-round-${round}` : ""}`;
+  return retry ? `${base}-retry-${retry}` : base;
 }
-/** Whether `address` is a worker the Step has had, on any try. */
+/** Whether `address` is a worker the Step has had, on any try or in any round. */
 export function isStepWorker(step: { id: number; spec: StepSpec }, address: string | undefined) {
   const base = stepWorkerAddress(step.spec, step.id);
-  return address === base || (address?.startsWith(`${base}-retry-`) ?? false);
+  return address === base ||
+    (address?.startsWith(`${base}-retry-`) || address?.startsWith(`${base}-round-`)) === true;
 }

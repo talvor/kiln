@@ -206,6 +206,27 @@ export async function startAssignment(
   }
 }
 
+/** Remove `files` from the request branch, so the next round has to write them afresh. */
+export async function clearFromRequestBranch(
+  store: Store,
+  requestId: number,
+  files: string[],
+): Promise<void> {
+  const requestWt = store.getWorktree(store.getRequest(requestId).worktreeId!);
+  const removed = await git(requestWt.path, "rm", "-q", "--ignore-unmatch", "--", ...files);
+  if (removed.code !== 0) throw new WorktreeBlocked(firstLine(removed.stderr));
+  const staged = await git(requestWt.path, "diff", "--cached", "--quiet");
+  if (staged.code === 0) return;
+  const committed = await git(
+    requestWt.path,
+    "commit",
+    "-q",
+    "-m",
+    "Clear the artifacts of the QA steps being run again",
+  );
+  if (committed.code !== 0) throw new WorktreeBlocked(firstLine(committed.stderr));
+}
+
 /**
  * Merge a verified Assignment into its request branch and push that branch. A merge that was
  * made but not pushed is pushed again on retry.
