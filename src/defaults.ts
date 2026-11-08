@@ -67,6 +67,13 @@ export const DEFAULT_ROLES: Record<string, unknown> = {
       "You are a gatekeeper. You are the last check before the user hears about a change: run the project's checks, and confirm the change meets each of the ticket's acceptance criteria. You do not change the code. Work in your worktree, commit your findings, and report your result to your leader.",
     tools: ["Read", "Glob", "Grep", "Write", "Bash"],
   },
+  closer: {
+    kind: "worker",
+    department: "engineering",
+    prompt:
+      "You are a closer. You wrap up a ticket once its pull request has been merged: write a short note of what shipped, for the people who follow the ticket. Kiln posts your note on the ticket and closes it. You do not change the code. Work in your worktree, commit what you write, and report your result to your leader.",
+    tools: ["Read", "Glob", "Grep", "Write", "Bash"],
+  },
 };
 
 export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
@@ -117,7 +124,7 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
   },
   "implement-a-ticket": {
     description:
-      "Implement a ticket through to a pull request that has passed QA. The user is told once it has.",
+      "Implement a ticket through to a pull request that has passed QA, then wrap the ticket up once the user has merged it. The user is told once QA has passed.",
     steps: [
       {
         name: "check-ticket",
@@ -155,6 +162,16 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
         findings: "implement",
         publish: "qa-summary",
         gate: "qa-passed",
+      },
+      {
+        name: "wrap-up",
+        department: "engineering",
+        worker: "closer",
+        instructions:
+          "The pull request has been merged. Write a short note of what shipped to the artifact: what the change does and the pull request it came in. Do not change the code. Kiln posts the note on the ticket and closes it once this step is verified, then cleans up the branches and worktrees.",
+        artifact: "wrap-up.md",
+        publish: "close-ticket",
+        after: "merge",
       },
     ],
   },

@@ -98,7 +98,14 @@ export function createEscalations(store: Store) {
      * by an agent: agents never decide.
      */
     decide(
-      params: { id: unknown; approved: boolean; reason?: unknown; agent?: unknown },
+      params: {
+        id: unknown;
+        approved: boolean;
+        reason?: unknown;
+        agent?: unknown;
+        /** The user knows the pull request is not merged yet and approves it all the same. */
+        confirm?: unknown;
+      },
     ): EscalationRecord {
       if (params.agent !== undefined && params.agent !== null && params.agent !== "") {
         throw new EscalationError(
@@ -113,6 +120,17 @@ export function createEscalations(store: Store) {
       const current = store.getEscalation(id);
       const stale = staleReason(store, current);
       if (stale) throw new EscalationError(`Escalation ${id} is stale: ${stale}.`);
+      if (params.approved && current.gate === "qa-passed" && current.requestId !== null) {
+        const request = store.getRequest(current.requestId);
+        if (request.prUrl && request.prState !== "MERGED" && params.confirm !== true) {
+          throw new EscalationError(
+            `Pull request ${request.prUrl} is ${
+              request.prState === "CLOSED" ? "closed" : "still open"
+            }, not merged. Approving it does not merge it: Kiln keeps the branches and waits ` +
+              `for you to merge it. To approve it anyway, run: kiln approve ${id} --confirm`,
+          );
+        }
+      }
       const decided = store.decideEscalation(id, { approved: params.approved, reason });
       store.appendEvent("escalation.decided", {
         id,

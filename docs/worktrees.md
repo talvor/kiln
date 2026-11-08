@@ -38,5 +38,6 @@ released.
 
 ## Not covered here
 
-Finishing a Request, removing the worktrees of a Request or of a force-removed Project, and
-launching workers automatically when an Assignment is created are left to later tickets.
+Removing the worktrees of a force-removed Project and launching workers automatically when an
+Assignment is created are left to later tickets. Cleaning up after a merged pull request is described
+in [playbooks.md](playbooks.md#implementing-a-ticket).

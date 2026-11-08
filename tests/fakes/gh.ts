@@ -5,6 +5,7 @@
 //    its stdout, stderr and exit code.
 //  - `gh pr create ...` consumes the next reply from pr-create/script.json; `gh pr comment ...`
 //    succeeds. Both are recorded (the pull requests Kiln opens and comments on).
+//  - `gh issue close ...` succeeds and is recorded.
 //  - `gh issue create ...` consumes the next reply from issue/script.json the same way (the
 //    ticket tracker).
 // Every call is recorded. Once a queue is exhausted its command fails loudly (exit 99).
@@ -37,6 +38,18 @@ if (Deno.args[0] === "api") {
   if (reply.stdout) await Deno.stdout.write(new TextEncoder().encode(reply.stdout));
   if (reply.stderr) await Deno.stderr.write(new TextEncoder().encode(reply.stderr));
   Deno.exit(reply.exit ?? 0);
+}
+
+if (Deno.args[0] === "issue" && Deno.args[1] === "close") {
+  // `gh issue close` just succeeds; the call is recorded.
+  const closeDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "issue-close");
+  Deno.mkdirSync(closeDir, { recursive: true });
+  Deno.writeTextFileSync(
+    join(closeDir, "calls.jsonl"),
+    JSON.stringify({ args: Deno.args, cwd: Deno.cwd() }) + "\n",
+    { append: true },
+  );
+  Deno.exit(0);
 }
 
 if (Deno.args[0] === "issue" && Deno.args[1] === "create") {

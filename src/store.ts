@@ -289,6 +289,11 @@ export const MIGRATIONS: string[] = [
      begin select raise(abort, 'chat history is append-only'); end;
    create trigger chat_turns_no_delete before delete on chat_turns
      begin select raise(abort, 'chat history is append-only'); end;`,
+  // 16: following the pull request. A Request remembers the state Kiln last saw its pull request
+  // in, when it was merged, and the Escalation raised because it was closed.
+  `alter table requests add column pr_state text;
+   alter table requests add column pr_merged_at text;
+   alter table requests add column pr_block_id integer references escalations (id);`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -378,7 +383,9 @@ export interface StepSpec {
   /** The file the worker commits; the leader's verification looks for it. */
   artifact: string;
   /** What Kiln publishes from the artifact once the step is verified. */
-  publish?: "ticket" | "draft-pr" | "qa-summary";
+  publish?: "ticket" | "draft-pr" | "qa-summary" | "close-ticket";
+  /** The step waits to begin until the Request's pull request has been merged. */
+  after?: "merge";
   /** A Gate the user must pass, once the step is verified and merged, before the step is done. */
   gate?: "spec-approval" | "qa-passed";
   /** The earlier step that findings reported on this step go back to, as a new Assignment. */
@@ -400,8 +407,15 @@ export interface RequestRecord {
   ticketUrl: string | null;
   /** The pull request Kiln opened for the Request, if its Playbook opens one. */
   prUrl: string | null;
+  /** The state Kiln last saw the pull request in: OPEN, MERGED or CLOSED; null before it looked. */
+  prState: PrState | null;
+  /** When Kiln saw the pull request merged; null until then. */
+  prMergedAt: string | null;
+  /** The Escalation raised because the pull request was closed, while the user has not settled it. */
+  prBlockId: number | null;
   failure: string | null;
 }
+export type PrState = "OPEN" | "MERGED" | "CLOSED";
 export interface NewPlaybookRun {
   playbook: string;
   description: string;
@@ -673,6 +687,10 @@ export interface Store {
   setRequestState(id: number, status: State, failure?: string): void;
   setTicketUrl(id: number, url: string): void;
   setPrUrl(id: number, url: string): void;
+  /** Note the state the Request's pull request is in; a merged one is stamped as merged. */
+  setPrState(id: number, state: PrState | null): void;
+  /** Note the Escalation raised for a closed pull request, or that it is settled (null). */
+  setPrBlock(id: number, escalationId: number | null): void;
   /** The Steps of a Request, in Playbook order. */
   listSteps(requestId: number): StepRecord[];
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
@@ -975,6 +993,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       trackerItem: row.tracker_item as string | null,
       ticketUrl: row.ticket_url as string | null,
       prUrl: row.pr_url as string | null,
+      prState: row.pr_state as PrState | null,
+      prMergedAt: row.pr_merged_at as string | null,
+      prBlockId: row.pr_block_id as number | null,
       failure: row.failure as string | null,
     });
     const toStep = (row: Record<string, unknown>): StepRecord => ({
@@ -1053,6 +1074,16 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       },
       setPrUrl: (id, url) => {
         db.prepare("update requests set pr_url = ? where id = ?").run(url, id);
+      },
+      setPrState: (id, state) => {
+        db.prepare(
+          `update requests set pr_state = ?,
+             pr_merged_at = case when ? = 'MERGED' then coalesce(pr_merged_at, ?) else pr_merged_at end
+           where id = ?`,
+        ).run(state, state, new Date().toISOString(), id);
+      },
+      setPrBlock: (id, escalationId) => {
+        db.prepare("update requests set pr_block_id = ? where id = ?").run(escalationId, id);
       },
       restartStep: (id) => {
         db.prepare(

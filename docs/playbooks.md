@@ -73,7 +73,7 @@ use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
 ```
 
 Each Step names a department with a leader and a worker role in that department. `publish` is
-optional (`"ticket"`, `"draft-pr"` or `"qa-summary"`), and so are `gate` (`"spec-approval"` or `"qa-passed"`, see below) and `findings` (the earlier step QA findings go back to). A file that is not valid is refused when a Request starts, naming the file and the
+optional (`"ticket"`, `"draft-pr"`, `"qa-summary"` or `"close-ticket"`), and so are `after` (`"merge"`: the step waits for the Request's pull request to be merged), `gate` (`"spec-approval"` or `"qa-passed"`, see below) and `findings` (the earlier step QA findings go back to). A file that is not valid is refused when a Request starts, naming the file and the
 problem. A Request keeps the Steps it started with if the file changes later.
 
 ## Verification and retries
@@ -109,7 +109,7 @@ rejected, the step and the Request fail with the user's reason.
 ## Implementing a ticket
 
 `implement-a-ticket` takes a ticket (`--tracker-item #18`) through to a pull request that has passed
-QA. Its steps:
+QA, and, once the user has merged it, wraps the ticket up. Its steps:
 
 1. **check-ticket** (Ticket Checker): is the ticket ready to implement? If not, the leader reports
    status `unready`. The Overseer raises a **blocked-on-user** Gate with what is missing and the
@@ -132,9 +132,26 @@ QA. Its steps:
 
 The user hears nothing until QA passes. Then Kiln comments a QA summary (the QA steps' verdicts)
 on the pull request (`"publish": "qa-summary"`) and the Overseer raises the **qa-passed** Gate
-(`"gate": "qa-passed"`) with the pull request's URL. `kiln approve` finishes the Request;
-`kiln reject --reason` sends the reason back to the implement step as a new Assignment, and QA
-runs again. Merging and cleaning up the pull request are left to later tickets.
+(`"gate": "qa-passed"`) with the pull request's URL. `kiln reject --reason` sends the reason back
+to the implement step as a new Assignment, and QA runs again.
+
+Kiln never merges. The user merges the pull request, and Kiln finds out on its own: every
+`KILN_PR_POLL_SECONDS` (default 60) it asks `gh pr view` for the state of each pull request that
+passed QA and is waiting, with no model involved.
+
+- **Merged** is the go-ahead: an open qa-passed Gate is moot (it shows as stale), and the 5th
+  step, **wrap-up** (Closer, `"after": "merge"`), begins. The Closer writes `wrap-up.md`, a short
+  note of what shipped; once it is verified and merged, Kiln posts it on the ticket and closes the
+  ticket (`"publish": "close-ticket"`, only when the Request has a tracker item). Then Kiln cleans
+  up: the Request's worktrees, its local branches and the request branch on the remote. The
+  Request is `done`. A part that cannot be removed is logged and left; the Request still ends `done`.
+- **Closed without merging** blocks the Request on the user: a **blocked-on-user** Escalation
+  carries the pull request's URL. Nothing is removed. `kiln approve` says the pull request is open
+  again and Kiln looks at it afresh; `kiln reject --reason` fails the Request. The branches stay
+  either way.
+- **`kiln approve` on the qa-passed Gate while the pull request is open** does not merge it, so
+  Kiln asks the user to confirm: it refuses until the command is repeated with `--confirm`.
+  Confirmed, the Gate is approved and Kiln keeps the branches and waits for the merge.
 
 ## Not covered here
 
