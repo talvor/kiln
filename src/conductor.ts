@@ -41,6 +41,7 @@ import type {
 import {
   closeTicket,
   commentOnPr,
+  isResearchTicket,
   openDraftPr,
   parseTicket,
   PublishFailed,
@@ -1089,11 +1090,16 @@ export function createConductor(opts: ConductorOptions) {
         project.name,
         () => startRequest(store, project, opts.worktreesDir),
       );
+      // A research ticket's step goes to its Researcher; every other ticket to the wayfinder.
+      const research = !!req.trackerItem && playbook.steps.some((s) => s.researchWorker) &&
+        await isResearchTicket(project.clonePath, req.trackerItem);
       store.setPlaybook(started.requestId, {
         playbook: playbook.name,
         description: req.description,
         trackerItem: req.trackerItem,
-        steps: playbook.steps,
+        steps: research
+          ? playbook.steps.map((s) => s.researchWorker ? { ...s, worker: s.researchWorker } : s)
+          : playbook.steps,
       });
       store.appendEvent("request.started", { id: started.requestId, playbook: playbook.name });
       await react();

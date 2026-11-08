@@ -1,7 +1,7 @@
 # Playbooks and the Request lifecycle
 
 A **Playbook** is the ordered list of department **Steps** Kiln follows for one type of Request.
-Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets` and `implement-a-ticket`.
+Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets`, `wayfind` and `implement-a-ticket`.
 
 ```
 kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>]
@@ -126,6 +126,19 @@ fails the Request. The URLs are recorded on the Request (`Ticket:` in `kiln requ
 
 The **Overseer approves** the breakdown once that holds, with no Gate: the user is **told
 afterwards**, in the Overseer's news when they next open `kiln chat`.
+
+## Wayfinding a ticket
+
+`wayfind` (`--tracker-item #7`) has one step and one worker session per Request. The Wayfinder takes
+the one ticket and either **resolves** it (reading the code settles it: it writes the answer) or
+**charts** it (it writes the route: the pieces of work in order and what each depends on) in
+`wayfinding.md`. Nothing is published; the note is on the request branch once the leader has
+verified it.
+
+A step may name a `researchWorker`. When the Request's tracker item is labelled `research`
+(`gh issue view --json labels`), that role takes the step instead, so a **research ticket goes to
+the Researcher** (`researcher-1`), who answers its question from primary sources. If the labels
+cannot be read, or there is no tracker item, the Wayfinder takes it.
 
 ## Implementing a ticket
 

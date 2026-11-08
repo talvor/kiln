@@ -384,6 +384,8 @@ export interface StepSpec {
   instructions: string;
   /** The file the worker commits; the leader's verification looks for it. */
   artifact: string;
+  /** The worker role that takes the step instead when the Request's tracker item is a research ticket. */
+  researchWorker?: string;
   /** What Kiln publishes from the artifact once the step is verified. */
   publish?: "ticket" | "tickets" | "draft-pr" | "qa-summary" | "close-ticket";
   /** The step waits to begin until the Request's pull request has been merged. */
