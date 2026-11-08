@@ -24,6 +24,10 @@ export const TOOL_NAMES = [
   "raise_question",
   "raise_escalation",
   "read_escalations",
+  "list_projects",
+  "list_playbooks",
+  "start_request",
+  "request_status",
 ] as const;
 const LAUNCH_TIMEOUT_MS = 30_000;
 const RENUDGE_AFTER_MS = 60_000;
@@ -37,6 +41,8 @@ export interface RouterOptions {
   launch: (req: LaunchRequest) => Promise<LaunchResult>;
   /** What a configured role is told about its job when it is woken; undefined if unknown. */
   rolePrompt?: (roleName: string) => Promise<string | undefined>;
+  /** Where a session may read besides its own directory: the Overseer reads Project clones. */
+  readRoots?: (session: SessionRecord) => string[] | undefined;
   /** The built-in tools a configured role may use; undefined if unknown (the kind's default applies). */
   roleTools?: (roleName: string) => Promise<string[] | undefined>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
@@ -61,7 +67,7 @@ export interface StopVerdict {
   reason?: string;
 }
 
-const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+export const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 export function createRouter(opts: RouterOptions) {
   const { store, log } = opts;
@@ -343,7 +349,11 @@ export function createRouter(opts: RouterOptions) {
     ): Promise<{ allowed: boolean; reason?: string }> {
       const session = sessionAt(address);
       const verdict = judgeCall(
-        { tools: await toolsOf(session), worktree: session.cwd },
+        {
+          tools: await toolsOf(session),
+          worktree: session.cwd,
+          readRoots: opts.readRoots?.(session),
+        },
         tool,
         input,
       );

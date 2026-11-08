@@ -84,6 +84,42 @@ const TOOLS = [
       "or rejected each (and why), or whether it is still open.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "list_projects",
+    description: "Overseer only: the projects registered with Kiln, and whether each is paused.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "list_playbooks",
+    description: "Overseer only: the playbooks a request can follow, and the steps of each.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "start_request",
+    description: "Overseer only: start a request on a registered project. Kiln walks it through " +
+      "the playbook's steps; a decision that is the user's arrives as an escalation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: str("Name of the registered project"),
+        playbook: str("Name of the playbook to follow"),
+        description: str("What the user wants, in enough detail to act on"),
+        trackerItem: str("The ticket in the project's tracker the request came from, e.g. #12"),
+      },
+      required: ["project", "playbook", "description"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "request_status",
+    description: "Overseer only: a request with its steps and their assignments.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "integer", description: "The request's id" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const view = (m: MessageRecord) => ({
@@ -147,14 +183,37 @@ async function callTool(
       };
     case "read_escalations":
       return { escalations: await call(paths, "escalations.raised", { from: address }) };
+    case "list_projects":
+      return { projects: await call(paths, "overseer.projects", { from: address }) };
+    case "list_playbooks":
+      return { playbooks: await call(paths, "overseer.playbooks", { from: address }) };
+    case "start_request":
+      return {
+        started: await call(paths, "overseer.startRequest", {
+          from: address,
+          project: args.project,
+          playbook: args.playbook,
+          description: args.description,
+          trackerItem: args.trackerItem,
+        }),
+      };
+    case "request_status":
+      return {
+        request: await call(paths, "overseer.requestStatus", { from: address, id: args.id }),
+      };
     default:
       throw new Error(`unknown tool "${name}"`);
   }
 }
 
 function validateArgs(name: string, value: unknown): Record<string, unknown> {
-  const fields: Record<string, string> = name === "read_inbox" || name === "read_escalations"
+  const fields: Record<string, string> = name === "read_inbox" || name === "read_escalations" ||
+      name === "list_projects" || name === "list_playbooks"
     ? {}
+    : name === "start_request"
+    ? { project: "string", playbook: "string", description: "string", trackerItem: "string" }
+    : name === "request_status"
+    ? { id: "integer" }
     : name === "send"
     ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
     : name === "raise_question"
@@ -190,6 +249,10 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
       ? ["question"]
       : name === "raise_escalation"
       ? ["summary"]
+      : name === "start_request"
+      ? ["project", "playbook", "description"]
+      : name === "request_status"
+      ? ["id"]
       : []
   ) {
     if (!Object.hasOwn(args, field)) throw new Error(`missing argument "${field}"`);

@@ -50,10 +50,10 @@ withWorld(
 
 withWorld("the policing hook refuses built-in tools outside the role's set", async (world) => {
   await openTeam(world);
-  // A worker may write files; a leader may only look; the overseer touches nothing.
+  // A worker may write files; a leader may only look; the overseer only looks.
   assertEquals(await police(world, "dev-1", "Write", { file_path: "a.txt", content: "x" }), null);
   for (
-    const [address, tool] of [["dev-1", "WebFetch"], ["dev-lead", "Write"], ["overseer", "Read"]]
+    const [address, tool] of [["dev-1", "WebFetch"], ["dev-lead", "Write"], ["overseer", "Write"]]
   ) {
     const denied = await police(world, address, tool, { file_path: "a.txt" });
     assertEquals(denied?.permissionDecision, "deny", `${address} ${tool}`);

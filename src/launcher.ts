@@ -65,7 +65,7 @@ export class ClaudeNotInstalled extends Error {
 }
 
 /** Find the installed `claude` executable on PATH. */
-function findClaude(): string {
+export function findClaude(): string {
   for (const dir of (Deno.env.get("PATH") ?? "").split(delimiter).filter(Boolean)) {
     const candidate = resolve(dir, "claude");
     try {

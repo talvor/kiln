@@ -43,3 +43,6 @@ once; the rest wait as planned. See [the limits guide](docs/limits.md).
 
 Decisions that are the user's to make wait in `kiln escalations`; only `kiln approve <id>` and
 `kiln reject <id> --reason <text>` settle them. See [the escalation guide](docs/escalations.md).
+
+Talk to the Overseer with `kiln chat`: an interactive Claude session with Kiln's tools, status line
+and model-free commands. See [the chat guide](docs/chat.md).

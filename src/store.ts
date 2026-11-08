@@ -267,6 +267,28 @@ export const MIGRATIONS: string[] = [
      begin select raise(abort, 'a decided escalation is never changed'); end;
    create trigger escalations_no_delete before delete on escalations
      begin select raise(abort, 'escalations are never removed'); end;`,
+  // 15: the chat with the Overseer. Each Claude session of the Overseer chat is a chat session; what the
+  // user and the Overseer said in them is kept, append-only, so a fresh session can be seeded.
+  `create table chat_sessions (
+     id integer primary key,
+     started_at text not null,
+     seen_at text not null,
+     ended_at text,
+     end_reason text check (end_reason in ('exit', 'rollover')),
+     rollover_requested_at text,
+     events_through integer not null default 0
+   ) strict;
+   create table chat_turns (
+     id integer primary key,
+     chat_session_id integer not null references chat_sessions (id),
+     speaker text not null check (speaker in ('user', 'overseer')),
+     text text not null,
+     at text not null
+   ) strict;
+   create trigger chat_turns_no_update before update on chat_turns
+     begin select raise(abort, 'chat history is append-only'); end;
+   create trigger chat_turns_no_delete before delete on chat_turns
+     begin select raise(abort, 'chat history is append-only'); end;`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -504,6 +526,33 @@ export class EscalationDecidedError extends Error {
   }
 }
 
+/** One Claude session of `kiln chat`; a rollover ends one and begins the next. */
+export interface ChatRecord {
+  id: number;
+  startedAt: string;
+  /** The last sign of life from `kiln chat`. */
+  seenAt: string;
+  endedAt: string | null;
+  endReason: "exit" | "rollover" | null;
+  /** Set once the session's context has grown too large and it should be replaced. */
+  rolloverRequestedAt: string | null;
+  /** The newest event there was when the session began: the digest told it everything before. */
+  eventsThrough: number;
+}
+export interface ChatTurn {
+  id: number;
+  chatId: number;
+  speaker: "user" | "overseer";
+  text: string;
+  at: string;
+}
+export interface EventRecord {
+  id: number;
+  ts: string;
+  kind: string;
+  data: Record<string, unknown>;
+}
+
 export type Role = "overseer" | "leader" | "worker";
 export type MessageKind = "assignment" | "result" | "question" | "answer";
 
@@ -707,6 +756,21 @@ export interface Store {
   /** Keep text the user typed on the page for the Overseer. */
   addEscalationNote(id: number, body: string): EscalationNote;
   listEscalationNotes(id?: number): EscalationNote[];
+  /** Begin a chat session. */
+  startChat(): ChatRecord;
+  /** Throws if there is no such chat session. */
+  getChat(id: number): ChatRecord;
+  /** The newest chat session, if any. */
+  latestChat(): ChatRecord | undefined;
+  /** Note a sign of life. */
+  touchChat(id: number): void;
+  endChat(id: number, reason: "exit" | "rollover"): void;
+  requestRollover(id: number): void;
+  addChatTurn(chatId: number, speaker: ChatTurn["speaker"], text: string): ChatTurn;
+  /** The last `limit` turns of the chat, across sessions, oldest first. */
+  listChatTurns(limit: number): ChatTurn[];
+  /** Events after `afterId`, oldest first, of these kinds (all kinds if none given). */
+  listEvents(afterId: number, kinds?: string[]): EventRecord[];
   close(): void;
 }
 
@@ -883,6 +947,22 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       const row = db.prepare("select * from escalations where id = ?").get(id);
       if (!row) throw new UnknownEscalationError(id);
       return toEscalation(row);
+    };
+    const lastEventId = (): number =>
+      (db.prepare("select coalesce(max(id), 0) as id from events").get() as { id: number }).id;
+    const toChat = (row: Record<string, unknown>): ChatRecord => ({
+      id: row.id as number,
+      startedAt: row.started_at as string,
+      seenAt: row.seen_at as string,
+      endedAt: row.ended_at as string | null,
+      endReason: row.end_reason as ChatRecord["endReason"],
+      rolloverRequestedAt: row.rollover_requested_at as string | null,
+      eventsThrough: row.events_through as number,
+    });
+    const getChat = (id: number): ChatRecord => {
+      const row = db.prepare("select * from chat_sessions where id = ?").get(id);
+      if (!row) throw new Error(`No chat session ${id} exists.`);
+      return toChat(row);
     };
     const toRequest = (row: Record<string, unknown>): RequestRecord => ({
       id: row.id as number,
@@ -1397,6 +1477,59 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       appendEvent: (kind, data = {}) => {
         insertEvent.run(new Date().toISOString(), kind, JSON.stringify(data));
       },
+      startChat: () => {
+        const now = new Date().toISOString();
+        const { lastInsertRowid } = db.prepare(
+          "insert into chat_sessions (started_at, seen_at, events_through) values (?, ?, ?)",
+        ).run(now, now, lastEventId());
+        return getChat(Number(lastInsertRowid));
+      },
+      getChat,
+      latestChat: () => {
+        const row = db.prepare("select * from chat_sessions order by id desc limit 1").get();
+        return row ? toChat(row) : undefined;
+      },
+      touchChat: (id) => {
+        db.prepare("update chat_sessions set seen_at = ? where id = ?")
+          .run(new Date().toISOString(), id);
+      },
+      endChat: (id, reason) => {
+        db.prepare(
+          "update chat_sessions set ended_at = ?, end_reason = ?, events_through = ? " +
+            "where id = ? and ended_at is null",
+        ).run(new Date().toISOString(), reason, lastEventId(), id);
+      },
+      requestRollover: (id) => {
+        db.prepare(
+          "update chat_sessions set rollover_requested_at = ? where id = ? " +
+            "and rollover_requested_at is null",
+        ).run(new Date().toISOString(), id);
+      },
+      addChatTurn: (chatId, speaker, text) => {
+        const at = new Date().toISOString();
+        const { lastInsertRowid } = db.prepare(
+          "insert into chat_turns (chat_session_id, speaker, text, at) values (?, ?, ?, ?)",
+        ).run(chatId, speaker, text, at);
+        return { id: Number(lastInsertRowid), chatId, speaker, text, at };
+      },
+      listChatTurns: (limit) =>
+        db.prepare("select * from chat_turns order by id desc limit ?").all(limit).reverse()
+          .map((row) => ({
+            id: row.id as number,
+            chatId: row.chat_session_id as number,
+            speaker: row.speaker as ChatTurn["speaker"],
+            text: row.text as string,
+            at: row.at as string,
+          })),
+      listEvents: (afterId, kinds) =>
+        db.prepare("select * from events where id > ? order by id").all(afterId)
+          .filter((row) => !kinds || kinds.includes(row.kind as string))
+          .map((row) => ({
+            id: row.id as number,
+            ts: row.ts as string,
+            kind: row.kind as string,
+            data: JSON.parse(row.data as string),
+          })),
       close: () => db.close(),
     };
   } catch (err) {

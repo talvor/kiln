@@ -19,6 +19,8 @@ export interface KilnPaths {
   /** Lavish pages for Escalations; local files, never published. */
   pages: string;
   log: string;
+  /** Where the Overseer's chat session works; empty, so there is nothing in it to change. */
+  chat: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -69,13 +71,24 @@ export function resolvePaths(
     worktrees: join(data, "worktrees"),
     pages: join(data, "pages"),
     log: join(state, "daemon.log"),
+    chat: join(data, "overseer"),
   };
 }
 
 /** Create every directory Kiln writes to, private to the user. */
 export function ensureDirs(p: KilnPaths): void {
   for (
-    const dir of [p.config, p.data, p.backups, p.projects, p.worktrees, p.pages, p.state, p.runtime]
+    const dir of [
+      p.config,
+      p.data,
+      p.backups,
+      p.projects,
+      p.worktrees,
+      p.pages,
+      p.chat,
+      p.state,
+      p.runtime,
+    ]
   ) {
     Deno.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }

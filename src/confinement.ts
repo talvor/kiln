@@ -22,7 +22,8 @@ export type BuiltinTool = typeof BUILTIN_TOOLS[number];
 
 /** What a role may use when its configuration does not say. */
 export const DEFAULT_TOOLS: Record<Role, BuiltinTool[]> = {
-  overseer: [],
+  // The Overseer looks at the Projects it is asked about and changes nothing.
+  overseer: ["Read", "Glob", "Grep"],
   leader: ["Read", "Glob", "Grep"],
   worker: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
 };
@@ -99,6 +100,8 @@ export interface CallContext {
   tools: readonly string[];
   /** The Worktree: the only place the session may write. */
   worktree: string;
+  /** When set, the only places the session may read: it has read-only access to these. */
+  readRoots?: readonly string[];
 }
 
 /** `path` with symlinks resolved, as far as it exists: a link cannot lead out of the Worktree. */
@@ -131,6 +134,23 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
   if (FILE_READERS.includes(tool)) {
     const where = target ? realpath(resolve(ctx.worktree, target)) : undefined;
     if (where && isSecretPath(where)) return deny(`${tool} on ${target}: that file holds secrets`);
+    if (ctx.readRoots) {
+      const outside = [input.file_path, input.notebook_path, input.path]
+        .filter((p): p is string => typeof p === "string")
+        .find((p) =>
+          !ctx.readRoots!.some((root) => insideWorktree(root, resolve(ctx.worktree, p)))
+        );
+      const reaching = [tool === "Glob" ? input.pattern : tool === "Grep" ? input.glob : undefined]
+        .find((p): p is string =>
+          typeof p === "string" && (isAbsolute(p) || p.split("/").includes(".."))
+        );
+      if (!outside && reaching) {
+        return deny(`${tool} for ${reaching}: you may read only the registered projects`);
+      }
+      if (outside) {
+        return deny(`${tool} on ${outside}: you may read only the registered projects`);
+      }
+    }
     const patterns = tool === "Glob" ? [input.pattern] : tool === "Grep" ? [input.glob] : [];
     for (const pattern of patterns) {
       if (typeof pattern === "string" && isSecretPath(pattern.replaceAll("*", "x"))) {
