@@ -140,6 +140,12 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     } catch (err) {
       log.error("page rewrite failed", { err });
     }
+    // A question that went all the way to the user is answered by their decision.
+    try {
+      router.answerFromDecision(decided);
+    } catch (err) {
+      log.error("could not answer the question behind an escalation", { err });
+    }
     // A Gate waits on this decision: let the conductor carry on at once.
     if (decided.gate) {
       conductor.react().catch((err) => log.error("conductor pass failed", { err }));
@@ -315,6 +321,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.body,
         params.inReplyTo as number | undefined,
         params.assignmentId as number | undefined,
+        params.relaysQuestion as number | undefined,
       );
       await conductor.react();
       return sent;
@@ -325,6 +332,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         params.question,
         params.context,
         params.assignmentId as number | undefined,
+        params.relaysQuestion as number | undefined,
       ),
     "escalations.raise": (params) => {
       const raised = escalations.raise(String(params.from), params);

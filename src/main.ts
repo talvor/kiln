@@ -578,7 +578,7 @@ async function main(args: string[]): Promise<number> {
       await ensureDaemon(paths);
       const env = await call<Record<string, string>>(paths, "worktrees.environment", { path: cwd });
       const result = await launch({ prompt, cwd, maxBudgetUsd, env });
-      if (asJson) console.log(JSON.stringify(result));
+      if (asJson) console.log(JSON.stringify({ ...result, sessionId: undefined }));
       else if (result.ok) console.log(result.text);
       else console.error(`claude stopped: ${result.outcome}: ${result.text}`);
       return result.ok ? 0 : 1;

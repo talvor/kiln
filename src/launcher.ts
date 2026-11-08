@@ -35,6 +35,10 @@ export interface LaunchRequest {
   denyByDefault?: boolean;
   /** Claude's sandbox for commands, e.g. where they may write. */
   sandbox?: Record<string, unknown>;
+  /** Keep the Claude session so a later launch can resume it. */
+  persist?: boolean;
+  /** Resume this earlier Claude session instead of starting a new one. */
+  resume?: string;
   abortController?: AbortController;
 }
 
@@ -50,6 +54,8 @@ export interface LaunchResult {
   turns: number;
   model: string;
   maxBudgetUsd: number;
+  /** The Claude session the launch ran in; pass it as `resume` to carry on in it. */
+  sessionId?: string;
 }
 
 export class ClaudeNotInstalled extends Error {
@@ -88,7 +94,8 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       tools: req.tools ?? (req.readOnly ? ["Read", "Glob", "Grep"] : undefined),
       disallowedTools: req.disallowedTools,
       sandbox: req.sandbox,
-      persistSession: false,
+      persistSession: req.persist === true || req.resume !== undefined,
+      resume: req.resume,
       settingSources: [],
       mcpServers: req.mcpServers,
       allowedTools: req.allowedTools,
@@ -105,6 +112,7 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
         turns: msg.num_turns,
         model: LAUNCHER_MODEL,
         maxBudgetUsd,
+        sessionId: msg.session_id,
       };
       return msg.subtype === "success"
         ? { ...base, ok: !msg.is_error, text: msg.result, outcome: msg.subtype }

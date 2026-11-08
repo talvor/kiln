@@ -47,6 +47,11 @@ const TOOLS = [
         question: str("The question"),
         context: str("What they need to know"),
         assignmentId: { type: "integer", description: "Assignment this question concerns" },
+        relaysQuestion: {
+          type: "integer",
+          description: "Leaders: id of a question your worker asked you that you cannot answer " +
+            "yourself. Kiln passes the answer back down to the worker for you.",
+        },
       },
       required: ["question"],
       additionalProperties: false,
@@ -63,6 +68,11 @@ const TOOLS = [
         summary: str("The decision the user is asked to make"),
         detail: str("What the user needs to know to decide"),
         requestId: { type: "integer", description: "The request this decision concerns" },
+        questionId: {
+          type: "integer",
+          description: "Id of a question you were asked that only the user can settle. " +
+            "Their decision is sent back down as the answer.",
+        },
       },
       required: ["summary"],
       additionalProperties: false,
@@ -84,6 +94,7 @@ const view = (m: MessageRecord) => ({
   body: m.body,
   inReplyTo: m.inReplyTo,
   assignmentId: m.assignmentId,
+  relayOf: m.relayOf,
   synthesised: m.synthesised,
   sentAt: m.sentAt,
 });
@@ -120,6 +131,7 @@ async function callTool(
             question: args.question,
             context: args.context,
             assignmentId: args.assignmentId,
+            relaysQuestion: args.relaysQuestion,
           }),
         ),
       };
@@ -130,6 +142,7 @@ async function callTool(
           summary: args.summary,
           detail: args.detail,
           requestId: args.requestId,
+          questionId: args.questionId,
         }),
       };
     case "read_escalations":
@@ -145,9 +158,9 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
     : name === "send"
     ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
     : name === "raise_question"
-    ? { question: "string", context: "string", assignmentId: "integer" }
+    ? { question: "string", context: "string", assignmentId: "integer", relaysQuestion: "integer" }
     : name === "raise_escalation"
-    ? { summary: "string", detail: "string", requestId: "integer" }
+    ? { summary: "string", detail: "string", requestId: "integer", questionId: "integer" }
     : (() => {
       throw new Error(`unknown tool "${name}"`);
     })();

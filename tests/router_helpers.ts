@@ -15,6 +15,7 @@ export interface Message {
   body: Record<string, unknown>;
   inReplyTo: number | null;
   assignmentId: number | null;
+  relayOf: number | null;
   synthesised: boolean;
   readAt: string | null;
   deliveries: number;

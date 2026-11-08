@@ -209,7 +209,25 @@ export function withWorld(
       await body(world);
     } finally {
       await world.kiln("daemon", "stop");
-      await Deno.remove(world.root, { recursive: true });
+      await removeTree(world.root);
     }
   });
+}
+
+/**
+ * Remove a directory tree. A worker process stopped by the daemon may still be
+ * writing into the tree for a moment (macOS reports "Directory not empty"), so
+ * retry until it has fully exited.
+ */
+async function removeTree(path: string): Promise<void> {
+  for (let attempt = 0;; attempt++) {
+    try {
+      await Deno.remove(path, { recursive: true });
+      return;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      if (attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 }

@@ -353,7 +353,7 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
     async () =>
       (await Promise.all(
         ["dev-1", "dev-2"].map((name) => asAgent(world, name, (agent) => agent.inbox())),
-      )).map(([m]) => m.deliveries).sort(),
+      )).map(([m]) => m?.deliveries ?? 0).sort(),
     (counts) => counts[1] === 1,
     10_000,
   );
