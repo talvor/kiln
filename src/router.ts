@@ -294,7 +294,12 @@ export function createRouter(opts: RouterOptions) {
 
   /** A launch failed for infrastructure reasons: retry later, or give up and report it. */
   async function launchFailed(session: SessionRecord, why: string): Promise<void> {
-    const policy = await opts.infrastructure?.() ?? DEFAULT_LIMITS.infrastructure;
+    let policy = DEFAULT_LIMITS.infrastructure;
+    try {
+      policy = (await opts.infrastructure?.()) ?? policy;
+    } catch {
+      policy = DEFAULT_LIMITS.infrastructure;
+    }
     const failures = session.launchFailures + 1;
     if (failures > policy.retries) {
       store.recordLaunchFailure(session.address, { stuck: true });
