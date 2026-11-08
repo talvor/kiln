@@ -12,5 +12,6 @@ tool call Kiln refused. The question is answered at the first level that can.
   `questionId`). The user's `kiln approve` or `kiln reject --reason` is then the answer, and it
   goes down the same chain.
 - An answer wakes the very Claude session that asked: Kiln remembers each agent's Claude session
-  and resumes it, so a Worker carries on with its context instead of starting over. A grilling-style
-  skill's questions are asked this way, so they work unattended.
+  and resumes it, so a Worker carries on with its context instead of starting over. If the session
+  cannot be resumed, Kiln retries once with a fresh one, which reads the answer from its
+  inbox. A grilling-style skill's questions are asked this way, so they work unattended.
