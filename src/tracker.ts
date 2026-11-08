@@ -1,5 +1,6 @@
 // The Project's ticket tracker, reached through the `gh` command in Kiln's clone of the Project.
 import { firstLine, REMOTE_TIMEOUT_MS, run } from "./checks.ts";
+import type { PrState } from "./store.ts";
 
 /** The ticket could not be published; the message says why. */
 export class PublishFailed extends Error {}
@@ -124,7 +125,7 @@ export async function closeTicket(clonePath: string, item: string, comment: stri
 export async function pullRequestState(
   clonePath: string,
   prUrl: string,
-): Promise<"OPEN" | "MERGED" | "CLOSED" | null> {
+): Promise<PrState | null> {
   try {
     const result = await run(
       "gh",
