@@ -103,3 +103,7 @@ _Avoid_: PR poller, auto-merge
 **Wrap-up**:
 The last step of implementing a ticket, an Assignment to a Closer that begins once the pull request is merged. Its note is posted on the tracker item, and Kiln closes the tracker item.
 _Avoid_: closing step, finalisation
+
+**Breakdown**:
+A spec split into tickets: each ticket says which of the spec's acceptance criteria it covers and which tickets it is blocked by. The Leader accepts it only when every criterion is covered and the dependencies have no cycle; once its tickets are in the tracker the Overseer approves it and tells the user afterwards.
+_Avoid_: plan, decomposition

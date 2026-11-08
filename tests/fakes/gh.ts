@@ -6,6 +6,7 @@
 //  - `gh pr create ...` consumes the next reply from pr-create/script.json; `gh pr comment ...`
 //    succeeds. Both are recorded (the pull requests Kiln opens and comments on).
 //  - `gh issue close ...` succeeds and is recorded.
+//  - `gh issue view ...` replies from issue-view/script.json, then finds the ticket open.
 //  - `gh issue create ...` consumes the next reply from issue/script.json the same way (the
 //    ticket tracker).
 // Every call is recorded. Once a queue is exhausted its command fails loudly (exit 99).
@@ -50,6 +51,31 @@ if (Deno.args[0] === "issue" && Deno.args[1] === "close") {
     { append: true },
   );
   Deno.exit(0);
+}
+
+if (Deno.args[0] === "issue" && Deno.args[1] === "view") {
+  // `gh issue view` replies from issue-view/script.json; once that is used up, the ticket is
+  // found (open). Calls are recorded.
+  const viewDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "issue-view");
+  const viewFile = join(viewDir, "script.json");
+  Deno.mkdirSync(viewDir, { recursive: true });
+  Deno.writeTextFileSync(
+    join(viewDir, "calls.jsonl"),
+    JSON.stringify({ args: Deno.args, cwd: Deno.cwd() }) + "\n",
+    { append: true },
+  );
+  let viewScript: { replies: { stdout?: string; stderr?: string; exit?: number }[]; next: number };
+  try {
+    viewScript = JSON.parse(Deno.readTextFileSync(viewFile));
+  } catch {
+    viewScript = { replies: [], next: 0 };
+  }
+  const reply = viewScript.replies[viewScript.next] ?? { stdout: '{"state":"OPEN"}\n' };
+  viewScript.next++;
+  Deno.writeTextFileSync(viewFile, JSON.stringify(viewScript));
+  if (reply.stdout) await Deno.stdout.write(new TextEncoder().encode(reply.stdout));
+  if (reply.stderr) await Deno.stderr.write(new TextEncoder().encode(reply.stderr));
+  Deno.exit(reply.exit ?? 0);
 }
 
 if (Deno.args[0] === "issue" && Deno.args[1] === "create") {

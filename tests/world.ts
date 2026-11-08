@@ -39,6 +39,8 @@ export interface World extends Home {
   /** The scripted `gh issue create`, which Kiln publishes tickets through. */
   tracker: {
     script(replies: ApiReply[]): Promise<void>;
+    /** What `gh issue view` replies, in order; after that every ticket is found. */
+    scriptViews(replies: ApiReply[]): Promise<void>;
     /** The tickets Kiln published, in order. */
     issues(): Promise<{ title: string; body: string; cwd?: string }[]>;
     /** The tickets Kiln closed, in order: the tracker item and the closing comment. */
@@ -197,6 +199,7 @@ export async function makeWorld(): Promise<World> {
     },
     tracker: {
       script: (replies) => script("issue", "replies", replies),
+      scriptViews: (replies) => script("issue-view", "replies", replies),
       issues: async () =>
         (await calls("issue")).map((call) => {
           const flag = (name: string) => call.args[call.args.indexOf(name) + 1];

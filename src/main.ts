@@ -724,6 +724,7 @@ interface RequestStatus {
   trackerItem: string | null;
   branch: string | null;
   ticketUrl: string | null;
+  ticketUrls: string[];
   prUrl: string | null;
   failure: string | null;
   steps: {
@@ -768,6 +769,7 @@ function describeRequest(r: RequestStatus): string {
     }
   }
   if (r.ticketUrl) lines.push(`Ticket: ${r.ticketUrl}`);
+  for (const url of r.ticketUrls ?? []) lines.push(`Ticket: ${url}`);
   if (r.prUrl) lines.push(`Pull request: ${r.prUrl}`);
   if (r.failure) lines.push(`Failure: ${r.failure}`);
   return lines.join("\n");

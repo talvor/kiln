@@ -1,7 +1,7 @@
 # Playbooks and the Request lifecycle
 
 A **Playbook** is the ordered list of department **Steps** Kiln follows for one type of Request.
-Kiln ships `diagnose-a-bug`, `design-a-feature` and `implement-a-ticket`.
+Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets` and `implement-a-ticket`.
 
 ```
 kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>]
@@ -106,6 +106,27 @@ Project's scope reports its step with status `out-of-scope` instead of `done`. T
 an Escalation with the leader's reason. Approved, the step goes back to the leader to carry on;
 rejected, the step and the Request fail with the user's reason.
 
+## Planning a spec into tickets
+
+`plan-a-spec-into-tickets` has one step: the Ticket Planner reads the spec (the request's tracker
+item, or `spec.md` on the branch) and writes `tickets.json`:
+
+```json
+{ "criteria": { "c1": "Users can export CSV" },
+  "tickets": [{ "key": "a", "title": "...", "body": "...", "covers": ["c1"], "blockedBy": [] }] }
+```
+
+The **Leader's checks** run when the leader reports the step done, as part of verification; a
+breakdown that fails any of them is rejected like any other work, with the problems as feedback:
+the file is valid, **every criterion** of the spec is covered by some ticket, and the tickets'
+dependencies have **no cycle**. Once it is merged, Kiln opens the tickets in the tracker
+(`"publish": "tickets"`), the ones a ticket is blocked by first so it can list them under
+"Blocked by", and then checks **each ticket is in the tracker** (`gh issue view`); one that is not
+fails the Request. The URLs are recorded on the Request (`Ticket:` in `kiln request status`).
+
+The **Overseer approves** the breakdown once that holds, with no Gate: the user is **told
+afterwards**, in the Overseer's news when they next open `kiln chat`.
+
 ## Implementing a ticket
 
 `implement-a-ticket` takes a ticket (`--tracker-item #18`) through to a pull request that has passed
@@ -155,5 +176,5 @@ passed QA and is waiting, with no model involved.
 
 ## Not covered here
 
-Following a diagnosis with a fix Request, and planning tickets from an approved spec, are left to later tickets.
+Following a diagnosis with a fix Request is left to a later ticket.
 Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.

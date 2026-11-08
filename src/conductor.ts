@@ -6,6 +6,7 @@
 // The conductor holds no state of its own. `react` reads the store and does whatever the
 // Messages and records say is due, so it can be run after any change, or again after a crash.
 import { join } from "node:path";
+import { order, parseBreakdown } from "./breakdown.ts";
 import {
   type Budget,
   budgetFor,
@@ -45,6 +46,8 @@ import {
   PublishFailed,
   publishTicket,
   pullRequestState,
+  ticketInTracker,
+  ticketRef,
 } from "./tracker.ts";
 import { verifyWork } from "./verify.ts";
 import {
@@ -612,6 +615,49 @@ export function createConductor(opts: ConductorOptions) {
     return false;
   }
 
+  /**
+   * The breakdown is verified and merged: open its tickets in the tracker, the ones a ticket is
+   * blocked by first so it can name them, and check every one is there. The Overseer approves the
+   * breakdown, and the user hears of it afterwards.
+   */
+  async function publishBreakdown(
+    request: RequestRecord,
+    step: StepRecord,
+    project: ProjectRecord,
+  ) {
+    const wt = store.getWorktree(request.worktreeId!);
+    const text = await Deno.readTextFile(join(wt.path, step.spec.artifact)).catch(() => "");
+    const parsed = parseBreakdown(text);
+    if ("problems" in parsed) {
+      throw new StepFailed(`Verification failed: ${step.spec.artifact}: ${parsed.problems[0]}`);
+    }
+    const refs = new Map<string, string>();
+    const urls: string[] = [];
+    try {
+      for (const t of order(parsed.tickets).sorted) {
+        let body = t.body;
+        if (t.blockedBy.length) {
+          body += `\n\n## Blocked by\n\n${t.blockedBy.map((k) => `- ${refs.get(k)}`).join("\n")}`;
+        }
+        if (request.trackerItem) body += `\n\nTracker item: ${request.trackerItem}`;
+        const url = await publishTicket(project.clonePath, { title: t.title, body: body.trim() });
+        refs.set(t.key, ticketRef(url));
+        urls.push(url);
+        store.addTicketUrl(request.id, url);
+        store.appendEvent("ticket.published", { request: request.id, url });
+      }
+    } catch (err) {
+      if (err instanceof PublishFailed) throw new StepFailed(err.message);
+      throw err;
+    }
+    for (const url of urls) {
+      if (!(await ticketInTracker(project.clonePath, url))) {
+        throw new StepFailed(`Verification failed: the ticket ${url} is not in the tracker.`);
+      }
+    }
+    store.appendEvent("breakdown.approved", { request: request.id, tickets: urls });
+  }
+
   /** The leader says the step is verified: merge the work back, publish, and finish the step. */
   async function close(request: RequestRecord, step: StepRecord, assignments: AssignmentRecord[]) {
     const report = store.listMessages({ kind: "result", inReplyTo: step.messageId! })[0];
@@ -698,6 +744,9 @@ export function createConductor(opts: ConductorOptions) {
       } catch (err) {
         throw new StepFailed((err as Error).message);
       }
+    }
+    if (step.spec.publish === "tickets" && !request.ticketUrls.length) {
+      await publishBreakdown(request, step, project);
     }
     if (step.spec.publish === "draft-pr" && !request.prUrl) {
       const requestWt = store.getWorktree(request.worktreeId!);

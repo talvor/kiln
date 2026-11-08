@@ -140,3 +140,24 @@ export async function pullRequestState(
     return null;
   }
 }
+
+/** Whether the ticket at `url` can be found in the Project's tracker. */
+export async function ticketInTracker(clonePath: string, url: string): Promise<boolean> {
+  try {
+    const result = await run(
+      "gh",
+      ["issue", "view", url, "--json", "state"],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+    return result.code === 0 && !!JSON.parse(result.stdout).state;
+  } catch {
+    return false;
+  }
+}
+
+/** The ticket's number in a tracker URL, as `#12`; the URL itself when it has none. */
+export const ticketRef = (url: string): string => {
+  const n = url.match(/\/(\d+)\/?$/)?.[1];
+  return n ? `#${n}` : url;
+};
