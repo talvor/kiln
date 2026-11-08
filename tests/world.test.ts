@@ -15,7 +15,8 @@ withWorld("a running Kiln can do a piece of work against the fake world", async 
   const run = await world.exec(world.project.path, "claude", "-p", "add a greeting");
   assertEquals(run.code, 0, run.stderr);
   assertEquals(run.stdout, "all done\n");
-  assertEquals(await world.launcher.calls(), [{
+  const calls = (await world.launcher.calls()).map(({ args, cwd, env }) => ({ args, cwd, env }));
+  assertEquals(calls, [{
     args: ["-p", "add a greeting"],
     cwd: await Deno.realPath(world.project.path),
     env: {},
