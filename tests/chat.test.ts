@@ -72,7 +72,10 @@ withWorld("kiln chat runs claude interactively as the Overseer", async (world) =
   const [, call] = await world.launcher.calls(); // the first call was the registration
   assert(!call.args.includes("--print") && !call.args.includes("--input-format"), "interactive");
   assertEquals(call.env?.KILN_AGENT, "overseer");
-  assertEquals(call.cwd, join(world.dirs.data, "overseer"));
+  assertEquals(
+    await Deno.realPath(call.cwd!),
+    await Deno.realPath(join(world.dirs.data, "overseer")),
+  );
 
   // Kiln's tools, over MCP, and nobody else's.
   const mcp = JSON.parse((await claudeArg(world, 1, "--mcp-config"))!);
