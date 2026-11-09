@@ -1,3 +1,4 @@
+import { listRequests, requestEvents, requestReport, requestTranscript } from "./observe.ts";
 import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { run } from "./checks.ts";
@@ -431,6 +432,20 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     "requests.status": async (params) => {
       await budgets.refresh();
       return requestStatus(store, Number(params.id), budgets.requestBudget);
+    },
+    "requests.list": async (params) => {
+      await budgets.refresh();
+      return listRequests(store, params.all === true, budgets.requestBudget);
+    },
+    "requests.events": (params) =>
+      requestEvents(store, Number(params.id), Number(params.after ?? 0)),
+    "requests.transcript": (params) => requestTranscript(store, Number(params.id)),
+    "requests.report": async (params) => {
+      await budgets.refresh();
+      return requestReport(
+        store,
+        requestStatus(store, Number(params.id), budgets.requestBudget),
+      );
     },
     "cost.report": () => budgets.cost(),
     "assignments.start": (params) => {

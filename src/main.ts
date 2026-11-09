@@ -16,6 +16,16 @@ import type { ProjectRecord } from "./store.ts";
 import type { StopVerdict } from "./router.ts";
 import type { CostReport } from "./budgets.ts";
 import { money } from "./news.ts";
+import {
+  describeReport,
+  describeTranscript,
+  type RequestEvent,
+  type RequestListing,
+  type RequestReport,
+  type TranscriptMessage,
+} from "./observe.ts";
+import { describeChecks, runDoctor } from "./doctor.ts";
+import { needsSetup, runSetup } from "./setup.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -30,9 +40,13 @@ const PROJECT_USAGE = `Usage:
   kiln project default-branch <name> <branch>
   kiln project remove <name> [--force]`;
 const REQUEST_USAGE = `Usage:
+  kiln request list [--all] [--json]
   kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]]
   kiln request status <request-id> [--json]
   kiln request cancel <request-id>`;
+const WATCH_USAGE = "Usage: kiln watch <request-id>";
+const TRANSCRIPT_USAGE = "Usage: kiln transcript <request-id> [--json]";
+const REPORT_USAGE = "Usage: kiln report <request-id> [--json]";
 const ASSIGNMENT_USAGE = `Usage:
   kiln assignment start <request-id> <assignment-message-id>
   kiln assignment merge <assignment-id>`;
@@ -56,11 +70,21 @@ Usage:
   kiln request start <project> [--playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]]
                          Start a request: a request branch in its own worktree, and with a
                          playbook, the steps Kiln walks through for it
+  kiln request list [--all] [--json]
+                         List the requests that are running or waiting (--all: finished ones too)
   kiln request status <request-id> [--json]
                          Show a request, its steps and their assignments
   kiln request cancel <request-id>
                          Cancel a request: its workers stop and it fails; its branches and
                          worktrees stay
+  kiln watch <request-id>
+                         Follow a request live until it finishes or fails
+  kiln transcript <request-id> [--json]
+                         What the request's agents said to each other, in order
+  kiln report <request-id> [--json]
+                         How a request went: its outcome, cost, steps and decisions
+  kiln doctor [--json]   Check that this machine is ready: git, Claude, the store, remotes, tools
+  kiln setup             Set the spend limits Kiln keeps to (asked on the first run)
   kiln cost [--json]     What was spent today: by project and by request, against the daily cap
   kiln halt              Stop all work: running agents are stopped and nobody is woken until resumed
   kiln resume            Carry on after a halt, and try again the agents Kiln gave up on
@@ -107,6 +131,12 @@ async function main(args: string[]): Promise<number> {
 
   const paths = resolvePaths();
 
+  // The first time a person uses Kiln at a terminal, ask for the spend limits.
+  const asksFirst = !["daemon", "tool-server", "setup", "doctor"].includes(cmd);
+  if (asksFirst && Deno.stdin.isTerminal() && Deno.stdout.isTerminal() && await needsSetup(paths)) {
+    await setupCommand();
+  }
+
   switch (cmd) {
     case "daemon":
       return await daemonCommand(sub, json);
@@ -147,9 +177,31 @@ async function main(args: string[]): Promise<number> {
       console.log(json ? JSON.stringify(report, null, 2) : describeCost(report));
       return 0;
     }
+    case "watch":
+    case "transcript":
+    case "report":
+      return await observeCommand(cmd, args.slice(1));
+    case "doctor": {
+      if (args.slice(1).some((a) => a !== "--json")) {
+        console.error("Usage: kiln doctor [--json]");
+        return 2;
+      }
+      const checks = await runDoctor(paths);
+      console.log(json ? JSON.stringify(checks, null, 2) : describeChecks(checks));
+      return checks.some((c) => c.status === "fail") ? 1 : 0;
+    }
+    case "setup":
+      if (args.length > 1) {
+        console.error("Usage: kiln setup");
+        return 2;
+      }
+      await setupCommand();
+      return 0;
     case "request":
-      return sub === "status" || sub === "cancel" ||
-          (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
+      return sub === "list"
+        ? await requestListCommand(args.slice(2))
+        : sub === "status" || sub === "cancel" ||
+            (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
         ? await requestCommand(sub, args.slice(2))
         : await worktreeCommand(sub === "start" ? "requests.start" : "", args.slice(2));
     case "assignment":
@@ -218,6 +270,92 @@ async function main(args: string[]): Promise<number> {
       console.log(`Worktree: ${r.path}`);
       for (const [key, value] of Object.entries(r.env!)) console.log(`${key}=${value}`);
       return 0;
+    } catch (err) {
+      console.error((err as Error).message);
+      return 1;
+    }
+  }
+
+  async function setupCommand(): Promise<void> {
+    await runSetup(paths, {
+      say: console.log,
+      ask: async (question) => {
+        Deno.stdout.writeSync(new TextEncoder().encode(question));
+        return await readLine();
+      },
+    });
+  }
+
+  async function requestListCommand(rest: string[]): Promise<number> {
+    if (rest.some((a) => a !== "--all" && a !== "--json")) {
+      console.error(REQUEST_USAGE);
+      return 2;
+    }
+    await ensureDaemon(paths);
+    const list = await call<RequestListing[]>(paths, "requests.list", {
+      all: rest.includes("--all"),
+    });
+    if (rest.includes("--json")) console.log(JSON.stringify(list));
+    else if (!list.length) console.log("No requests are running.");
+    else {
+      for (const r of list) {
+        console.log(
+          `Request ${r.id}  ${r.project}  ${r.status}  ${r.playbook ?? "no playbook"}  ${
+            money(r.costUsd)
+          }${r.description ? `  ${r.description.split("\n")[0].slice(0, 60)}` : ""}`,
+        );
+      }
+    }
+    return 0;
+  }
+
+  /** `kiln watch|transcript|report <request-id>`: looking at a request without touching it. */
+  async function observeCommand(verb: string, rest: string[]): Promise<number> {
+    const usage = verb === "watch"
+      ? WATCH_USAGE
+      : verb === "report"
+      ? REPORT_USAGE
+      : TRANSCRIPT_USAGE;
+    const [target, ...flags] = rest;
+    const jsonOk = verb !== "watch";
+    if (
+      !target || !/^\d+$/.test(target) || flags.some((f) => !(jsonOk && f === "--json"))
+    ) {
+      console.error(usage);
+      return 2;
+    }
+    const id = Number(target);
+    const asJson = flags.length > 0;
+    try {
+      await ensureDaemon(paths);
+      if (verb === "transcript") {
+        const messages = await call<TranscriptMessage[]>(paths, "requests.transcript", { id });
+        console.log(asJson ? JSON.stringify(messages, null, 2) : describeTranscript(messages));
+        return 0;
+      }
+      if (verb === "report") {
+        const report = await call<RequestReport>(paths, "requests.report", { id });
+        console.log(asJson ? JSON.stringify(report, null, 2) : describeReport(report));
+        return 0;
+      }
+      let after = 0;
+      while (true) {
+        const r = await call<
+          { events: RequestEvent[]; last: number; status: string; failure: string | null }
+        >(
+          paths,
+          "requests.events",
+          { id, after },
+        );
+        for (const e of r.events) console.log(`${e.ts}  ${e.text}`);
+        after = r.last;
+        if (r.status === "done") return 0;
+        if (r.status === "failed") {
+          console.log(`Request ${id} failed${r.failure ? `: ${r.failure}` : "."}`);
+          return 1;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     } catch (err) {
       console.error((err as Error).message);
       return 1;
@@ -906,17 +1044,26 @@ function describeCommands(c: Commands): string {
   ].join("\n");
 }
 
-/** Read one line from stdin; null at end of input. */
+/** What was read from stdin past the end of the last line returned. */
+let pending = "";
+/** Read one line from stdin; null at end of input. Input beyond the line is kept for the next. */
 async function readLine(): Promise<string | null> {
   const dec = new TextDecoder();
   const buf = new Uint8Array(1024);
-  let text = "";
   while (true) {
+    const i = pending.indexOf("\n");
+    if (i >= 0) {
+      const line = pending.slice(0, i);
+      pending = pending.slice(i + 1);
+      return line;
+    }
     const n = await Deno.stdin.read(buf);
-    if (n === null) return text || null;
-    text += dec.decode(buf.subarray(0, n), { stream: true });
-    const i = text.indexOf("\n");
-    if (i >= 0) return text.slice(0, i);
+    if (n === null) {
+      const rest = pending;
+      pending = "";
+      return rest || null;
+    }
+    pending += dec.decode(buf.subarray(0, n), { stream: true });
   }
 }
 

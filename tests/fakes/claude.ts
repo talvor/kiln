@@ -41,6 +41,22 @@ export type SessionStep =
   | { wait: number };
 
 const dir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "launcher");
+
+// `claude --version` and `claude auth status` answer without using up a scripted run; the login
+// is lost while $KILN_FAKE_DIR/launcher/logged-out exists.
+if (Deno.args[0] === "--version") {
+  console.log("9.9.9 (Claude Code)");
+  Deno.exit(0);
+}
+if (Deno.args[0] === "auth" && Deno.args[1] === "status") {
+  let loggedIn = true;
+  try {
+    Deno.statSync(join(dir, "logged-out"));
+    loggedIn = false;
+  } catch { /* logged in */ }
+  console.log(JSON.stringify({ loggedIn }));
+  Deno.exit(loggedIn ? 0 : 1);
+}
 const scriptFile = join(dir, "script.json");
 const script: { runs: LauncherRun[]; next: number } = JSON.parse(Deno.readTextFileSync(scriptFile));
 
