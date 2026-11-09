@@ -12,6 +12,11 @@
 // Every call is recorded. Once a queue is exhausted its command fails loudly (exit 99).
 import { join } from "node:path";
 
+if (Deno.args[0] === "--version") {
+  console.log("gh version 9.9.9");
+  Deno.exit(0);
+}
+
 if (Deno.args[0] === "api") {
   const apiDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "api");
   const apiFile = join(apiDir, "script.json");

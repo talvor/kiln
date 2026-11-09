@@ -51,3 +51,7 @@ Decisions that are the user's to make wait in `kiln escalations`; only `kiln app
 
 Talk to the Overseer with `kiln chat`: an interactive Claude session with Kiln's tools, status line
 and model-free commands. See [the chat guide](docs/chat.md).
+
+Follow a Request with `kiln request list`, `kiln watch`, `kiln transcript` and `kiln report`, check
+the machine with `kiln doctor`, and set spend limits with `kiln setup`. See
+[the observability guide](docs/observe.md).

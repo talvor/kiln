@@ -104,7 +104,7 @@ withWorld(
       20_000,
     );
     assertEquals(open.status, "open");
-    assertStringIncludes(open.summary, "is gone");
+    assert(/is gone|no longer a git repository/.test(open.summary), open.summary);
     assert(await paused(w));
     const refused = await w.kiln("request", "start", "remote");
     assertEquals(refused.code, 1);

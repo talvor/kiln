@@ -70,6 +70,8 @@ export interface World extends Home {
   /** The scripted `claude`: runs are consumed in order, one per invocation. */
   launcher: {
     script(runs: LauncherRun[]): Promise<void>;
+    /** From now on `claude auth status` says nobody is logged in. */
+    logOut(): Promise<void>;
     calls(): Promise<Call[]>;
     /** The prompts Claude was given, in order (SDK launches only). */
     prompts(): Promise<string[]>;
@@ -181,6 +183,10 @@ export async function makeWorld(): Promise<World> {
     },
     launcher: {
       script: (runs) => script("launcher", "runs", runs),
+      logOut: async () => {
+        await Deno.mkdir(join(fakeDir, "launcher"), { recursive: true });
+        await Deno.writeTextFile(join(fakeDir, "launcher", "logged-out"), "");
+      },
       calls: () => calls("launcher"),
       prompts: async () => {
         const file = join(fakeDir, "launcher", "prompts.jsonl");
