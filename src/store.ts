@@ -542,6 +542,7 @@ export class UnknownRequestError extends Error {
   }
 }
 export class UnknownAssignmentError extends Error {
+  readonly code = "not-found";
   constructor(id: number) {
     super(`No assignment ${id} exists.`);
   }
@@ -731,6 +732,7 @@ export interface MessageFilter {
 }
 
 export class UnknownSessionError extends Error {
+  readonly code = "not-found";
   constructor(address: string) {
     super(`No session is open at "${address}".`);
   }
@@ -738,6 +740,7 @@ export class UnknownSessionError extends Error {
 export class DuplicateSessionError extends Error {}
 
 export class UnknownProjectError extends Error {
+  readonly code = "not-found";
   constructor(name: string) {
     super(`No project named "${name}" is registered.`);
   }

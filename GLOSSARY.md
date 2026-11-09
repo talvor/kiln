@@ -112,6 +112,10 @@ _Avoid_: plan, decomposition
 The worker that takes one ticket in a Request and either charts it (the route: the pieces of work in order) or resolves it (the answer). There is one Wayfinder session per Request. A ticket labelled `research` goes to the **Researcher** instead, who answers its question from primary sources.
 _Avoid_: scout, navigator
 
+**Source**:
+Who asked for a change to Kiln: the client behind a decision, halt, resume or cancel, sent as `via` (the command line sends `cli`) and kept in the event the change makes. `kiln report` shows the Source of each decision.
+_Avoid_: origin, channel, actor
+
 **Halt**:
 The user's model-free stop of all work (`kiln halt`): agents are stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
 _Avoid_: pause, freeze

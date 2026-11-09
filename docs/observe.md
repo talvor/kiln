@@ -19,7 +19,7 @@ kiln report <request-id> [--json]
 - `transcript` shows the Messages its agents sent each other, oldest first: assignments, results,
   questions and answers, and which of them Kiln wrote itself.
 - `report` says how it went: the outcome, when it started and ended, what it cost against its
-  budget, what each step reported, the decisions it asked of you, and its branch, tickets and
+  budget, what each step reported, the decisions it asked of you (with the Source of each decision), and its branch, tickets and
   pull request.
 
 `kiln request status <id>` is still the quick look at one Request and its assignments.

@@ -165,7 +165,7 @@ export function describeEvent(e: EventRecord): string {
     case "escalation.decided":
       return `Escalation ${s("id")} was ${s("decision")}.${
         d.reason ? ` Reason: ${s("reason")}` : ""
-      }${d.via ? ` (via ${s("via")})` : ""}`;
+      }`;
     case "budget.request_warned":
       return `The request used 80% of its ${money(Number(d.budgetUsd ?? 0))} budget.`;
     case "budget.request_blocked":
