@@ -132,7 +132,7 @@ async function main(args: string[]): Promise<number> {
   const paths = resolvePaths();
 
   // The first time a person uses Kiln at a terminal, ask for the spend limits.
-  const asksFirst = !["daemon", "tool-server", "setup", "doctor"].includes(cmd);
+  const asksFirst = !json && !["daemon", "tool-server", "setup", "doctor"].includes(cmd);
   if (asksFirst && Deno.stdin.isTerminal() && Deno.stdout.isTerminal() && await needsSetup(paths)) {
     await setupCommand();
   }
