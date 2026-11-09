@@ -3,6 +3,7 @@
 // leader and the workers), the fake remote and the fake launcher and `gh`.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { rawCall } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, waitFor } from "./router_helpers.ts";
 
@@ -501,6 +502,9 @@ withWorld("approving while the pull request is open asks to confirm first", asyn
   assertStringIncludes(asked.stderr, "still open");
   assertStringIncludes(asked.stderr, "--confirm");
   assertEquals((await escalations(world)).map((e) => e.status), ["open"]);
+  // A client that is not the CLI gets the reason as a code; the text is the same.
+  const raw = await rawCall(world, "escalations.decide", { id: told.id, approved: true });
+  assertEquals([raw.ok, raw.code, raw.error], [false, "needs-confirm", asked.stderr.trim()]);
 
   // Confirmed, the approval stands, but Kiln still waits for the merge and keeps the branches.
   const approved = await world.kiln("approve", String(told.id), "--confirm");

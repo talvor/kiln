@@ -370,7 +370,7 @@ async function main(args: string[]): Promise<number> {
     await ensureDaemon(paths);
     try {
       if (verb === "halt") {
-        const r = await call<{ changed: boolean }>(paths, "kiln.halt");
+        const r = await call<{ changed: boolean }>(paths, "kiln.halt", { via: "cli" });
         console.log(
           r.changed
             ? "Kiln is halted: running agents were stopped and nobody will be woken. " +
@@ -378,7 +378,9 @@ async function main(args: string[]): Promise<number> {
             : "Kiln is already halted.",
         );
       } else {
-        const r = await call<{ wasHalted: boolean; stuck: number }>(paths, "kiln.resume");
+        const r = await call<{ wasHalted: boolean; stuck: number }>(paths, "kiln.resume", {
+          via: "cli",
+        });
         console.log(
           r.wasHalted || r.stuck
             ? "Kiln is resumed." +
@@ -416,7 +418,7 @@ async function main(args: string[]): Promise<number> {
       if (!/^\d+$/.test(target) || flags.length) return usage();
       await ensureDaemon(paths);
       try {
-        await call(paths, "requests.cancel", { id: Number(target) });
+        await call(paths, "requests.cancel", { id: Number(target), via: "cli" });
         console.log(
           `Cancelled request ${target}. Its branches and worktrees are kept; nothing was removed.`,
         );
@@ -500,6 +502,7 @@ async function main(args: string[]): Promise<number> {
         approved: verb === "approve",
         reason,
         confirm: flags[0] === "--confirm",
+        via: "cli",
         // Set for anything an agent runs, so that the daemon can tell it from the user.
         agent: Deno.env.get("KILN_AGENT"),
       });

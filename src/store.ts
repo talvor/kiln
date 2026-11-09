@@ -536,11 +536,13 @@ export interface AssignmentRecord {
 export type LimitKind = "turns" | "spend" | "time" | "inactivity";
 
 export class UnknownRequestError extends Error {
+  readonly code = "not-found";
   constructor(id: number) {
     super(`No request ${id} exists.`);
   }
 }
 export class UnknownAssignmentError extends Error {
+  readonly code = "not-found";
   constructor(id: number) {
     super(`No assignment ${id} exists.`);
   }
@@ -607,12 +609,14 @@ export interface EscalationNote {
 }
 
 export class UnknownEscalationError extends Error {
+  readonly code = "not-found";
   constructor(id: number) {
     super(`No escalation ${id} exists.`);
   }
 }
 /** The Escalation was decided before: a second decision is refused. */
 export class EscalationDecidedError extends Error {
+  readonly code = "final";
   constructor(readonly escalation: EscalationRecord) {
     super(
       `Escalation ${escalation.id} was already ${escalation.status}` +
@@ -728,6 +732,7 @@ export interface MessageFilter {
 }
 
 export class UnknownSessionError extends Error {
+  readonly code = "not-found";
   constructor(address: string) {
     super(`No session is open at "${address}".`);
   }
@@ -735,6 +740,7 @@ export class UnknownSessionError extends Error {
 export class DuplicateSessionError extends Error {}
 
 export class UnknownProjectError extends Error {
+  readonly code = "not-found";
   constructor(name: string) {
     super(`No project named "${name}" is registered.`);
   }

@@ -5,6 +5,7 @@
 //
 // The conductor holds no state of its own. `react` reads the store and does whatever the
 // Messages and records say is due, so it can be run after any change, or again after a crash.
+import type { ErrorCode } from "./protocol.ts";
 import { join } from "node:path";
 import { order, parseBreakdown } from "./breakdown.ts";
 import {
@@ -66,7 +67,11 @@ import {
 } from "./worktrees.ts";
 
 /** The Request cannot be started; the message says why. */
-export class RequestRefused extends Error {}
+export class RequestRefused extends Error {
+  constructor(message: string, readonly code: ErrorCode = "invalid") {
+    super(message);
+  }
+}
 
 export interface ConductorOptions {
   store: Store;
@@ -1195,12 +1200,13 @@ export function createConductor(opts: ConductorOptions) {
    * Cancel a Request: its workers are stopped and it fails as the user's doing. Everything it made
    * stays: its branches, its Worktrees and what was pushed.
    */
-  async function cancel(id: number): Promise<void> {
+  async function cancel(id: number, via?: string): Promise<void> {
     await queue; // not in the middle of a pass over the Request
     const request = store.getRequest(id);
     if (request.status === "done" || request.status === "failed") {
       throw new RequestRefused(
         `Request ${id} has already ${request.status === "done" ? "finished" : "ended"}.`,
+        "final",
       );
     }
     const why = "Cancelled by the user.";
@@ -1214,7 +1220,7 @@ export function createConductor(opts: ConductorOptions) {
       if (step.worker) workers.add(step.worker);
     }
     store.cancelRequest(id, why);
-    store.appendEvent("request.cancelled", { id });
+    store.appendEvent("request.cancelled", via ? { id, via } : { id });
     log.info("request cancelled", { request: id });
     for (const address of workers) router.abort(address);
   }

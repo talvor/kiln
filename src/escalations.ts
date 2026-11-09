@@ -1,10 +1,15 @@
 // Escalations: decisions the Overseer brings to the user. The Overseer raises one; only the user
 // decides it, through the CLI, and only the daemon writes the decision down. An Escalation waits
 // for as long as it takes: nothing times it out or decides it on the user's behalf.
+import type { ErrorCode } from "./protocol.ts";
 import type { EscalationRecord, SessionRecord, Store } from "./store.ts";
 
 /** A refusal the caller can act on. */
-export class EscalationError extends Error {}
+export class EscalationError extends Error {
+  constructor(message: string, readonly code: ErrorCode = "invalid") {
+    super(message);
+  }
+}
 
 /** An Escalation as people see it: an open one whose Request has ended is stale. */
 export type EscalationView = Omit<EscalationRecord, "status"> & {
@@ -105,6 +110,8 @@ export function createEscalations(store: Store) {
         agent?: unknown;
         /** The user knows the pull request is not merged yet and approves it all the same. */
         confirm?: unknown;
+        /** Who decided: the Source, such as "cli". */
+        via?: string;
       },
     ): EscalationRecord {
       if (params.agent !== undefined && params.agent !== null && params.agent !== "") {
@@ -119,7 +126,7 @@ export function createEscalations(store: Store) {
       const reason = params.approved ? undefined : text(params.reason, "reason", true);
       const current = store.getEscalation(id);
       const stale = staleReason(store, current);
-      if (stale) throw new EscalationError(`Escalation ${id} is stale: ${stale}.`);
+      if (stale) throw new EscalationError(`Escalation ${id} is stale: ${stale}.`, "stale");
       if (params.approved && current.gate === "qa-passed" && current.requestId !== null) {
         const request = store.getRequest(current.requestId);
         if (request.prUrl && request.prState !== "MERGED" && params.confirm !== true) {
@@ -128,6 +135,7 @@ export function createEscalations(store: Store) {
               request.prState === "CLOSED" ? "closed" : "still open"
             }, not merged. Approving it does not merge it: Kiln keeps the branches and waits ` +
               `for you to merge it. To approve it anyway, run: kiln approve ${id} --confirm`,
+            "needs-confirm",
           );
         }
       }
@@ -136,6 +144,7 @@ export function createEscalations(store: Store) {
         id,
         decision: decided.status,
         reason: decided.reason,
+        ...(params.via ? { via: params.via } : {}),
       });
       return decided;
     },
