@@ -193,6 +193,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log,
     failAssignment: (id, why) => void router.failAssignment(id, why),
     reportStuck: (address, why) => router.reportStuck(store.getSession(address), why),
+    withProject: withProjectQueue,
     close: (id, reason) => {
       try {
         decideEscalation({ id, approved: true, reason });
