@@ -98,6 +98,7 @@ withWorld("startup runs its steps in order", async (w) => {
   assertEquals(status.startup, [
     "store",
     "halt",
+    "budgets",
     "interrupted-launches",
     "worktrees",
     "conductor",

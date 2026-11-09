@@ -10,15 +10,17 @@ When the daemon starts it runs these steps in order, and `kiln daemon status --j
 1. **store**: open the store, back it up and migrate it if its schema is old.
 2. **halt**: note whether Kiln was halted. A halt survives a restart; nothing below wakes anyone
    while it holds.
-3. **interrupted-launches**: a launch that began and never ended was cut short by the crash. The
+3. **budgets**: the limits are read and the day's spend is checked against the daily cap (see the
+   [budgets guide](budgets.md)); while the cap holds, nothing below wakes anyone either.
+4. **interrupted-launches**: a launch that began and never ended was cut short by the crash. The
    Assignment it was working on is put back in its agent's inbox and the agent is woken again, told
    that Kiln was interrupted. The same work interrupted a second time fails: its leader gets a
    failed result written by Kiln, and the Overseer a stuck report.
-4. **worktrees**: the clones and Worktrees work stands on are looked at, and put right if they are
+5. **worktrees**: the clones and Worktrees work stands on are looked at, and put right if they are
    not (see Environment faults below).
-5. **conductor**: whatever is due for active Requests is done.
-6. **pages**: Escalation pages are brought up to date.
-7. **clocks**: only now do the delivery, limit and pull request clocks start.
+6. **conductor**: whatever is due for active Requests is done.
+7. **pages**: Escalation pages are brought up to date.
+8. **clocks**: only now do the delivery, limit and pull request clocks start.
 
 A step that fails is logged, and the daemon starts regardless.
 

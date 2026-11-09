@@ -127,3 +127,15 @@ _Avoid_: dead, hung
 **Cancel**:
 Ending a Request at the user's word (`kiln request cancel`). Its workers stop and it fails; its branches and worktrees are kept.
 _Avoid_: abort, delete
+
+**Budget**:
+What all the work of one Request may cost in dollars, summed over every agent that works for it, or what all of Kiln may spend in a day (the **daily cap**). At 80% of either the user is notified. A Request that uses its Budget is blocked on the user, who gives it another Budget's worth or ends it; at the daily cap nobody is woken until the cap is raised or the day ends. Not a Limit, which bounds one Assignment.
+_Avoid_: quota, allowance
+
+**Notification**:
+A message from Kiln to the user outside the chat, handed to the command the user configured: a Budget warning, a Request blocked on a Budget, the daily cap reached, or the digest. A command that fails never stops the work.
+_Avoid_: alert, push
+
+**Digest**:
+What happened since the user was last told, sent once a day as a Notification and given to the Overseer when the user attaches with `kiln chat`. When nothing happened there is no digest.
+_Avoid_: summary, report

@@ -15,8 +15,11 @@ import {
   parseOwns,
   projectCap,
   REQUESTABLE,
+  requestBudgetUsd,
 } from "./limits.ts";
 import type { Logger } from "./log.ts";
+import { budgetWarning, money } from "./news.ts";
+import type { Notification } from "./budgets.ts";
 import {
   type Config,
   ConfigError,
@@ -75,6 +78,8 @@ export interface ConductorOptions {
   withProject: <T>(name: string, work: () => Promise<T>) => Promise<T>;
   /** Kiln is halted: nothing moves on until it is resumed. */
   halted?: () => boolean;
+  /** Tell the user something outside the chat, e.g. that a Request is nearing its budget. */
+  notify?: (notification: Notification) => void;
 }
 
 export interface StartPlaybookRequest {
@@ -241,6 +246,30 @@ export function createConductor(opts: ConductorOptions) {
       store.setAssignmentState(a.id, result.body.status === "done" ? "done" : "failed");
     }
     return assignmentsOf(request, step);
+  }
+
+  /**
+   * Charge what a launch cost to the Requests the agent was working for: a worker's Assignments,
+   * or the Steps its department's leader holds. Spend no Request claims is still kept.
+   */
+  function charge(session: SessionRecord, usd: number, active: AssignmentRecord[]) {
+    if (usd <= 0) return;
+    const requests = session.role === "worker"
+      ? [...new Set(active.map((a) => a.requestId))]
+      : session.role === "leader"
+      ? store.listRequests("active").filter((r) =>
+        store.listSteps(r.id).some((s) =>
+          s.status === "active" && s.spec.department === session.department
+        )
+      ).map((r) => r.id)
+      : [];
+    if (!requests.length) {
+      store.addSpend({ address: session.address, requestId: null, usd });
+      return;
+    }
+    for (const requestId of requests) {
+      store.addSpend({ address: session.address, requestId, usd: usd / requests.length });
+    }
   }
 
   /** Why a planned Assignment cannot start yet, or undefined when it can. */
@@ -819,6 +848,89 @@ export function createConductor(opts: ConductorOptions) {
   }
 
   /**
+   * What the Request has cost against its budget. At 80% the user is told once; at 100% the
+   * Request is blocked on the user and nobody is woken for it, until they approve (it may spend
+   * another budget's worth) or reject (it fails). Returns whether the Request must wait.
+   */
+  async function watchBudget(request: RequestRecord): Promise<boolean> {
+    let limits: LimitsConfig;
+    let project: ProjectRecord;
+    try {
+      limits = (await opts.loadConfig()).limits;
+      project = projectOf(request);
+    } catch {
+      return false; // limits that cannot be read are reported where they are needed
+    }
+    const base = requestBudgetUsd(limits, project.name);
+    const spent = store.requestSpend(request.id);
+    if (request.budgetBlockId !== null) {
+      const block = store.getEscalation(request.budgetBlockId);
+      if (block.status === "open") return true;
+      store.setBudgetBlock(request.id, null);
+      const budget = (base ?? 0) + request.budgetExtraUsd;
+      if (block.status === "rejected") {
+        throw new StepFailed(
+          `The user declined to go over the Request's ${money(budget)} budget: ${block.reason}`,
+        );
+      }
+      // Another budget's worth from here; the wait does not count against the Assignments' time.
+      store.setBudgetExtra(request.id, spent);
+      store.delayActiveAssignments(Date.now() - Date.parse(block.createdAt), request.id);
+      store.appendEvent("budget.request_extended", { request: request.id, budgetUsd: budget });
+      return false;
+    }
+    if (base === undefined) return false;
+    const budget = base + request.budgetExtraUsd;
+    const overseer = store.listSessions().find((s) => s.role === "overseer");
+    if (spent >= budget - 1e-9 && overseer) {
+      const raised = store.addEscalation({
+        raisedBy: overseer.address,
+        requestId: request.id,
+        gate: "blocked-on-user",
+        summary: `Request ${request.id} is blocked on you: it has used its budget ` +
+          `(${money(spent)} of ${money(budget)}).`,
+        detail: `The request: ${request.description}\n\nKiln has stopped waking agents for it. ` +
+          `Approve this to give it another ${money(base)} to work with, or reject it (with a ` +
+          `reason) to end the request.`,
+      });
+      store.setBudgetBlock(request.id, raised.id);
+      store.appendEvent("budget.request_blocked", {
+        request: request.id,
+        spendUsd: spent,
+        budgetUsd: budget,
+        escalation: raised.id,
+      });
+      log.warn("request used its budget", { request: request.id, spent, budget });
+      opts.notify?.({
+        kind: "budget-blocked",
+        title: `Kiln: request ${request.id} is blocked on you`,
+        text: `Request ${request.id} has used its ${money(budget)} budget (${money(spent)} ` +
+          `spent) and is blocked on you. Approve escalation ${raised.id} to let it carry on, ` +
+          `or reject it to end the request.`,
+      });
+      // What its workers were doing is put back for when the user has decided.
+      for (const a of store.listAssignments(request.id).filter((a) => a.status === "active")) {
+        router.abort(store.getMessage(a.id)!.to, "halt");
+      }
+      return true;
+    }
+    if (spent >= 0.8 * budget - 1e-9 && request.budgetWarnedUsd !== budget) {
+      store.setBudgetWarned(request.id, budget);
+      store.appendEvent("budget.request_warned", {
+        request: request.id,
+        spendUsd: spent,
+        budgetUsd: budget,
+      });
+      opts.notify?.({
+        kind: "budget-warning",
+        title: `Kiln: request ${request.id} is nearing its budget`,
+        text: budgetWarning(request.id, spent, budget),
+      });
+    }
+    return false;
+  }
+
+  /**
    * The pull request was closed without being merged: the Request is blocked on the user, who
    * says it is open again (Kiln looks at it afresh) or declines. Returns whether the Request
    * must wait. Nothing is removed while it does.
@@ -941,11 +1053,15 @@ export function createConductor(opts: ConductorOptions) {
       if (!step) {
         if (request.prMergedAt) await cleanUp(request);
         store.setRequestState(request.id, "done");
-        store.appendEvent("request.done", { id: request.id });
+        store.appendEvent("request.done", {
+          id: request.id,
+          costUsd: store.requestSpend(request.id),
+        });
         await chainFix(store.getRequest(request.id));
         return;
       }
       try {
+        if (await watchBudget(request)) return;
         if (watchPr(request)) return;
         if (step.status === "planned") {
           // A step that follows the merge begins once the user has merged the pull request.
@@ -1021,6 +1137,8 @@ export function createConductor(opts: ConductorOptions) {
   function watch() {
     if (opts.halted?.()) return;
     for (const a of store.listActiveAssignments()) {
+      // A Request waiting for the user to decide on its budget is not on the clock.
+      if (store.getRequest(a.requestId).budgetBlockId !== null) continue;
       const kind = limitOf(a);
       if (kind) reachLimit(a, kind);
     }
@@ -1047,6 +1165,20 @@ export function createConductor(opts: ConductorOptions) {
     });
     queue = pass.catch(() => {});
     return pass;
+  }
+
+  /** Whether the Message belongs to a Request waiting for the user to decide on its budget. */
+  function forBlocked(m: MessageRecord): boolean {
+    return store.listRequests("active").some((r) => {
+      if (r.budgetBlockId === null) return false;
+      const mine = new Set<number | null>([
+        ...store.listAssignments(r.id).map((a) => a.id),
+        ...store.listSteps(r.id).map((s) => s.messageId),
+      ]);
+      return mine.has(m.id) || mine.has(m.inReplyTo) || mine.has(m.assignmentId) ||
+        (m.kind === "assignment" &&
+          store.listSteps(r.id).some((s) => s.status === "active" && s.worker === m.to));
+    });
   }
 
   /** Whether the Message is work for a Request the user cancelled: nobody is woken for it. */
@@ -1094,6 +1226,7 @@ export function createConductor(opts: ConductorOptions) {
     cancel,
     /** Whether an Assignment is still queued, so its worker is not to be woken. */
     holds: (m: MessageRecord): boolean => {
+      if (forBlocked(m)) return true;
       if (m.kind !== "assignment") return false;
       if (forCancelled(m)) return true;
       try {
@@ -1127,7 +1260,9 @@ export function createConductor(opts: ConductorOptions) {
           spendUsd: used.costUsd / active.length,
         })
       );
+      charge(session, used.costUsd, active);
       watch();
+      if (used.costUsd > 0) void react();
     },
     /** A worker's launch shows a sign of life. */
     activity: (session: SessionRecord) => {

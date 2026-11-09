@@ -324,6 +324,21 @@ export const MIGRATIONS: string[] = [
      recovered_at text
    ) strict;
    create unique index project_faults_open on project_faults (project_id) where recovered_at is null;`,
+  // 21: spend. Every launch's cost is kept in a ledger, charged to the Request it worked for when
+  // there is one; a Request remembers the extra budget the user gave it, the budget it was last
+  // warned at, and the Escalation raised because it ran out.
+  `create table spend (
+     id integer primary key,
+     at text not null,
+     address text not null,
+     request_id integer references requests (id),
+     usd real not null
+   ) strict;
+   create index spend_at on spend (at);
+   create index spend_request on spend (request_id);
+   alter table requests add column budget_extra_usd real not null default 0;
+   alter table requests add column budget_warned_usd real;
+   alter table requests add column budget_block_id integer references escalations (id);`,
 ];
 
 export class StoreTooNewError extends Error {
@@ -454,6 +469,17 @@ export interface RequestRecord {
   failure: string | null;
   /** When the user cancelled the Request; null if they did not. */
   cancelledAt: string | null;
+  /** Budget the user gave the Request on top of the configured one. */
+  budgetExtraUsd: number;
+  /** The budget the user was last warned at 80% of; null if never. */
+  budgetWarnedUsd: number | null;
+  /** The Escalation raised because the Request ran out of budget, while the user has not settled it. */
+  budgetBlockId: number | null;
+}
+/** What was spent in a stretch of time, by Request; `requestId` is null for work none claims. */
+export interface SpendRow {
+  requestId: number | null;
+  usd: number;
 }
 export type PrState = "OPEN" | "MERGED" | "CLOSED";
 export interface NewPlaybookRun {
@@ -771,6 +797,24 @@ export interface Store {
   setPrState(id: number, state: PrState | null): void;
   /** Note the Escalation raised for a closed pull request, or that it is settled (null). */
   setPrBlock(id: number, escalationId: number | null): void;
+  /** Charge the cost of a launch for `address` to a Request, or to none. */
+  addSpend(spend: { address: string; requestId: number | null; usd: number }): void;
+  /** What a Request has cost so far. */
+  requestSpend(id: number): number;
+  /** What was spent since `iso`, by Request. */
+  spendSince(iso: string): SpendRow[];
+  /** Note that the Request has been warned at 80% of `budgetUsd` (null: not warned). */
+  setBudgetWarned(id: number, budgetUsd: number | null): void;
+  /** Note the Escalation raised for a Request out of budget, or that it is settled (null). */
+  setBudgetBlock(id: number, escalationId: number | null): void;
+  /** Give the Request budget on top of the configured one. */
+  setBudgetExtra(id: number, usd: number): void;
+  /** A value Kiln keeps for itself, such as when it last sent the digest. */
+  getMeta(key: string): string | null;
+  /** Set it, or forget it (null). */
+  setMeta(key: string, value: string | null): void;
+  /** The newest event there is; 0 when there is none. */
+  lastEventId(): number;
   /** The Steps of a Request, in Playbook order. */
   listSteps(requestId: number): StepRecord[];
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
@@ -838,7 +882,7 @@ export interface Store {
   haltedSince(): string | null;
   setHalted(on: boolean): void;
   /** Move the clocks of active Assignments on by `ms`, e.g. past the time Kiln was halted. */
-  delayActiveAssignments(ms: number): void;
+  delayActiveAssignments(ms: number, requestId?: number): void;
   /** Cancel a Request: it fails, as the user's doing. Its branches and Worktrees stay. */
   cancelRequest(id: number, why: string): void;
   /** Point a session at another directory, e.g. its worker's Assignment Worktree. */
@@ -1113,6 +1157,9 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       prBlockId: row.pr_block_id as number | null,
       failure: row.failure as string | null,
       cancelledAt: row.cancelled_at as string | null,
+      budgetExtraUsd: row.budget_extra_usd as number,
+      budgetWarnedUsd: row.budget_warned_usd as number | null,
+      budgetBlockId: row.budget_block_id as number | null,
     });
     const toStep = (row: Record<string, unknown>): StepRecord => ({
       id: row.id as number,
@@ -1214,6 +1261,47 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       setPrBlock: (id, escalationId) => {
         db.prepare("update requests set pr_block_id = ? where id = ?").run(escalationId, id);
       },
+      addSpend: ({ address, requestId, usd }) => {
+        if (usd <= 0) return;
+        db.prepare("insert into spend (at, address, request_id, usd) values (?, ?, ?, ?)")
+          .run(new Date().toISOString(), address, requestId, usd);
+      },
+      requestSpend: (id) =>
+        Number(
+          db.prepare("select coalesce(sum(usd), 0) as usd from spend where request_id = ?").get(id)!
+            .usd,
+        ),
+      spendSince: (iso) =>
+        db.prepare(
+          "select request_id, sum(usd) as usd from spend where at >= ? group by request_id " +
+            "order by request_id",
+        ).all(iso).map((row) => ({
+          requestId: row.request_id as number | null,
+          usd: row.usd as number,
+        })),
+      setBudgetWarned: (id, budgetUsd) => {
+        db.prepare("update requests set budget_warned_usd = ? where id = ?").run(budgetUsd, id);
+      },
+      setBudgetBlock: (id, escalationId) => {
+        db.prepare("update requests set budget_block_id = ? where id = ?").run(escalationId, id);
+      },
+      setBudgetExtra: (id, usd) => {
+        db.prepare("update requests set budget_extra_usd = ? where id = ?").run(usd, id);
+      },
+      getMeta: (key) => {
+        const row = db.prepare("select value from meta where key = ?").get(key);
+        return row ? row.value as string : null;
+      },
+      setMeta: (key, value) => {
+        if (value === null) db.prepare("delete from meta where key = ?").run(key);
+        else {
+          db.prepare(
+            "insert into meta (key, value) values (?, ?) " +
+              "on conflict (key) do update set value = excluded.value",
+          ).run(key, value);
+        }
+      },
+      lastEventId,
       restartStep: (id) => {
         db.prepare(
           `update steps set status = 'planned', message_id = null, worker = null, failure = null,
@@ -1450,15 +1538,16 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
             .run(new Date().toISOString());
         } else db.prepare("delete from meta where key = 'halted_at'").run();
       },
-      delayActiveAssignments: (ms) =>
+      delayActiveAssignments: (ms, requestId) =>
         inTransaction(() => {
           const shift = (at: unknown) =>
             typeof at === "string" ? new Date(Date.parse(at) + ms).toISOString() : null;
           for (
             const row of db.prepare(
-              "select id, started_at, activity_at from assignments where status = 'active'",
+              "select id, started_at, activity_at from assignments where status = 'active'" +
+                (requestId === undefined ? "" : " and request_id = ?"),
             )
-              .all()
+              .all(...(requestId === undefined ? [] : [requestId]))
           ) {
             db.prepare("update assignments set started_at = ?, activity_at = ? where id = ?")
               .run(shift(row.started_at), shift(row.activity_at), row.id as number);

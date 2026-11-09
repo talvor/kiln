@@ -108,6 +108,8 @@ export async function makeWorld(): Promise<World> {
     // Look at pull requests every second rather than every minute.
     KILN_PR_POLL_SECONDS: "1",
     KILN_FAULT_CHECK_SECONDS: "1",
+    // Check whether the daily digest is due every second rather than every half minute.
+    KILN_DIGEST_CHECK_SECONDS: "1",
     // Hermetic git: no user config (signing, hooks), fixed identity.
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_SYSTEM: "/dev/null",

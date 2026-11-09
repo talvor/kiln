@@ -14,6 +14,8 @@ import { runToolServer } from "./toolserver.ts";
 import { chatHook, runChat } from "./chat_cli.ts";
 import type { ProjectRecord } from "./store.ts";
 import type { StopVerdict } from "./router.ts";
+import type { CostReport } from "./budgets.ts";
+import { money } from "./news.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -59,6 +61,7 @@ Usage:
   kiln request cancel <request-id>
                          Cancel a request: its workers stop and it fails; its branches and
                          worktrees stay
+  kiln cost [--json]     What was spent today: by project and by request, against the daily cap
   kiln halt              Stop all work: running agents are stopped and nobody is woken until resumed
   kiln resume            Carry on after a halt, and try again the agents Kiln gave up on
   kiln assignment start <request-id> <assignment-message-id>
@@ -134,6 +137,16 @@ async function main(args: string[]): Promise<number> {
     case "halt":
     case "resume":
       return await haltCommand(cmd, args.slice(1));
+    case "cost": {
+      if (args.slice(1).some((a) => a !== "--json")) {
+        console.error("Usage: kiln cost [--json]");
+        return 2;
+      }
+      await ensureDaemon(paths);
+      const report = await call<CostReport>(paths, "cost.report");
+      console.log(json ? JSON.stringify(report, null, 2) : describeCost(report));
+      return 0;
+    }
     case "request":
       return sub === "status" || sub === "cancel" ||
           (sub === "start" && args.slice(2).some((a) => a.startsWith("-")))
@@ -790,6 +803,8 @@ interface RequestStatus {
   fixRequestId?: number | null;
   prUrl: string | null;
   failure: string | null;
+  costUsd: number;
+  budgetUsd: number | null;
   steps: {
     position: number;
     name: string;
@@ -836,6 +851,39 @@ function describeRequest(r: RequestStatus): string {
   if (r.fixRequestId) lines.push(`Fix request: ${r.fixRequestId}`);
   if (r.prUrl) lines.push(`Pull request: ${r.prUrl}`);
   if (r.failure) lines.push(`Failure: ${r.failure}`);
+  if (r.costUsd > 0 || r.budgetUsd !== null) {
+    lines.push(
+      `Cost: ${money(r.costUsd)}${
+        r.budgetUsd === null ? "" : ` of a ${money(r.budgetUsd)} budget`
+      }`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function describeCost(r: CostReport): string {
+  const lines = [
+    `Today (${r.day}): ${money(r.todayUsd)}` +
+    (r.capUsd === null
+      ? ""
+      : ` of the ${money(r.capUsd)} daily cap${
+        r.capReached ? " (cap reached: nobody is woken)" : ""
+      }`),
+  ];
+  if (r.projects.length) {
+    lines.push("By project:", ...r.projects.map((p) => `  ${p.name}  ${money(p.usd)}`));
+  }
+  if (r.requests.length) {
+    lines.push(
+      "By request:",
+      ...r.requests.map((q) =>
+        `  Request ${q.id} (${q.project}, ${q.status})  ${money(q.usd)} today` +
+        (q.totalUsd > q.usd ? `, ${money(q.totalUsd)} in all` : "") +
+        (q.budgetUsd === null ? "" : `, budget ${money(q.budgetUsd)}`)
+      ),
+    );
+  }
+  if (r.otherUsd > 0) lines.push(`Not part of a request: ${money(r.otherUsd)}`);
   return lines.join("\n");
 }
 

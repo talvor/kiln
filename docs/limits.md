@@ -29,6 +29,9 @@ An Assignment runs under a **budget**: the defaults, or what its leader asked fo
 Kiln checks the wall-clock and inactivity limits every half second, apart from message delivery,
 so a worker that hangs cannot hide from them.
 
+Money across many Assignments (a budget per Request, a daily cap) is covered by the
+[budgets guide](budgets.md).
+
 ## Limit reached
 
 Kiln stops the worker, marks the Assignment `failed` with the limit that tripped
