@@ -235,7 +235,10 @@ withWorld("`kiln cost` with no spend says so", async (w) => {
 /** Run one Step of Request 1: the leader delegates, the worker commits a file, both report. */
 async function runStep(world: World, worker: string, file: string, text: string) {
   const [step] = await asAgent(world, "engineering-leader", (a) => a.inbox());
+  const launched = (await world.launcher.calls()).length;
   const job = await delegate(world, worker);
+  // The worker is woken (and charged) before it reads its inbox.
+  await waitFor(() => world.launcher.calls(), (c) => c.length > launched);
   const mine = JSON.parse((await world.kiln("request", "status", "1", "--json")).stdout)
     .steps.flatMap((s: { assignments: { id: number; worktree: string }[] }) => s.assignments)
     .find((a: { id: number }) => a.id === job.id);
