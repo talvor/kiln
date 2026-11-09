@@ -107,6 +107,7 @@ export async function makeWorld(): Promise<World> {
     KILN_FAKE_DIR: fakeDir,
     // Look at pull requests every second rather than every minute.
     KILN_PR_POLL_SECONDS: "1",
+    KILN_FAULT_CHECK_SECONDS: "1",
     // Hermetic git: no user config (signing, hooks), fixed identity.
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_SYSTEM: "/dev/null",

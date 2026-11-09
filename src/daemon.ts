@@ -5,6 +5,7 @@ import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createEscalations } from "./escalations.ts";
+import { createFaults } from "./faults.ts";
 import { createPages } from "./pages.ts";
 import { createRouter } from "./router.ts";
 import { createChat } from "./chat.ts";
@@ -167,6 +168,19 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }
     return decided;
   };
+  const faults = createFaults({
+    store,
+    log,
+    failAssignment: (id, why) => void router.failAssignment(id, why),
+    reportStuck: (address, why) => router.reportStuck(store.getSession(address), why),
+    close: (id, reason) => {
+      try {
+        decideEscalation({ id, approved: true, reason });
+      } catch (err) {
+        log.error("could not close a fault's escalation", { err });
+      }
+    },
+  });
   const pages = createPages({
     store,
     log,
@@ -219,6 +233,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   // Pull requests waiting to be merged are looked at on their own, slower clock: one `gh pr view`
   // each, no model involved. A look that is still running is not started again.
   const prSeconds = Number(Deno.env.get("KILN_PR_POLL_SECONDS"));
+  const faultSeconds = Number(Deno.env.get("KILN_FAULT_CHECK_SECONDS"));
   let polling: Promise<void> | undefined;
   const startClocks = () => {
     clocks.push(
@@ -233,6 +248,10 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
           }
         },
         2_000,
+      ),
+      setInterval(
+        () => faults.check().catch((err) => log.error("fault check failed", { err })),
+        (faultSeconds > 0 ? faultSeconds : 30) * 1000,
       ),
       setInterval(() => {
         try {
@@ -518,21 +537,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
           log.warn("recovered launches a crash interrupted", recovered);
         }
       }],
-      // The checkouts active work stands on must still be there.
-      ["worktrees", async () => {
-        for (const a of store.listActiveAssignments()) {
-          if (a.worktreeId === null) continue;
-          const wt = store.getWorktree(a.worktreeId);
-          if (await Deno.stat(wt.path).then(() => true, () => false)) continue;
-          const worker = store.getMessage(a.id)!.to;
-          store.appendEvent("worktree.missing", { assignment: a.id, path: wt.path });
-          router.failAssignment(
-            a.id,
-            `The worktree ${wt.path} is gone, so the work in it is lost.`,
-          );
-          router.reportStuck(store.getSession(worker), `its worktree ${wt.path} is gone`);
-        }
-      }],
+      // The clones and checkouts work stands on must be whole: put right what is not.
+      ["worktrees", () => faults.check()],
       // What is due, now that the store is true to what is running.
       ["conductor", () => {
         conductor.react().catch((err) => log.error("startup pass failed", { err }));
