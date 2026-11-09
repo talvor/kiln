@@ -165,7 +165,7 @@ export function describeEvent(e: EventRecord): string {
     case "escalation.decided":
       return `Escalation ${s("id")} was ${s("decision")}.${
         d.reason ? ` Reason: ${s("reason")}` : ""
-      }`;
+      }${d.via ? ` (via ${s("via")})` : ""}`;
     case "budget.request_warned":
       return `The request used 80% of its ${money(Number(d.budgetUsd ?? 0))} budget.`;
     case "budget.request_blocked":
@@ -246,11 +246,18 @@ export function requestReport<T extends ReportBase>(store: Store, status: T) {
       summary: typeof summary === "string" ? summary : null,
     };
   });
+  const decidedVia = new Map<number, string>();
+  for (const e of mine) {
+    if (e.kind === "escalation.decided" && typeof e.data.via === "string") {
+      decidedVia.set(Number(e.data.id), e.data.via);
+    }
+  }
   const escalations = store.listEscalations().filter((e) => e.requestId === status.id).map((e) => ({
     id: e.id,
     summary: e.summary,
     status: e.status,
     reason: e.reason,
+    via: decidedVia.get(e.id) ?? null,
   }));
   return {
     ...status,
@@ -298,7 +305,9 @@ export function describeReport(r: RequestReport): string {
   if (r.escalations.length) lines.push("Decisions asked of you:");
   for (const e of r.escalations) {
     lines.push(
-      `  Escalation ${e.id} [${e.status}]: ${e.summary}${e.reason ? ` (${e.reason})` : ""}`,
+      `  Escalation ${e.id} [${e.status}]: ${e.summary}${e.reason ? ` (${e.reason})` : ""}${
+        e.via ? ` [via ${e.via}]` : ""
+      }`,
     );
   }
   if (r.branch) lines.push(`Branch: ${r.branch}`);

@@ -89,3 +89,40 @@ export async function status(home: Home) {
   const r = await home.kiln("daemon", "status", "--json");
   return { ...r, info: r.code === 0 ? JSON.parse(r.stdout) : null };
 }
+
+/** One raw call to a running daemon over its socket, as a client other than the CLI would make it. */
+export async function rawCall(
+  home: Home,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ ok: boolean; result?: unknown; error?: string; code?: string }> {
+  const conn = await Deno.connect({
+    transport: "unix",
+    path: join(home.dirs.runtime, "kiln.sock"),
+  });
+  try {
+    await conn.write(new TextEncoder().encode(JSON.stringify({ id: 1, method, params }) + "\n"));
+    const buf = new Uint8Array(65536);
+    let text = "";
+    while (!text.includes("\n")) {
+      const n = await conn.read(buf);
+      if (n === null) break;
+      text += new TextDecoder().decode(buf.subarray(0, n));
+    }
+    return JSON.parse(text);
+  } finally {
+    conn.close();
+  }
+}
+
+/** The data of every event of a kind the daemon recorded, oldest first. */
+export async function eventsOf(home: Home, kind: string): Promise<Record<string, unknown>[]> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(home.dirs.data, "kiln.db"), { readOnly: true });
+  try {
+    return db.prepare("select data from events where kind = ? order by id").all(kind)
+      .map((r) => JSON.parse(String(r.data)));
+  } finally {
+    db.close();
+  }
+}

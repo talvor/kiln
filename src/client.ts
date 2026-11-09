@@ -1,7 +1,7 @@
 import { fromFileUrl } from "@std/path";
 import { lastError } from "./log.ts";
 import type { KilnPaths } from "./paths.ts";
-import { readLines, type Response, writeJson } from "./protocol.ts";
+import { type ErrorCode, readLines, type Response, writeJson } from "./protocol.ts";
 
 export function closeQuietly(conn: Deno.Conn): void {
   try {
@@ -12,6 +12,13 @@ export function closeQuietly(conn: Deno.Conn): void {
 export class DaemonNotRunning extends Error {
   constructor() {
     super("The Kiln daemon is not running. Start it with `kiln daemon start`.");
+  }
+}
+
+/** The daemon refused a call; `code` says why when the daemon knows. */
+export class DaemonError extends Error {
+  constructor(message: string, readonly code?: ErrorCode) {
+    super(message);
   }
 }
 
@@ -35,7 +42,7 @@ export async function call<T = unknown>(
     await writeJson(conn, { id: 1, method, params });
     for await (const line of readLines(conn)) {
       const res: Response = JSON.parse(line);
-      if (!res.ok) throw new Error(res.error);
+      if (!res.ok) throw new DaemonError(res.error, res.code);
       return res.result as T;
     }
     throw new Error(

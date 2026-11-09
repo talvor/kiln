@@ -3,7 +3,7 @@
 // the launcher show that agents cannot decide for the user.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { runKiln } from "./helpers.ts";
+import { eventsOf, rawCall, runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, openTeam, waitFor } from "./router_helpers.ts";
 
@@ -236,3 +236,82 @@ withWorld("an escalation survives a daemon restart, still open", async (world) =
   assertEquals([e.id, e.status], [1, "open"]);
   assertEquals((await world.kiln("reject", "1", "--reason", "Not yet")).code, 0);
 });
+
+withWorld("refusals carry a code while the CLI says the same words", async (world) => {
+  await openTeam(world);
+  await raise(world, { summary: "Delete the staging data?" });
+
+  const unknown = await rawCall(world, "escalations.decide", { id: 99, approved: true });
+  assertEquals([unknown.ok, unknown.code], [false, "not-found"]);
+  assertStringIncludes(unknown.error!, "No escalation 99");
+  const missing = await rawCall(world, "requests.cancel", { id: 99 });
+  assertEquals([missing.ok, missing.code], [false, "not-found"]);
+
+  const bad = await rawCall(world, "escalations.decide", { id: 1, approved: false });
+  assertEquals([bad.ok, bad.code], [false, "invalid"]);
+  const badVia = await rawCall(world, "escalations.decide", { id: 1, approved: true, via: 7 });
+  assertEquals([badVia.ok, badVia.code], [false, "invalid"]);
+  assertEquals((await listed(world))[0].status, "open");
+
+  assertEquals((await world.kiln("approve", "1")).code, 0);
+  const again = await world.kiln("approve", "1");
+  const final = await rawCall(world, "escalations.decide", { id: 1, approved: true });
+  assertEquals([final.ok, final.code], [false, "final"]);
+  assertEquals(final.error, again.stderr.trim());
+
+  // A reply that fails without a reason the daemon knows carries no code.
+  const unknownMethod = await rawCall(world, "no.such.method");
+  assertEquals([unknownMethod.ok, unknownMethod.code], [false, undefined]);
+});
+
+withWorld("a halted Kiln refuses new requests with the halted code", async (world) => {
+  await openTeam(world);
+  assertEquals((await world.kiln("halt")).code, 0);
+  const refused = await rawCall(world, "requests.start", { project: "remote" });
+  assertEquals([refused.ok, refused.code], [false, "halted"]);
+  assertEquals((await world.kiln("resume")).code, 0);
+});
+
+withWorld("a decision about a request that ended is refused as stale", async (world) => {
+  await startRequest(world);
+  await raise(world, { summary: "Widen the fix?", requestId: 1 });
+  const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+  await asAgent(
+    world,
+    "engineering-leader",
+    (agent) =>
+      agent.send("overseer", "result", { status: "failed", summary: "Cannot reproduce" }, step.id),
+  );
+  const stale = await rawCall(world, "escalations.decide", { id: 1, approved: true });
+  assertEquals([stale.ok, stale.code], [false, "stale"]);
+  const cancelled = await rawCall(world, "requests.cancel", { id: 1 });
+  assertEquals([cancelled.ok, cancelled.code], [false, "final"]);
+});
+
+withWorld(
+  "the Source of a decision, halt, resume and cancel is recorded and reported",
+  async (world) => {
+    await startRequest(world);
+    await raise(world, { summary: "Widen the fix?", requestId: 1 });
+
+    assertEquals((await world.kiln("approve", "1")).code, 0);
+    assertEquals((await eventsOf(world, "escalation.decided")).map((d) => d.via), ["cli"]);
+    const report = await world.kiln("report", "1");
+    assertStringIncludes(report.stdout, "[approved]");
+    assertStringIncludes(report.stdout, "[via cli]");
+    const json = JSON.parse((await world.kiln("report", "1", "--json")).stdout);
+    assertEquals(json.escalations[0].via, "cli");
+
+    // Another client names itself; one that names nobody leaves no Source.
+    assertEquals((await rawCall(world, "kiln.halt", { via: "dashboard" })).ok, true);
+    assertEquals((await world.kiln("resume")).code, 0);
+    assertEquals((await world.kiln("halt")).code, 0);
+    assertEquals((await eventsOf(world, "kiln.halted")).map((d) => d.via), ["dashboard", "cli"]);
+    assertEquals((await eventsOf(world, "kiln.resumed")).map((d) => d.via), ["cli"]);
+    assertEquals((await rawCall(world, "kiln.resume")).ok, true);
+    assertEquals((await eventsOf(world, "kiln.resumed")).map((d) => d.via), ["cli", undefined]);
+
+    assertEquals((await world.kiln("request", "cancel", "1")).code, 0);
+    assertEquals((await eventsOf(world, "request.cancelled")).map((d) => d.via), ["cli"]);
+  },
+);

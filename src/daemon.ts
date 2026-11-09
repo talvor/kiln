@@ -13,7 +13,14 @@ import { createChat } from "./chat.ts";
 import { createBudgets } from "./budgets.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
-import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
+import {
+  errorCodeOf,
+  readLines,
+  type Request,
+  type Response,
+  sourceOf,
+  writeJson,
+} from "./protocol.ts";
 import {
   infoOf,
   mergeAssignment,
@@ -390,15 +397,17 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
-    "kiln.halt": () => {
+    "kiln.halt": (params) => {
+      const via = sourceOf(params.via);
       if (halted()) return { changed: false, since: store.haltedSince() };
       store.setHalted(true);
-      store.appendEvent("kiln.halted");
+      store.appendEvent("kiln.halted", via ? { via } : {});
       log.warn("Kiln halted");
       router.abortAll("halt");
       return { changed: true, since: store.haltedSince() };
     },
-    "kiln.resume": () => {
+    "kiln.resume": (params) => {
+      const via = sourceOf(params.via);
       const since = store.haltedSince();
       if (since) {
         store.delayActiveAssignments(Date.now() - Date.parse(since));
@@ -406,17 +415,22 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       }
       const stuck = router.clearStuck();
       if (since || stuck) {
-        store.appendEvent("kiln.resumed", { wasHalted: !!since, stuck });
+        store.appendEvent("kiln.resumed", { wasHalted: !!since, stuck, ...(via ? { via } : {}) });
         log.info("Kiln resumed", { wasHalted: !!since, stuck });
         deliver().catch((err) => log.error("delivery pass failed", { err }));
         conductor.react().catch((err) => log.error("conductor pass failed", { err }));
       }
       return { wasHalted: !!since, stuck };
     },
-    "requests.cancel": (params) => conductor.cancel(Number(params.id)),
+    "requests.cancel": (params) => conductor.cancel(Number(params.id), sourceOf(params.via)),
     "requests.start": (params) =>
       halted()
-        ? Promise.reject(new Error("Kiln is halted: it takes no new requests until `kiln resume`."))
+        ? Promise.reject(
+          Object.assign(
+            new Error("Kiln is halted: it takes no new requests until `kiln resume`."),
+            { code: "halted" as const },
+          ),
+        )
         : params.playbook === undefined
         ? withProjectQueue(
           String(params.project),
@@ -509,6 +523,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         reason: params.reason,
         agent: params.agent,
         confirm: params.confirm,
+        via: sourceOf(params.via),
       }),
     "overseer.projects": (params) => {
       asOverseer(params);
@@ -731,7 +746,8 @@ async function serve(
           res = { id: req.id, ok: true, result: await handler(req.params ?? {}, ctx) };
         } catch (err) {
           log.error("rpc failed", { method: req.method, err });
-          res = { id: req.id, ok: false, error: (err as Error).message };
+          const code = errorCodeOf(err);
+          res = { id: req.id, ok: false, error: (err as Error).message, ...(code ? { code } : {}) };
         }
       }
       await writeJson(conn, res);
