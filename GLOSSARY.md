@@ -69,7 +69,7 @@ A point in a request where the overseer must bring the user a decision before wo
 _Avoid_: approval step, checkpoint
 
 **Escalation**:
-A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make. The Overseer records each one it brings the user; it stays open, however long, until the user approves or rejects it. A rejection carries the user's reason, a decision is final, and an open one whose Request has ended is stale.
+A question or decision raised up the chain from worker to leader to overseer, and on to the user when it is theirs to make. The Overseer records each one it brings the user; it stays open, however long, until the user approves or rejects it, with `kiln approve` and `kiln reject` or from the Dashboard. A rejection carries the user's reason, a decision is final, and an open one whose Request has ended is stale.
 _Avoid_: alert, handoff up
 
 **Question relay**:
@@ -113,7 +113,7 @@ The worker that takes one ticket in a Request and either charts it (the route: t
 _Avoid_: scout, navigator
 
 **Halt**:
-The user's model-free stop of all work (`kiln halt`): agents are stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
+The user's model-free stop of all work (`kiln halt`, or from the Dashboard): agents are stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
 _Avoid_: pause, freeze
 
 **Interruption**:
@@ -125,7 +125,7 @@ An agent Kiln stopped waking because its launches kept failing for infrastructur
 _Avoid_: dead, hung
 
 **Cancel**:
-Ending a Request at the user's word (`kiln request cancel`). Its workers stop and it fails; its branches and worktrees are kept.
+Ending a Request at the user's word (`kiln request cancel`, or from the Dashboard). Its workers stop and it fails; its branches and worktrees are kept.
 _Avoid_: abort, delete
 
 **Budget**:
@@ -139,3 +139,15 @@ _Avoid_: alert, push
 **Digest**:
 What happened since the user was last told, sent once a day as a Notification and given to the Overseer when the user attaches with `kiln chat`. When nothing happened there is no digest.
 _Avoid_: summary, report
+
+**Dashboard**:
+The user's browser window onto Kiln: it shows what waits on them, how Requests are going, spend and health, and lets them settle Escalations, Halt, Resume and Cancel. It never starts work.
+_Avoid_: UI, web app, console, admin panel
+
+**Needs you**:
+The Dashboard's list of open Escalations, grouped by Project, oldest first. A condition that is not a decision (a Halt, the daily cap, a Stuck agent) is shown beside it, not in it.
+_Avoid_: Inbox (that is an agent's), to-do list
+
+**Source**:
+Where a decision, Halt, Resume or Cancel came from: the command line or the Dashboard. Recorded with it and shown in the Request's report.
+_Avoid_: origin, channel
