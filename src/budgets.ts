@@ -20,10 +20,10 @@ const EPSILON = 1e-9;
 
 const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
 const pad = (n: number) => String(n).padStart(2, "0");
-export const dayKey = (d: Date): string =>
+const dayKey = (d: Date): string =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 /** The start of the user's day, which is when the daily cap starts over. */
-export const dayStart = (d: Date): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const dayStart = (d: Date): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
 export interface CostReport {
   day: string;
