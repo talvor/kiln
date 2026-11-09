@@ -41,6 +41,11 @@ published fix ticket. See [the playbook guide](docs/playbooks.md).
 Each Assignment runs under turn, spend and time limits, and a cap keeps only so many running at
 once; the rest wait as planned. See [the limits guide](docs/limits.md).
 
+A Request may cost only so much and so may a day: at 80% you are notified, a Request that uses its
+budget is blocked on you, and the daily cap stops all work. `kiln cost` shows the spend, and a
+daily digest (only when there is news) and warnings go to a command you configure. See
+[the budgets guide](docs/budgets.md).
+
 Decisions that are the user's to make wait in `kiln escalations`; only `kiln approve <id>` and
 `kiln reject <id> --reason <text>` settle them. See [the escalation guide](docs/escalations.md).
 

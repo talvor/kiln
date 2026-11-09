@@ -9,6 +9,7 @@ import { createFaults } from "./faults.ts";
 import { createPages } from "./pages.ts";
 import { createRouter } from "./router.ts";
 import { createChat } from "./chat.ts";
+import { createBudgets } from "./budgets.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureDirs, type KilnPaths } from "./paths.ts";
 import { readLines, type Request, type Response, writeJson } from "./protocol.ts";
@@ -26,6 +27,7 @@ import {
   type NewProject,
   type NewSession,
   openStore,
+  type RequestRecord,
   type Store,
 } from "./store.ts";
 
@@ -103,6 +105,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     haltedSince: store.haltedSince(),
   });
   const halted = () => store.haltedSince() !== null;
+  /** Nobody is woken while Kiln is halted, or while the day's spend has used up the daily cap. */
+  const holding = () => halted() || budgets.capped();
 
   const projectQueues = new Map<string, Promise<void>>();
   const projectReplies = new Set<Promise<void>>();
@@ -128,10 +132,16 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       session.role === "overseer"
         ? [paths.chat, ...store.listProjects().map((p) => p.clonePath)]
         : undefined,
-    halted,
+    halted: holding,
     infrastructure: async () => (await loadConfig(paths.config)).limits.infrastructure,
     launchLimits: (session) => conductor.launchLimits(session),
-    observe: (session, used) => conductor.observe(session, used),
+    observe: (session, used) => {
+      conductor.observe(session, used);
+      // What it cost may take the day over the cap: look at once, not on the next tick.
+      if (used.costUsd > 0) {
+        budgets.check().catch((err) => log.error("budget check failed", { err }));
+      }
+    },
     activity: (session) => conductor.activity(session),
     watched: (session) => conductor.watched(session),
     launch: async (req) => {
@@ -145,6 +155,16 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     roleTools: async (name) => (await loadConfig(paths.config)).roles.get(name)?.tools,
     rolePrompt: async (name) => (await loadConfig(paths.config)).roles.get(name)?.prompt,
     selfCommand,
+  });
+  const budgets = createBudgets({
+    store,
+    log,
+    loadLimits: async () => (await loadConfig(paths.config)).limits,
+    stopAll: () => router.abortAll("halt"),
+    resumed: () => {
+      deliver().catch((err) => log.error("delivery pass failed", { err }));
+      conductor.react().catch((err) => log.error("conductor pass failed", { err }));
+    },
   });
   const escalations = createEscalations(store);
   /** Record a decision, from a command or from a page, and let whatever waits on it carry on. */
@@ -173,6 +193,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     log,
     failAssignment: (id, why) => void router.failAssignment(id, why),
     reportStuck: (address, why) => router.reportStuck(store.getSession(address), why),
+    withProject: withProjectQueue,
     close: (id, reason) => {
       try {
         decideEscalation({ id, approved: true, reason });
@@ -195,6 +216,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     loadConfig: () => loadConfig(paths.config),
     chatDir: paths.chat,
     decide: (params) => decideEscalation(params),
+    spendLine: () => budgets.spendLine(),
+    told: () => budgets.told(),
     control: {
       halt: () =>
         (handlers["kiln.halt"]({}, {}) as { changed: boolean }).changed
@@ -221,7 +244,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     loadConfig: () => loadConfig(paths.config),
     worktreesDir: paths.worktrees,
     withProject: withProjectQueue,
-    halted,
+    halted: holding,
+    notify: (n) => budgets.notify(n),
   });
   // Delivery passes never overlap: a pass in flight is joined, not repeated. The conductor reacts
   // on its own clock, so a worker that takes long to wake does not hold up the other Assignments,
@@ -234,6 +258,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   // each, no model involved. A look that is still running is not started again.
   const prSeconds = Number(Deno.env.get("KILN_PR_POLL_SECONDS"));
   const faultSeconds = Number(Deno.env.get("KILN_FAULT_CHECK_SECONDS"));
+  const digestSeconds = Number(Deno.env.get("KILN_DIGEST_CHECK_SECONDS"));
   let polling: Promise<void> | undefined;
   const startClocks = () => {
     clocks.push(
@@ -252,6 +277,14 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       setInterval(
         () => faults.check().catch((err) => log.error("fault check failed", { err })),
         (faultSeconds > 0 ? faultSeconds : 30) * 1000,
+      ),
+      setInterval(
+        () => budgets.check().catch((err) => log.error("budget check failed", { err })),
+        1_000,
+      ),
+      setInterval(
+        () => budgets.digestCheck().catch((err) => log.error("digest check failed", { err })),
+        (digestSeconds > 0 ? digestSeconds : 30) * 1000,
       ),
       setInterval(() => {
         try {
@@ -395,7 +428,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
           trackerItem: typeof params.trackerItem === "string" ? params.trackerItem : null,
           andFix: params.andFix === true,
         }),
-    "requests.status": (params) => requestStatus(store, Number(params.id)),
+    "requests.status": async (params) => {
+      await budgets.refresh();
+      return requestStatus(store, Number(params.id), budgets.requestBudget);
+    },
+    "cost.report": () => budgets.cost(),
     "assignments.start": (params) => {
       const request = store.getRequest(Number(params.requestId));
       const project = store.listProjects().find((p) => p.id === request.projectId);
@@ -489,9 +526,10 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         trackerItem: params.trackerItem,
       }, {});
     },
-    "overseer.requestStatus": (params) => {
+    "overseer.requestStatus": async (params) => {
       asOverseer(params);
-      return requestStatus(store, Number(params.id));
+      await budgets.refresh();
+      return requestStatus(store, Number(params.id), budgets.requestBudget);
     },
     "chat.begin": () => chat.begin(),
     "chat.heartbeat": (params) => chat.heartbeat(Number(params.id)),
@@ -529,6 +567,8 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         const since = store.haltedSince();
         if (since) log.warn("Kiln is halted; run `kiln resume` to carry on", { since });
       }],
+      // The daily cap, read from the limits and the day's spend, holds from the first moment.
+      ["budgets", () => budgets.check()],
       // Launches the crash cut short: resume their work once, or fail it the second time.
       ["interrupted-launches", () => {
         const recovered = router.recoverInterrupted();
@@ -584,7 +624,11 @@ async function runStartup(
 }
 
 /** A Request with its Steps and their Assignments, as `kiln request status` shows it. */
-function requestStatus(store: Store, id: number) {
+function requestStatus(
+  store: Store,
+  id: number,
+  budgetOf: (request: RequestRecord) => number | null,
+) {
   const request = store.getRequest(id);
   const project = store.listProjects({ includeRemoved: true }).find((p) =>
     p.id === request.projectId
@@ -604,6 +648,8 @@ function requestStatus(store: Store, id: number) {
     fixRequestId: request.fixRequestId,
     prUrl: request.prUrl,
     failure: request.failure,
+    costUsd: store.requestSpend(id),
+    budgetUsd: budgetOf(request),
     steps: store.listSteps(id).map((step) => ({
       position: step.position,
       name: step.spec.name,

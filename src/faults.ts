@@ -18,6 +18,8 @@ export interface FaultDeps {
   failAssignment(assignmentId: number, why: string): void;
   /** Tell the Overseer the worker of an Assignment is stuck. */
   reportStuck(workerAddress: string, why: string): void;
+  /** Run work on a Project alone, so a look never interleaves with a merge or a clean-up. */
+  withProject<T>(name: string, work: () => Promise<T>): Promise<T>;
 }
 
 const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
@@ -257,7 +259,7 @@ export function createFaults(deps: FaultDeps) {
     looking ??= (async () => {
       for (const project of store.listProjects()) {
         try {
-          await lookAt(project);
+          await deps.withProject(project.name, () => lookAt(project));
         } catch (err) {
           log.error("fault check failed", { project: project.name, err });
         }

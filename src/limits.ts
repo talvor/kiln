@@ -3,8 +3,10 @@
 //     "defaults":    { "turns": 50, "spendUsd": 1, "seconds": 1800, "idleSeconds": 600 },
 //     "concurrency": { "global": 4, "perProject": 2 },
 //     "infrastructure": { "retries": 4, "backoffSeconds": 30 },
+//     "budgets":     { "requestUsd": 5, "dailyUsd": 20 },
+//     "notify":      { "command": "notify-send Kiln", "digestAt": "08:00" },
 //     "projects":    { "<name>": { "ceiling": { "turns": 80, "spendUsd": 2, "seconds": 3600 },
-//                                  "maxActive": 3 } }
+//                                  "maxActive": 3, "requestUsd": 3 } }
 //   }
 // Every field is optional. Every Assignment runs under a Budget: the defaults, or what its
 // leader asked for, never above the Project's ceiling. Pure rules: no storage, no I/O.
@@ -31,7 +33,11 @@ export interface LimitsConfig {
   global: number;
   /** Assignments active at once in one Project, unless the Project says otherwise. */
   perProject: number;
-  projects: Map<string, { ceiling: Ceiling; maxActive?: number }>;
+  projects: Map<string, { ceiling: Ceiling; maxActive?: number; requestUsd?: number }>;
+  /** What all the work of one Request may cost, and what all of Kiln may spend in a day. */
+  budgets: { requestUsd?: number; dailyUsd?: number };
+  /** How the user is told: a command that is given each notification, and when the digest is due. */
+  notify: { command?: string; digestAt: string };
   /** How Kiln retries waking an agent whose launch fails for reasons outside the work. */
   infrastructure: { retries: number; backoffSeconds: number };
 }
@@ -41,6 +47,8 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   global: 4,
   perProject: 2,
   projects: new Map(),
+  budgets: {},
+  notify: { digestAt: "08:00" },
   infrastructure: { retries: 4, backoffSeconds: 30 },
 };
 
@@ -83,12 +91,21 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
     }
     return v;
   };
-  only("the file", raw, ["defaults", "concurrency", "infrastructure", "projects"]);
+  only("the file", raw, [
+    "defaults",
+    "concurrency",
+    "infrastructure",
+    "budgets",
+    "notify",
+    "projects",
+  ]);
 
   const limits: LimitsConfig = {
     ...DEFAULT_LIMITS,
     defaults: { ...DEFAULT_LIMITS.defaults },
     infrastructure: { ...DEFAULT_LIMITS.infrastructure },
+    budgets: {},
+    notify: { ...DEFAULT_LIMITS.notify },
   };
   if (raw.defaults !== undefined) {
     const d = only('"defaults"', raw.defaults, ["turns", "spendUsd", "seconds", "idleSeconds"]);
@@ -115,11 +132,32 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
       );
     }
   }
+  if (raw.budgets !== undefined) {
+    const b = only('"budgets"', raw.budgets, ["requestUsd", "dailyUsd"]);
+    for (const key of Object.keys(b) as (keyof LimitsConfig["budgets"])[]) {
+      limits.budgets[key] = number(`"budgets.${key}"`, b[key]);
+    }
+  }
+  if (raw.notify !== undefined) {
+    const n = only('"notify"', raw.notify, ["command", "digestAt"]);
+    if (n.command !== undefined) {
+      if (typeof n.command !== "string" || !n.command.trim()) {
+        throw fail('"notify.command" must be a command to run');
+      }
+      limits.notify.command = n.command;
+    }
+    if (n.digestAt !== undefined) {
+      if (typeof n.digestAt !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(n.digestAt)) {
+        throw fail('"notify.digestAt" must be a time of day such as "08:00"');
+      }
+      limits.notify.digestAt = n.digestAt;
+    }
+  }
   if (raw.projects !== undefined) {
     limits.projects = new Map();
     if (!isObject(raw.projects)) throw fail('"projects" must be an object');
     for (const [name, value] of Object.entries(raw.projects)) {
-      const p = only(`"projects.${name}"`, value, ["ceiling", "maxActive"]);
+      const p = only(`"projects.${name}"`, value, ["ceiling", "maxActive", "requestUsd"]);
       const ceiling: Ceiling = {};
       if (p.ceiling !== undefined) {
         const c = only(`"projects.${name}.ceiling"`, p.ceiling, ["turns", "spendUsd", "seconds"]);
@@ -132,6 +170,9 @@ function parseLimits(file: string, raw: unknown): LimitsConfig {
         maxActive: p.maxActive === undefined
           ? undefined
           : number(`"projects.${name}.maxActive"`, p.maxActive, true),
+        requestUsd: p.requestUsd === undefined
+          ? undefined
+          : number(`"projects.${name}.requestUsd"`, p.requestUsd),
       });
     }
   }
@@ -175,3 +216,7 @@ export function overlaps(a: string[], b: string[]): boolean {
 export function parseOwns(owns: unknown): string[] {
   return typeof owns === "string" ? owns.split(/[,\n]/).map((p) => p.trim()).filter(Boolean) : [];
 }
+
+/** What all the work of a Request on the Project may cost, before the user must say more. */
+export const requestBudgetUsd = (limits: LimitsConfig, project: string): number | undefined =>
+  limits.projects.get(project)?.requestUsd ?? limits.budgets.requestUsd;

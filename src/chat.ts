@@ -7,6 +7,7 @@
 import type { Escalations, EscalationView } from "./escalations.ts";
 import type { Config } from "./playbooks.ts";
 import { overseerRole } from "./playbooks.ts";
+import { describeNews, NEWS_EVENTS } from "./news.ts";
 import type { Router, StopVerdict } from "./router.ts";
 import type { ChatRecord, MessageRecord, SessionRecord, Store } from "./store.ts";
 
@@ -17,15 +18,6 @@ const ATTACHED_MS = 15_000;
 /** How much of the conversation seeds a fresh session. */
 const HISTORY_TURNS = 20;
 const TURN_CHARS = 600;
-/** Events that tell the user something happened to their work. */
-const NEWS_EVENTS = [
-  "request.done",
-  "step.failed",
-  "step.escalated",
-  "breakdown.approved",
-  "agent.stuck",
-];
-
 /** The words the user types that Kiln answers itself, without a model. */
 export const COMMANDS = [
   "status",
@@ -91,6 +83,10 @@ export interface ChatOptions {
   decide: (params: { id: number; approved: boolean; reason?: string }) => unknown;
   /** Halt or resume Kiln, as the commands do; says what happened. */
   control: { halt: () => string; resume: () => string };
+  /** What has been spent today, in a sentence; undefined when nothing has. */
+  spendLine?: () => string | undefined;
+  /** The user has been given the news (so the daily digest need not repeat it). */
+  told?: () => void;
 }
 
 export interface ChatBegun {
@@ -153,28 +149,7 @@ export function createChat(opts: ChatOptions) {
     const news: string[] = [];
     const open = waitingOnUser();
     for (const e of open) news.push(`Decision waiting for the user: ${describeEscalation(e)}`);
-    for (const e of store.listEvents(sinceEvent, NEWS_EVENTS)) {
-      const d = e.data as {
-        id?: number;
-        request?: number;
-        why?: string;
-        tickets?: string[];
-        address?: string;
-      };
-      news.push(
-        e.kind === "agent.stuck"
-          ? `${d.address} is stuck: ${d.why}. Kiln has stopped waking it; the user can type "kiln resume" to try again.`
-          : e.kind === "breakdown.approved"
-          ? `Request ${d.request}: the Overseer approved the breakdown of the spec into ${
-            d.tickets?.length ?? 0
-          } ticket(s): ${(d.tickets ?? []).join(", ")}.`
-          : e.kind === "request.done"
-          ? `Request ${d.id} finished.`
-          : e.kind === "step.failed"
-          ? `Request ${d.request} failed: ${d.why ?? "a step failed"}.`
-          : `Request ${d.request} needs the user's attention (a step was escalated).`,
-      );
-    }
+    for (const e of store.listEvents(sinceEvent, NEWS_EVENTS)) news.push(describeNews(e));
     const mail = unread();
     if (mail.length) news.push(`${mail.length} unread message(s) in your inbox.`);
 
@@ -187,6 +162,7 @@ export function createChat(opts: ChatOptions) {
         ? "Projects: " + projects.map((p) => `${p.name}${p.paused ? " (paused)" : ""}`).join(", ")
         : "No projects are registered yet.",
       work.length ? work.join("\n") : "No requests are running.",
+      opts.spendLine?.() ?? "",
       news.length ? `\n## News for the user\n${news.join("\n")}` : "",
       turns.length
         ? "\n## The conversation so far (oldest first)\n" +
@@ -285,6 +261,7 @@ export function createChat(opts: ChatOptions) {
         });
       }
       const { text, news } = digest(since);
+      opts.told?.();
       const chat = store.startChat();
       store.appendEvent("chat.started", { id: chat.id });
       return {
