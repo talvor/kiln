@@ -56,6 +56,7 @@
   }
 
   function renderRail() {
+    const scrolled = rail.scrollTop; // a live update must not throw the reader back to the top
     rail.replaceChildren(el("h2", "", "Needs you"));
     if (view.groups.length === 0) rail.append(el("p", "empty", "Nothing is waiting on you."));
     for (const group of view.groups) {
@@ -67,6 +68,7 @@
       rail.append(el("p", "empty", "Their Request ended, so they cannot be acted on."));
       for (const item of view.stale) rail.append(row(item, true));
     }
+    rail.scrollTop = scrolled;
   }
 
   function renderMain() {
@@ -146,7 +148,6 @@
 
   const stream = new EventSource("/events"); // one stream for this tab
   stream.addEventListener("changed", refreshSoon);
-  stream.addEventListener("open", refresh); // also after a reconnect
+  stream.addEventListener("open", refresh); // the first load, and after a reconnect
   render();
-  refresh();
 })();

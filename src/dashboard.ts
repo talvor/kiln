@@ -89,6 +89,7 @@ function createEventHub(paths: KilnPaths) {
         });
         const first = cursor === null;
         cursor = feed.last;
+        if (first && down) { for (const listener of listeners) listener(cursor); }
         backoff = 500;
         // Recovering from an outage counts as news, so tabs re-fetch.
         if ((!first && feed.events.length > 0) || down) {
@@ -98,6 +99,7 @@ function createEventHub(paths: KilnPaths) {
         if (Date.now() - began < 500) await sleep(500); // never spin on an answer that came at once
       } catch {
         down = true;
+        cursor = null; // a restarted daemon may count events afresh; look for the cursor again
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 10_000);
       }
@@ -147,18 +149,23 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         send("retry: 2000\n\n");
         const unsubscribe = hub.subscribe((cursor) => send(`event: changed\ndata: ${cursor}\n\n`));
         const ping = setInterval(() => send(": ping\n\n"), PING_MS);
+        let closed = false;
         const close = () => {
-          closers.delete(close);
+          if (closed) return;
+          closed = true;
+          closers.delete(end);
           unsubscribe();
           clearInterval(ping);
         };
-        release = close;
-        closers.add(() => {
+        // What stop() calls: leave, and finish the stream. The same reference is removed on leaving.
+        const end = () => {
           close();
           try {
             controller.close();
           } catch { /* already closed */ }
-        });
+        };
+        release = close;
+        closers.add(end);
       },
       // Cleanup lives here, not on request.signal, which is not reliable for streams.
       cancel() {
