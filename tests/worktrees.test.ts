@@ -2,9 +2,12 @@
 // `kiln request ...` and `kiln assignment ...` against the fake world (bare remote, scripted
 // claude). A "worker" is the scripted launcher run in the Assignment's Worktree plus a commit.
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
-import { join, relative } from "@std/path";
+import { basename, dirname, join, relative } from "@std/path";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
+import { MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
+import { sandboxFor } from "../src/daemon.ts";
+import type { WorktreeRecord } from "../src/store.ts";
 import { asAgent, assignment, openTeam } from "./router_helpers.ts";
 
 const COMMANDS = { setup: null, test: null, lint: null, build: null };
@@ -150,8 +153,14 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
   for (const w of all) {
     for (const dir of [w.TMPDIR, w.XDG_CACHE_HOME, w.npm_config_cache]) {
       assert((await Deno.stat(dir)).isDirectory);
-      // Support directories sit beside the worktree, never inside it.
+      // Support directories sit outside the worktree, never inside it.
       assert(relative(w.Worktree, dir).startsWith(".."), `${dir} is inside the worktree`);
+    }
+    // The temp directory is short, private, and under the runtime directory.
+    assert(w.TMPDIR.length <= MAX_TMPDIR_LENGTH, `${w.TMPDIR} is too long`);
+    assert(w.TMPDIR.startsWith(join(world.root, "xdg", "kiln") + "/"), w.TMPDIR);
+    for (const dir of [w.TMPDIR, join(w.TMPDIR, ".."), join(w.TMPDIR, "..", "..")]) {
+      assertEquals((await Deno.stat(dir)).mode! & 0o777, 0o700, `${dir} is not private`);
     }
   }
 
@@ -161,6 +170,18 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
   const calls = await world.launcher.calls();
   const call = calls.at(-1)!;
   assertEquals(call.cwd, await Deno.realPath(a.Worktree));
+  // The sandbox settings for a launch there may write to the worker's TMPDIR.
+  const key = basename(dirname(a.TMPDIR));
+  const wt = record(Number(key.split("-")[0]), a.Worktree);
+  Deno.env.set("XDG_RUNTIME_DIR", join(world.root, "xdg"));
+  try {
+    assertEquals(tmpdirOf(wt), a.TMPDIR);
+    const sandbox = await sandboxFor({ filesystem: { allowWrite: ["/x"] } }, wt);
+    const allowed = (sandbox!.filesystem as { allowWrite: string[] }).allowWrite;
+    assert(allowed.includes(a.TMPDIR) && allowed.includes("/x"), allowed.join());
+  } finally {
+    Deno.env.delete("XDG_RUNTIME_DIR");
+  }
   for (
     const key of [
       "KILN_PORT_BASE",
@@ -176,9 +197,62 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
   // Finishing an Assignment gives its ports back for the next one.
   await work(world, a.Worktree, { "a.txt": "a\n" });
   assertEquals((await world.kiln("assignment", "merge", "1")).code, 0);
+  // ... and removes its support and temp directories.
+  assertEquals(await exists(`${a.Worktree}.kiln`), false);
+  assertEquals(await exists(a.TMPDIR), false);
+  assertEquals(await exists(b.TMPDIR), true);
   const c = await startAssignment(world, 1);
   assertEquals(c.KILN_PORT_BASE, a.KILN_PORT_BASE);
 });
+
+const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
+
+const record = (id: number, path: string): WorktreeRecord => ({
+  id,
+  path,
+  branch: "b",
+  portBase: 20000,
+  releasedAt: null,
+});
+
+Deno.test("TMPDIR stays short whatever the data dir, project name or ids", () => {
+  const long = `/home/${"u".repeat(40)}/.local/share/kiln/worktrees/${"p".repeat(60)}`;
+  const seen = new Set<string>();
+  for (const id of [1, 99, 123456789]) {
+    for (const path of [`${long}/request-${id}`, `${long}/request-${id}-assignment-${id}${id}`]) {
+      for (const runtime of ["/run/user/1000", null]) {
+        const tmp = tmpdirOf(record(id, path), runtime, 1000);
+        assert(tmp.length <= MAX_TMPDIR_LENGTH, `${tmp} is ${tmp.length} characters`);
+        seen.add(tmp);
+      }
+    }
+  }
+  assertEquals(seen.size, 12, "every Worktree has its own TMPDIR");
+});
+
+Deno.test("TMPDIR is under XDG_RUNTIME_DIR, or /tmp/kiln-<uid> without it", () => {
+  const wt = record(7, "/data/worktrees/remote/request-7");
+  assert(tmpdirOf(wt, "/run/user/1000", 1000).startsWith("/run/user/1000/kiln/7-"));
+  assert(tmpdirOf(wt, null, 1000).startsWith("/tmp/kiln-1000/7-"));
+});
+
+withWorld(
+  "a start whose TMPDIR would be too long fails clearly and leaves nothing",
+  async (world) => {
+    await register(world);
+    const runtime = join(world.root, "x".repeat(80));
+    await Deno.mkdir(runtime);
+    await world.kiln("daemon", "stop");
+    const r = await runKiln({ ...world.env, XDG_RUNTIME_DIR: runtime }, [
+      "request",
+      "start",
+      "remote",
+    ]);
+    assertEquals(r.code, 1);
+    assertStringIncludes(r.stderr, `limit of ${MAX_TMPDIR_LENGTH}`);
+    assertEquals(await exists(join(runtime, "kiln")), false);
+  },
+);
 
 withWorld("an Assignment uses its router Message ID across start and merge", async (world) => {
   await register(world);
@@ -229,6 +303,8 @@ withWorld("a failed worktree add leaves its branch and path reusable", async (wo
   await Deno.chmod(fakeGit, 0o755);
   const failed = await world.kiln("request", "start", "remote");
   assertEquals(failed.code, 1);
+  // The rollback removed the temp directory too.
+  assertEquals([...Deno.readDirSync(join(world.root, "xdg", "kiln"))].length, 0);
   await Deno.remove(fakeGit);
   const retried = await startRequest(world);
   assertEquals(retried.Branch, "kiln/request-1");

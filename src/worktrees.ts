@@ -2,7 +2,8 @@
 // Project's clone: one Worktree per Request (on the request branch, where finished Assignments are
 // merged) and one per Assignment (on its own branch). Each Worktree has its own ports, temporary
 // directory and caches, so concurrent work does not collide.
-import { basename, dirname, join } from "@std/path";
+import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, join } from "@std/path";
 import { firstLine, REMOTE_TIMEOUT_MS, run } from "./checks.ts";
 import type { ProjectRecord, Store, WorktreeRecord } from "./store.ts";
 import { WORKTREE_PORTS } from "./store.ts";
@@ -34,6 +35,85 @@ export interface MergedAssignment {
   requestBranch: string;
 }
 
+/**
+ * The longest `TMPDIR` a worker may have. Claude's command sandbox listens on sockets named
+ * `$TMPDIR/claude-socks-<16 hex>.sock` (35 characters); a unix socket path holds at most 107
+ * usable characters, and a longer one makes the sandbox fail to start.
+ */
+export const MAX_TMPDIR_LENGTH = 72;
+
+/**
+ * The private, short temporary directory of a Worktree: `$XDG_RUNTIME_DIR/kiln/<key>/tmp`, or
+ * `/tmp/kiln-<uid>/<key>/tmp` where there is no usable runtime directory (macOS). It is not
+ * beside the Worktree, whose path can be long. The key is the Worktree's id plus a short hash of
+ * its path, so two Kiln homes of one user never share a directory.
+ */
+export function tmpdirOf(
+  wt: WorktreeRecord,
+  runtimeDir: string | null = usableRuntimeDir(),
+  uid: number | null = Deno.uid(),
+): string {
+  const key = `${wt.id}-${createHash("sha256").update(wt.path).digest("hex").slice(0, 8)}`;
+  const root = runtimeDir ? join(runtimeDir, "kiln") : join("/tmp", `kiln-${uid ?? "user"}`);
+  return join(root, key, "tmp");
+}
+
+function usableRuntimeDir(): string | null {
+  const dir = Deno.env.get("XDG_RUNTIME_DIR");
+  if (!dir || !isAbsolute(dir)) return null;
+  try {
+    return Deno.statSync(dir).isDirectory ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The directory holding a Worktree's `TMPDIR`; removed with it. */
+function tmpHome(wt: WorktreeRecord): string {
+  return dirname(infoOf(wt).env.TMPDIR);
+}
+
+/** Refuse a `TMPDIR` the worker sandbox could not use, saying why. */
+function checkTmpdirLength(tmpdir: string): void {
+  if (tmpdir.length > MAX_TMPDIR_LENGTH) {
+    throw new WorktreeBlocked(
+      `Cannot use ${tmpdir} as a worktree's TMPDIR: it is ${tmpdir.length} characters, over the ` +
+        `limit of ${MAX_TMPDIR_LENGTH} (the worker sandbox's sockets must fit in a 107 character ` +
+        `unix socket path). Point XDG_RUNTIME_DIR at a shorter directory.`,
+    );
+  }
+}
+
+/** Make a Worktree's `TMPDIR`, and its parent directories, private to the user. */
+export async function makeTmpdir(wt: WorktreeRecord): Promise<void> {
+  const tmpdir = infoOf(wt).env.TMPDIR;
+  checkTmpdirLength(tmpdir);
+  const home = dirname(tmpdir);
+  const root = dirname(home);
+  await Deno.mkdir(tmpdir, { recursive: true, mode: 0o700 });
+  for (const dir of [root, home, tmpdir]) {
+    const info = await Deno.stat(dir);
+    if (Deno.uid() !== null && info.uid !== Deno.uid()) {
+      throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is not yours.`);
+    }
+    await Deno.chmod(dir, 0o700);
+  }
+}
+
+/** Make a Worktree's support directories (caches) and `TMPDIR` if they are missing. */
+export async function makeSupport(wt: WorktreeRecord): Promise<void> {
+  const env = infoOf(wt).env;
+  for (const dir of [env.XDG_CACHE_HOME, env.npm_config_cache]) {
+    await Deno.mkdir(dir, { recursive: true });
+  }
+  await makeTmpdir(wt);
+}
+
+async function removeSupport(wt: WorktreeRecord): Promise<void> {
+  await removeIfPresent(`${wt.path}.kiln`);
+  await removeIfPresent(tmpHome(wt));
+}
+
 export function infoOf(wt: WorktreeRecord): WorktreeInfo {
   const support = `${wt.path}.kiln`;
   return {
@@ -42,7 +122,7 @@ export function infoOf(wt: WorktreeRecord): WorktreeInfo {
     env: {
       KILN_PORT_BASE: String(wt.portBase),
       KILN_PORT_COUNT: String(WORKTREE_PORTS),
-      TMPDIR: join(support, "tmp"),
+      TMPDIR: tmpdirOf(wt),
       XDG_CACHE_HOME: join(support, "cache"),
       npm_config_cache: join(support, "cache", "npm"),
     },
@@ -78,6 +158,7 @@ async function createWorktree(
   const path = join(await Deno.realPath(dirname(requestedPath)), basename(requestedPath));
   const wt = store.addWorktree({ path, branch });
   let supportCreated = false;
+  let tmpTouched = false;
   let branchCreated = false;
   try {
     if (await exists(path)) {
@@ -85,10 +166,9 @@ async function createWorktree(
     }
     await Deno.mkdir(`${path}.kiln`);
     supportCreated = true;
-    const info = infoOf(wt);
-    for (const dir of [info.env.TMPDIR, info.env.XDG_CACHE_HOME, info.env.npm_config_cache]) {
-      await Deno.mkdir(dir, { recursive: true });
-    }
+    checkTmpdirLength(infoOf(wt).env.TMPDIR);
+    tmpTouched = true;
+    await makeSupport(wt);
     const created = await run("git", ["branch", branch, base], project.clonePath);
     if (created.code !== 0) {
       throw new WorktreeBlocked(`Cannot create branch ${branch}: ${firstLine(created.stderr)}`);
@@ -129,6 +209,7 @@ async function createWorktree(
         if (deleted.code !== 0) throw new Error(firstLine(deleted.stderr));
       }
       if (supportCreated) await removeIfPresent(`${path}.kiln`);
+      if (tmpTouched) await removeIfPresent(tmpHome(wt));
       store.releaseWorktree(wt.id);
     } catch (failure) {
       throw new WorktreeCleanupFailed(
@@ -318,7 +399,7 @@ export async function mergeAssignment(
   if (listed.code !== 0 || listed.stdout.split("\0").includes(`worktree ${assignmentWt.path}`)) {
     throw new WorktreeBlocked(`Assignment ${assignmentId} is still registered as a worktree.`);
   }
-  await removeIfPresent(`${assignmentWt.path}.kiln`);
+  await removeSupport(assignmentWt);
   store.releaseWorktree(assignmentWt.id);
   return result;
 }
@@ -356,7 +437,7 @@ export async function cleanUpRequest(
       );
     }
     if (!(await exists(wt.path))) {
-      await removeIfPresent(`${wt.path}.kiln`);
+      await removeSupport(wt);
       store.releaseWorktree(wt.id);
     }
   }

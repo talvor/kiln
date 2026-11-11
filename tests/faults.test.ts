@@ -22,9 +22,11 @@ async function register(world: World) {
 const clonePath = (world: World) => join(world.dirs.data, "projects", "remote");
 const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
 
+let lastTmpdir = "";
 async function startRequest(world: World): Promise<string> {
   const r = await world.kiln("request", "start", "remote");
   assertEquals(r.code, 0, r.stderr);
+  lastTmpdir = r.stdout.match(/^TMPDIR=(.*)$/m)![1];
   return r.stdout.match(/^Worktree: (.*)$/m)![1];
 }
 
@@ -63,8 +65,12 @@ withWorld("a deleted worktree is recreated, with one escalation that closes itse
   await w.git(worktree, "add", ".");
   await w.git(worktree, "commit", "-m", "Work");
 
+  // The runtime directory goes too, as it does on reboot.
   await Deno.remove(worktree, { recursive: true });
+  await Deno.remove(join(w.root, "xdg"), { recursive: true });
+  await Deno.mkdir(join(w.root, "xdg"));
   const escalation = await recovered(w);
+  assert((await Deno.stat(lastTmpdir)).isDirectory, "TMPDIR is made again");
 
   assertStringIncludes(escalation.summary, "Environment fault on remote");
   assertStringIncludes(escalation.summary, worktree);
