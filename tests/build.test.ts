@@ -60,6 +60,28 @@ Deno.test("the build produces one executable that runs as Kiln", async () => {
       assertEquals(started.code, 0, started.stderr);
       assertStringIncludes(started.stdout, "started");
       assertEquals((await run("daemon", "status")).code, 0);
+
+      // The Dashboard's page is inside the executable.
+      const dashboard = new Deno.Command(exe, {
+        args: ["dashboard", "--no-open"],
+        env: home.env,
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "null",
+      }).spawn();
+      try {
+        const reader = dashboard.stdout.pipeThrough(new TextDecoderStream()).getReader();
+        const url = new URL(((await reader.read()).value ?? "").split("\n")[0]);
+        const signedIn = await fetch(url, { redirect: "manual" });
+        await signedIn.body?.cancel();
+        const cookie = (signedIn.headers.get("set-cookie") ?? "").split(";")[0];
+        const page = await fetch(url.origin + "/", { headers: { cookie } });
+        assertEquals(page.status, 200);
+        assertStringIncludes(await page.text(), "<title>Kiln</title>");
+      } finally {
+        dashboard.kill("SIGINT");
+        await dashboard.status;
+      }
     } finally {
       await new Deno.Command(exe, { args: ["daemon", "stop"], env: home.env, clearEnv: true })
         .output();

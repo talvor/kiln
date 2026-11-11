@@ -6,6 +6,7 @@ import { fromFileUrl, join } from "@std/path";
 import { type Home, makeHome, type Result, runKiln } from "./helpers.ts";
 import type { LauncherRun } from "./fakes/claude.ts";
 
+const MAIN = fromFileUrl(new URL("../src/main.ts", import.meta.url));
 const FAKES = fromFileUrl(new URL("./fakes/", import.meta.url));
 
 export interface PrStatus {
@@ -25,7 +26,28 @@ interface Call {
   env?: Record<string, string | undefined>;
 }
 
+/** A running `kiln dashboard --no-open`, seen the way a browser would see it. */
+export interface DashboardProcess {
+  pid: number;
+  port: number;
+  /** The first line the process printed: the URL with the per-launch token. */
+  url: string;
+  token: string;
+  origin: string;
+  /** One HTTP request, never following redirects; `host` and `origin` override the defaults. */
+  fetch(
+    path: string,
+    init?: { method?: string; cookie?: string; host?: string; origin?: string },
+  ): Promise<Response>;
+  /** Spend the URL's token and return the session cookie ("name=value"). */
+  signIn(): Promise<string>;
+  /** Stop it with Ctrl-C and return its exit code. */
+  interrupt(): Promise<number>;
+}
+
 export interface World extends Home {
+  /** Start the real `kiln dashboard --no-open` against this world's daemon socket. */
+  dashboard(...args: string[]): Promise<DashboardProcess>;
   /** Bare git repository standing in for the Project's remote (`origin`). */
   remote: {
     path: string;
@@ -78,6 +100,8 @@ export interface World extends Home {
   };
   /** The scripted PR-status command: statuses are consumed in order. */
   prStatus: { script(statuses: PrStatus[]): Promise<void>; calls(): Promise<Call[]> };
+  /** Stop every dashboard this world started (the harness does this at the end of a test). */
+  stopDashboards(): Promise<void>;
   /** Run a command the way the daemon would: in the world's environment. */
   exec(cwd: string, cmd: string, ...args: string[]): Promise<Result>;
   git(cwd: string, ...args: string[]): Promise<Result>;
@@ -157,9 +181,73 @@ export async function makeWorld(): Promise<World> {
     }
   };
 
+  const dashboards: { child: Deno.ChildProcess; done: boolean }[] = [];
+  const dashboard = async (...args: string[]): Promise<DashboardProcess> => {
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", MAIN, "dashboard", "--no-open", ...args],
+      env,
+      clearEnv: true,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "null",
+    }).spawn();
+    const tracked = { child, done: false };
+    child.status.then(() => tracked.done = true);
+    dashboards.push(tracked);
+    const lines = child.stdout.pipeThrough(new TextDecoderStream()).getReader();
+    let text = "";
+    while (!text.includes("\n")) {
+      const { value, done } = await lines.read();
+      if (done) {
+        throw new Error(`kiln dashboard printed no URL (exit ${(await child.status).code})`);
+      }
+      text += value;
+    }
+    lines.releaseLock();
+    const url = text.split("\n")[0];
+    const parsed = new URL(url);
+    const port = Number(parsed.port);
+    const origin = `http://127.0.0.1:${port}`;
+    const self: DashboardProcess = {
+      pid: child.pid,
+      port,
+      url,
+      token: parsed.searchParams.get("token") ?? "",
+      origin,
+      fetch: (path, init = {}) => {
+        const headers: Record<string, string> = {};
+        if (init.cookie) headers.cookie = init.cookie;
+        if (init.origin) headers.origin = init.origin;
+        // fetch() will not send a Host of our choosing, so that takes a hand-written request.
+        if (init.host !== undefined) {
+          return rawRequest(port, init.method ?? "GET", path, { ...headers, host: init.host });
+        }
+        return fetch(origin + path, { method: init.method, headers, redirect: "manual" });
+      },
+      signIn: async () => {
+        const res = await self.fetch(`/?token=${self.token}`);
+        await res.body?.cancel();
+        return (res.headers.get("set-cookie") ?? "").split(";")[0];
+      },
+      interrupt: async () => {
+        child.kill("SIGINT");
+        return (await child.status).code;
+      },
+    };
+    return self;
+  };
+  const stopDashboards = async () => {
+    for (const d of dashboards) {
+      if (!d.done) d.child.kill("SIGKILL");
+      await d.child.status;
+    }
+  };
+
   return {
     ...base,
     env,
+    dashboard,
+    stopDashboards,
     kiln: (...args) => runKiln(env, args),
     kilnWithInput: (input, ...args) => runKiln(env, args, input),
     remote: {
@@ -260,6 +348,7 @@ export function withWorld(
     try {
       await body(world);
     } finally {
+      await world.stopDashboards();
       await world.kiln("daemon", "stop");
       await removeTree(world.root);
     }
@@ -281,5 +370,43 @@ async function removeTree(path: string): Promise<void> {
       if (attempt >= 20) throw error;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
+  }
+}
+
+/** One HTTP/1.1 request over a bare socket, so any Host header can be sent. */
+async function rawRequest(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const conn = await Deno.connect({ hostname: "127.0.0.1", port });
+  try {
+    const head = Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("");
+    await conn.write(
+      new TextEncoder().encode(`${method} ${path} HTTP/1.1\r\n${head}connection: close\r\n\r\n`),
+    );
+    const chunks: Uint8Array[] = [];
+    const buf = new Uint8Array(8192);
+    for (let n = await conn.read(buf); n !== null; n = await conn.read(buf)) {
+      chunks.push(buf.slice(0, n));
+    }
+    const raw = new TextDecoder().decode(
+      chunks.reduce((all, c) => new Uint8Array([...all, ...c]), new Uint8Array()),
+    );
+    const [top, ...rest] = raw.split("\r\n\r\n");
+    const [statusLine, ...headerLines] = top.split("\r\n");
+    const res = new Headers();
+    for (const line of headerLines) {
+      const i = line.indexOf(":");
+      res.append(line.slice(0, i), line.slice(i + 1).trim());
+    }
+    res.delete("transfer-encoding");
+    return new Response(rest.join("\r\n\r\n") || null, {
+      status: Number(statusLine.split(" ")[1]),
+      headers: res,
+    });
+  } finally {
+    conn.close();
   }
 }

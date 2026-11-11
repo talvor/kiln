@@ -14,6 +14,13 @@ JavaScript Kiln imports.
 The SDK is pinned to an exact version in `deno.json`. Upgrading it is a deliberate edit; the build
 guards tell you whether the new version still builds lean.
 
+## Embedded assets
+
+The Dashboard's page (`src/web/`) is imported as text (`import x from "./web/index.html" with
+{ type: "text" }`), so it travels inside the bundle. Raw imports are unstable in Deno: `deno.json`
+turns on `unstable: ["raw-imports"]` for running, checking and testing, and the build passes
+`--unstable-raw-imports` to `deno bundle`.
+
 ## Guards
 
 - **Size**: the executable must be at most 150 MB (`MAX_EXE_BYTES`). The limit leaves room for the

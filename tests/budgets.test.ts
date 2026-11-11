@@ -296,6 +296,8 @@ withWorld("the daily digest tells what happened since the last one, once", async
   assertStringIncludes(digest, "digest");
   assertStringIncludes(digest, "Request 1 finished");
   assertStringIncludes(digest, `$${done.costUsd.toFixed(2)}`);
+  // A Notification never links to the Dashboard: its token is the dashboard process's alone.
+  assert(!/https?:\/\/|127\.0\.0\.1|dashboard/i.test(digest), `a link in: ${digest}`);
   await pause(3_000);
   assertEquals((await notifications(w)).length, 1);
 });
