@@ -1,4 +1,5 @@
 import {
+  healthReport,
   listRequests,
   requestEvents,
   requestIdOfEvent,
@@ -493,6 +494,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       );
     },
     "cost.report": () => budgets.cost(),
+    "health.report": async () => healthReport(store, await budgets.cost()),
     "assignments.start": (params) => {
       const request = store.getRequest(Number(params.requestId));
       const project = store.listProjects().find((p) => p.id === request.projectId);

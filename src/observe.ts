@@ -375,3 +375,52 @@ export function listRequests(
   }));
 }
 export type RequestListing = ReturnType<typeof listRequests>[number];
+
+export interface HealthReport {
+  /** When Kiln was halted, if it is. */
+  haltedSince: string | null;
+  /** The day's spend against the daily cap; `since` is when the cap was reached, if it holds. */
+  dailyCap: { capUsd: number | null; todayUsd: number; reached: boolean; since: string | null };
+  /** Agents Kiln has stopped waking until the user resumes it. */
+  stuck: { address: string; since: string; requestId: number | null }[];
+  /** Environment faults not yet recovered. */
+  faults: { project: string; kind: string; detail: string; since: string }[];
+  /** Projects that take no new Requests, whether by the user or by a fault. */
+  paused: string[];
+}
+
+/** Halt, the daily cap, stuck agents, open faults and paused Projects. Reads; never writes. */
+export function healthReport(
+  store: Store,
+  cost: { capUsd: number | null; todayUsd: number; capReached: boolean },
+): HealthReport {
+  const requestOf = (address: string): number | null => {
+    const latest = store.listMessages({ to: address, kind: "assignment" }).at(-1);
+    if (!latest) return null;
+    try {
+      return store.getAssignment(latest.id).requestId;
+    } catch {
+      return null;
+    }
+  };
+  const projects = store.listProjects();
+  return {
+    haltedSince: store.haltedSince(),
+    dailyCap: {
+      capUsd: cost.capUsd,
+      todayUsd: cost.todayUsd,
+      reached: cost.capReached,
+      since: store.getMeta("capped_at"),
+    },
+    stuck: store.listSessions().flatMap((s) =>
+      s.stuckAt === null
+        ? []
+        : [{ address: s.address, since: s.stuckAt, requestId: requestOf(s.address) }]
+    ),
+    faults: projects.flatMap((p) => {
+      const f = store.getOpenFault(p.id);
+      return f ? [{ project: p.name, kind: f.kind, detail: f.detail, since: f.raisedAt }] : [];
+    }),
+    paused: projects.filter((p) => p.paused).map((p) => p.name),
+  };
+}
