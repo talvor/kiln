@@ -30,6 +30,7 @@ import {
 } from "./protocol.ts";
 import {
   infoOf,
+  makeTmpdir,
   mergeAssignment,
   startAssignment,
   startRequest,
@@ -44,24 +45,29 @@ import {
   openStore,
   type RequestRecord,
   type Store,
+  type WorktreeRecord,
 } from "./store.ts";
 
 /**
- * The sandbox for a launch in a Worktree: writes only to the Worktree, its support directory
- * (temp files and caches) and the Git directory its commits go to.
+ * The sandbox for a launch in a Worktree: writes only to the Worktree, its support directories
+ * (caches and temp directory) and the Git directory its commits go to.
  */
-async function sandboxFor(
+export async function sandboxFor(
   sandbox: Record<string, unknown> | undefined,
-  worktree: string,
+  wt: WorktreeRecord,
 ): Promise<Record<string, unknown> | undefined> {
   if (!sandbox) return sandbox;
   const common = await run(
     "git",
     ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    worktree,
+    wt.path,
   );
   const fs = (sandbox.filesystem ?? {}) as { allowWrite?: string[] };
-  const extra = [`${worktree}.kiln`, ...(common.code === 0 ? [common.stdout.trim()] : [])];
+  const extra = [
+    `${wt.path}.kiln`,
+    infoOf(wt).env.TMPDIR,
+    ...(common.code === 0 ? [common.stdout.trim()] : []),
+  ];
   return { ...sandbox, filesystem: { ...fs, allowWrite: [...(fs.allowWrite ?? []), ...extra] } };
 }
 
@@ -161,10 +167,12 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     watched: (session) => conductor.watched(session),
     launch: async (req) => {
       const wt = store.findLiveWorktree(resolve(req.cwd));
+      // The runtime directory is cleared on logout and reboot; make the temp directory again.
+      if (wt) await makeTmpdir(wt);
       return launch({
         ...req,
         env: { ...(wt ? infoOf(wt).env : {}), ...req.env },
-        sandbox: wt ? await sandboxFor(req.sandbox, wt.path) : req.sandbox,
+        sandbox: wt ? await sandboxFor(req.sandbox, wt) : req.sandbox,
       });
     },
     roleTools: async (name) => (await loadConfig(paths.config)).roles.get(name)?.tools,
@@ -512,8 +520,9 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       if (!project) throw new WorktreeBlocked("The request's project has been removed.");
       return withProjectQueue(project.name, () => mergeAssignment(store, project, assignment.id));
     },
-    "worktrees.environment": (params) => {
+    "worktrees.environment": async (params) => {
       const wt = store.findLiveWorktree(resolve(String(params.path)));
+      if (wt) await makeTmpdir(wt);
       return wt ? infoOf(wt).env : {};
     },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),

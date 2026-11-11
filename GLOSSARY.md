@@ -28,6 +28,10 @@ _Avoid_: agent, minion, drone
 A code repository registered with Kiln, which Kiln can do work on.
 _Avoid_: repo, codebase, target
 
+**Support directories**:
+Directories for a Worktree's caches and temporary files, kept outside the Worktree. See [Worktree resources](docs/worktrees.md#per-worktree-resources) for their locations and lifecycle.
+_Avoid_: scratch dir, temp folder
+
 **Request**:
 A piece of work the user asks the overseer for on a project, such as implementing a ticket, researching a bug, or designing a feature.
 _Avoid_: task, job, order

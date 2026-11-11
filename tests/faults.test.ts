@@ -1,7 +1,7 @@
 // Environment faults, seen the way a person sees them: break the clone or a Worktree underneath a
 // running Kiln and watch it pause the Project, tell the user once, and put things right.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, assignment, openTeam, waitFor } from "./router_helpers.ts";
 
@@ -22,9 +22,11 @@ async function register(world: World) {
 const clonePath = (world: World) => join(world.dirs.data, "projects", "remote");
 const exists = (path: string) => Deno.stat(path).then(() => true, () => false);
 
+let lastTmpdir = "";
 async function startRequest(world: World): Promise<string> {
   const r = await world.kiln("request", "start", "remote");
   assertEquals(r.code, 0, r.stderr);
+  lastTmpdir = r.stdout.match(/^TMPDIR=(.*)$/m)![1];
   return r.stdout.match(/^Worktree: (.*)$/m)![1];
 }
 
@@ -63,8 +65,12 @@ withWorld("a deleted worktree is recreated, with one escalation that closes itse
   await w.git(worktree, "add", ".");
   await w.git(worktree, "commit", "-m", "Work");
 
+  // The runtime directory goes too, as it does on reboot.
   await Deno.remove(worktree, { recursive: true });
+  await Deno.remove(join(w.root, "xdg"), { recursive: true });
+  await Deno.mkdir(join(w.root, "xdg"));
   const escalation = await recovered(w);
+  assert((await Deno.stat(lastTmpdir)).isDirectory, "TMPDIR is made again");
 
   assertStringIncludes(escalation.summary, "Environment fault on remote");
   assertStringIncludes(escalation.summary, worktree);
@@ -74,6 +80,29 @@ withWorld("a deleted worktree is recreated, with one escalation that closes itse
   assertEquals(await Deno.readTextFile(join(worktree, "work.txt")), "kept\n");
   // And the Project takes new work again.
   assertEquals((await w.kiln("request", "start", "remote")).code, 0);
+});
+
+withWorld("recovery waits until the Worktree TMPDIR can be created", async (w) => {
+  await register(w);
+  const worktree = await startRequest(w);
+  const runtimeHome = dirname(lastTmpdir);
+  const fallbackHome = join("/tmp", `kiln-${Deno.uid()}`, basename(runtimeHome));
+  await Deno.remove(runtimeHome, { recursive: true });
+  await Deno.writeTextFile(runtimeHome, "blocked");
+  await Deno.mkdir(dirname(fallbackHome), { recursive: true });
+  await Deno.writeTextFile(fallbackHome, "blocked");
+  try {
+    await Deno.remove(worktree, { recursive: true });
+    await waitFor(() => escalations(w), (list) => list.length === 1 && list[0].status === "open");
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    assertEquals(await exists(worktree), false);
+    assertEquals((await escalations(w))[0].status, "open");
+  } finally {
+    await Deno.remove(runtimeHome);
+    await Deno.remove(fallbackHome);
+  }
+  await recovered(w);
+  assert((await Deno.stat(lastTmpdir)).isDirectory);
 });
 
 withWorld("a damaged clone is cloned again and the worktrees made again", async (w) => {

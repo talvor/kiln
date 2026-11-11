@@ -7,7 +7,7 @@ import { dirname } from "@std/path";
 import { firstLine, REMOTE_TIMEOUT_MS, run } from "./checks.ts";
 import type { Logger } from "./log.ts";
 import type { FaultRecord, ProjectRecord, Store, WorktreeRecord } from "./store.ts";
-import { infoOf } from "./worktrees.ts";
+import { makeSupport } from "./worktrees.ts";
 
 export interface FaultDeps {
   store: Store;
@@ -126,18 +126,10 @@ export function createFaults(deps: FaultDeps) {
       if (!made) throw new Error(`branch ${wt.branch} is gone and cannot be made again`);
     }
     await Deno.mkdir(dirname(wt.path), { recursive: true });
+    await makeSupport(wt);
     const added = await git(clone, "worktree", "add", wt.path, wt.branch);
     if (added.code !== 0) {
       throw new Error(`cannot recreate worktree ${wt.path}: ${firstLine(added.stderr)}`);
-    }
-    for (
-      const dir of [
-        infoOf(wt).env.TMPDIR,
-        infoOf(wt).env.XDG_CACHE_HOME,
-        infoOf(wt).env.npm_config_cache,
-      ]
-    ) {
-      await Deno.mkdir(dir, { recursive: true });
     }
   }
 

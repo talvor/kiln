@@ -26,9 +26,11 @@ export async function makeHome(extraEnv: Record<string, string> = {}): Promise<H
     state: join(root, "state"),
     runtime: join(root, "run"),
   };
+  await Deno.mkdir(join(root, "xdg"));
   const env: Record<string, string> = {
     PATH: Deno.env.get("PATH") ?? "",
     HOME: root,
+    XDG_RUNTIME_DIR: join(root, "xdg"), // where Worktrees get their short TMPDIR
     DENO_DIR: Deno.env.get("DENO_DIR") ?? join(Deno.env.get("HOME") ?? root, ".cache", "deno"),
     KILN_CONFIG_DIR: dirs.config,
     KILN_DATA_DIR: dirs.data,
