@@ -100,7 +100,7 @@ export async function makeTmpdir(wt: WorktreeRecord): Promise<void> {
   }
 }
 
-/** Make a Worktree's support directories (caches) and `TMPDIR` if they are missing. */
+/** Make a Worktree's support directories (caches and `TMPDIR`) if they are missing. */
 export async function makeSupport(wt: WorktreeRecord): Promise<void> {
   const env = infoOf(wt).env;
   for (const dir of [env.XDG_CACHE_HOME, env.npm_config_cache]) {

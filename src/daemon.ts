@@ -49,8 +49,8 @@ import {
 } from "./store.ts";
 
 /**
- * The sandbox for a launch in a Worktree: writes only to the Worktree, its support directory
- * (caches), its own temp directory and the Git directory its commits go to.
+ * The sandbox for a launch in a Worktree: writes only to the Worktree, its support directories
+ * (caches and temp directory) and the Git directory its commits go to.
  */
 export async function sandboxFor(
   sandbox: Record<string, unknown> | undefined,
