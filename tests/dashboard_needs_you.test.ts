@@ -110,11 +110,13 @@ withWorld("the first events.since response also announces a change", async (w) =
     for await (const conn of listener) {
       const buf = new Uint8Array(65536);
       await conn.read(buf);
-      await conn.write(new TextEncoder().encode(JSON.stringify({
-        id: 1,
-        ok: true,
-        result: { events: [{ id: 1 }], last: 1 },
-      }) + "\n"));
+      await conn.write(new TextEncoder().encode(
+        JSON.stringify({
+          id: 1,
+          ok: true,
+          result: { events: [{ id: 1 }], last: 1 },
+        }) + "\n",
+      ));
       conn.close();
     }
   })();
@@ -122,8 +124,10 @@ withWorld("the first events.since response also announces a change", async (w) =
     const d = await w.dashboard();
     const cookie = await d.signIn();
     const stream = await d.fetch("/events", { cookie });
-    assertStringIncludes(await readUntil(stream, (text) => text.includes("event: changed")),
-      "event: changed\ndata: 1");
+    assertStringIncludes(
+      await readUntil(stream, (text) => text.includes("event: changed")),
+      "event: changed\ndata: 1",
+    );
   } finally {
     listener.close();
     await serving.catch(() => {});
@@ -137,11 +141,13 @@ withWorld("a failed poll announces that the daemon stopped", async (w) => {
     const conn = await listener.accept();
     const buf = new Uint8Array(65536);
     await conn.read(buf);
-    await conn.write(new TextEncoder().encode(JSON.stringify({
-      id: 1,
-      ok: true,
-      result: { events: [], last: 0 },
-    }) + "\n"));
+    await conn.write(new TextEncoder().encode(
+      JSON.stringify({
+        id: 1,
+        ok: true,
+        result: { events: [], last: 0 },
+      }) + "\n",
+    ));
     conn.close();
     listener.close();
   })();
@@ -149,12 +155,18 @@ withWorld("a failed poll announces that the daemon stopped", async (w) => {
     const d = await w.dashboard();
     const cookie = await d.signIn();
     const stream = await d.fetch("/events", { cookie });
-    assertStringIncludes(await readUntil(stream, (text) => text.includes("event: changed")),
-      "event: changed");
+    assertStringIncludes(
+      await readUntil(stream, (text) => text.includes("event: changed")),
+      "event: changed",
+    );
     const view: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
     assertEquals(view.running, false);
   } finally {
-    try { listener.close(); } catch {}
+    try {
+      listener.close();
+    } catch {
+      // The serving task may have already closed the listener.
+    }
     await serving.catch(() => {});
   }
 });

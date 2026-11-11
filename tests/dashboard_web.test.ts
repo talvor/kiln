@@ -18,12 +18,12 @@ class PageElement {
   get textContent(): string {
     return this.content + this.children.map((child) => child.textContent).join("");
   }
-  get firstElementChild(): PageElement | null {
-    return this.children[0] ?? null;
-  }
   set textContent(value: string) {
     this.replaceChildren();
     this.content = value;
+  }
+  get firstElementChild(): PageElement | null {
+    return this.children[0] ?? null;
   }
   append(...children: PageElement[]) {
     for (const child of children) {
