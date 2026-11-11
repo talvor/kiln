@@ -404,7 +404,7 @@ withWorld("a multibyte runtime path over the byte limit uses the fallback", asyn
 
 withWorld("a file at the Worktree runtime path selects the fallback", async (world) => {
   await register(world);
-  const path = join(world.dirs.data, "worktrees", "remote", "request-1");
+  const path = join(await Deno.realPath(world.dirs.data), "worktrees", "remote", "request-1");
   const runtimeTmp = tmpdirOf(record(1, path), join(world.root, "xdg"));
   await Deno.mkdir(dirname(dirname(runtimeTmp)), { recursive: true });
   await Deno.writeTextFile(dirname(runtimeTmp), "blocked");
@@ -530,7 +530,7 @@ withWorld("a locked Assignment keeps its ports until cleanup succeeds", async (w
 withWorld("a failed worktree add leaves its branch and path reusable", async (world) => {
   await register(world);
   const fallback = tmpdirOf(
-    record(1, join(world.dirs.data, "worktrees", "remote", "request-1")),
+    record(1, join(await Deno.realPath(world.dirs.data), "worktrees", "remote", "request-1")),
     null,
   );
   await Deno.mkdir(fallback, { recursive: true });
