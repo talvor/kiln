@@ -77,7 +77,14 @@ function tmpHomes(wt: WorktreeRecord): string[] {
   return [...new Set([
     ...(runtime && isAbsolute(runtime) ? [dirname(tmpdirOf(wt, runtime))] : []),
     dirname(tmpdirOf(wt, null)),
-  ])];
+  ])].filter((home) => {
+    try {
+      return !Deno.lstatSync(dirname(home)).isSymlink;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return true;
+      throw error;
+    }
+  });
 }
 
 /** Refuse a `TMPDIR` the worker sandbox could not use, saying why. */
@@ -95,9 +102,19 @@ function checkTmpdirLength(tmpdir: string): void {
 function createPrivateTmpdir(tmpdir: string): void {
   const home = dirname(tmpdir);
   const root = dirname(home);
-  Deno.mkdirSync(tmpdir, { recursive: true, mode: 0o700 });
   for (const dir of [root, home, tmpdir]) {
-    const info = Deno.statSync(dir);
+    try {
+      Deno.mkdirSync(dir, { mode: 0o700 });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+    }
+    const info = Deno.lstatSync(dir);
+    if (info.isSymlink) {
+      throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is a symlink.`);
+    }
+    if (!info.isDirectory || (info.mode! & 0o300) !== 0o300) {
+      throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is not writable.`);
+    }
     if (Deno.uid() !== null && info.uid !== Deno.uid()) {
       throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is not yours.`);
     }

@@ -1,11 +1,11 @@
 // Worktrees, request branches and Assignment merge-back, driven the way a person drives them:
 // `kiln request ...` and `kiln assignment ...` against the fake world (bare remote, scripted
 // claude). A "worker" is the scripted launcher run in the Assignment's Worktree plus a commit.
-import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertNotEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { basename, dirname, join, relative } from "@std/path";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
-import { cleanUpRequest, makeTmpdir, MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
+import { cleanUpRequest, makeTmpdir, MAX_TMPDIR_LENGTH, tmpdirOf, WorktreeBlocked } from "../src/worktrees.ts";
 import { sandboxFor } from "../src/daemon.ts";
 import { createLogger } from "../src/log.ts";
 import { openStore } from "../src/store.ts";
@@ -314,6 +314,32 @@ Deno.test("a denied runtime directory write uses the fallback", async () => {
     else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
     await Deno.remove(dirname(fallback), { recursive: true }).catch(() => {});
     await Deno.remove(runtime, { recursive: true });
+  }
+});
+
+Deno.test("a symlinked fallback parent leaves its target untouched", async () => {
+  const target = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-target-" });
+  await Deno.chmod(target, 0o750);
+  await Deno.writeTextFile(join(target, "sentinel"), "kept");
+  const fakeUid = 2_000_000_000 + Deno.pid;
+  const fallbackRoot = join("/tmp", `kiln-${fakeUid}`);
+  const wt = record(7, join(target, "request-7"));
+  const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
+  const originalUid = Object.getOwnPropertyDescriptor(Deno, "uid")!;
+  await Deno.symlink(target, fallbackRoot);
+  Deno.env.delete("XDG_RUNTIME_DIR");
+  Object.defineProperty(Deno, "uid", { ...originalUid, value: () => fakeUid });
+  try {
+    await assertRejects(() => makeTmpdir(wt), WorktreeBlocked, "symlink");
+    assertEquals((await Deno.stat(target)).mode! & 0o777, 0o750);
+    assertEquals([...Deno.readDirSync(target)].map((entry) => entry.name), ["sentinel"]);
+    assertEquals(await Deno.readTextFile(join(target, "sentinel")), "kept");
+  } finally {
+    Object.defineProperty(Deno, "uid", originalUid);
+    if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
+    else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
+    await Deno.remove(fallbackRoot);
+    await Deno.remove(target, { recursive: true });
   }
 });
 
