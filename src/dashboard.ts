@@ -204,18 +204,17 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   }
 
   let decisionCursor = 0;
-  const decisionSources = new Map<number, { decidedAt: string; source: string | null }>();
+  let seenDecisionCount = 0;
+  const decisionSources = new Map<number, { eventId: number; source: string | null }>();
 
   /** The last 20 decisions, newest first. The Source lives in the decision's event. */
   async function recentlyDecided(escalations: EscalationView[]) {
     const decided = escalations.filter((e) =>
       e.decidedAt !== null && e.status !== "open" &&
       e.status !== "stale"
-    )
-      .sort((a, b) => Date.parse(b.decidedAt!) - Date.parse(a.decidedAt!) || b.id - a.id)
-      .slice(0, 20);
+    );
     if (decided.length === 0) return [];
-    if (decided.some((e) => decisionSources.get(e.id)?.decidedAt !== e.decidedAt)) {
+    if (decided.length > seenDecisionCount) {
       try {
         const feed = await call<{
           events: { id: number; data: { id?: number; via?: string } }[];
@@ -224,24 +223,21 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
           kinds: ["escalation.decided"],
         });
         for (const event of feed.events) {
-          const match = decided.find((e) => e.id === event.data?.id);
-          if (match) {
+          if (typeof event.data?.id === "number") {
             decisionCursor = Math.max(decisionCursor, event.id);
-            decisionSources.set(match.id, {
-              decidedAt: match.decidedAt!,
+            decisionSources.set(event.data.id, {
+              eventId: event.id,
               source: event.data.via ?? null,
             });
           }
         }
+        seenDecisionCount = Math.max(seenDecisionCount, decided.length);
       } catch { /* no Source to show is better than no list */ }
-      const oldest = [...decisionSources].sort((a, b) =>
-        Date.parse(b[1].decidedAt) - Date.parse(a[1].decidedAt) || b[0] - a[0]
-      ).slice(20);
-      for (const [id] of oldest) {
-        decisionSources.delete(id);
-      }
     }
-    return decided.map((e) => ({
+    return decided.sort((a, b) =>
+      (decisionSources.get(b.id)?.eventId ?? 0) - (decisionSources.get(a.id)?.eventId ?? 0) ||
+      Date.parse(b.decidedAt!) - Date.parse(a.decidedAt!) || b.id - a.id
+    ).slice(0, 20).map((e) => ({
       id: e.id,
       summary: e.summary,
       decision: e.status,

@@ -1,6 +1,8 @@
 // Settling Escalations from the Dashboard: the real `kiln dashboard --no-open` against the real
 // daemon, over HTTP.
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { readLines, writeJson } from "../src/protocol.ts";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, openTeam } from "./router_helpers.ts";
 
@@ -75,6 +77,54 @@ withWorld("Recently decided keeps the last 20, newest first", async (w) => {
   assertEquals(list.length, 20);
   assertEquals(list[0].id, 21);
   assertEquals(list.every((entry) => entry.source === "dashboard"), true);
+});
+
+withWorld("Recently decided uses decision order when timestamps tie", async (w) => {
+  await Deno.mkdir(w.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(w.dirs.runtime, "kiln.sock") });
+  const at = "2026-01-01T00:00:00.000Z";
+  const order = [2, 1, ...Array.from({ length: 19 }, (_, i) => i + 3)];
+  const escalations = order.map((id) => ({
+    id,
+    status: "approved",
+    summary: `Question ${id}`,
+    reason: null,
+    decidedAt: at,
+  }));
+  const events = order.map((id, index) => ({
+    id: index + 1,
+    data: { id, via: "cli" },
+  }));
+  const serving = (async () => {
+    for await (const conn of listener) {
+      (async () => {
+        try {
+          for await (const line of readLines(conn)) {
+            const request = JSON.parse(line);
+            const result = request.method === "escalations.list" ? escalations
+              : request.method === "requests.list" ? []
+              : { events, last: 21 };
+            await writeJson(conn, { id: request.id, ok: true, result });
+            break;
+          }
+        } finally {
+          try {
+            conn.close();
+          } catch {}
+        }
+      })().catch(() => {});
+    }
+  })();
+  try {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const list = await decided(d, cookie);
+    assertEquals(list.map((entry) => entry.id), [...order].reverse().slice(0, 20));
+    assertEquals(list.every((entry) => entry.source === "cli"), true);
+  } finally {
+    listener.close();
+    await serving.catch(() => {});
+  }
 });
 
 withWorld("a wrong Origin cannot decide", async (w) => {

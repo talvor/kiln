@@ -17,6 +17,7 @@ class PageElement {
   parent: PageElement | null = null;
   children: PageElement[] = [];
   private content = "";
+  private attributes = new Map<string, string>();
   private listeners = new Map<string, (event: { preventDefault: () => void }) => void>();
 
   constructor(readonly tag: string, readonly page: Page) {}
@@ -50,12 +51,13 @@ class PageElement {
     }
     return false;
   }
-  querySelectorAll(_selector: string): PageElement[] {
+  querySelectorAll(selector: string): PageElement[] {
     const descendants = this.children.flatMap((
       child,
-    ) => [child, ...child.querySelectorAll(_selector)]);
+    ) => [child, ...child.querySelectorAll(selector)]);
     return descendants.filter((node) =>
-      node.tag === "button" && node.className.split(" ").includes("row")
+      node.tag === "button" &&
+      (selector === "button" || node.className.split(" ").includes("row"))
     );
   }
   querySelector(selector: string): PageElement | null {
@@ -68,6 +70,9 @@ class PageElement {
   }
   addEventListener(event: string, listener: (event: { preventDefault: () => void }) => void) {
     this.listeners.set(event, listener);
+  }
+  setAttribute(name: string, value: string) {
+    this.attributes.set(name, value);
   }
   setSelectionRange(start: number, end: number, direction = "none") {
     this.selectionStart = start;
@@ -164,12 +169,15 @@ for (const outcome of ["final", "stale"]) {
     const main = page.getElementById("main");
     assertEquals(rail.querySelector("details")?.open, false);
     rail.querySelector("details")!.open = true;
+    rail.querySelector("summary")!.focus();
     ageTimer();
     assertEquals(rail.querySelector("details")?.open, true);
+    assertEquals(page.activeElement, rail.querySelector("summary"));
     rail.querySelectorAll("button.row")[0].click();
-    const buttons = main.children.flatMap((child) => child.children).flatMap((child) => child.children);
-    const rejectButton = buttons.find((button) => button.textContent === "Reject")!;
+    const rejectButton = main.querySelectorAll("button").find((button) => button.textContent === "Reject")!;
     rejectButton.click();
+    ageTimer();
+    assertEquals(page.activeElement?.textContent, "Reject");
     const reason = main.querySelector("textarea")!;
     reason.value = "A reason in progress";
     reason.input();
@@ -181,7 +189,11 @@ for (const outcome of ["final", "stale"]) {
     assertEquals([restored.value, restored.selectionStart, restored.selectionEnd, restored.selectionDirection],
       ["A reason in progress", 2, 8, "backward"]);
     const approve = main.querySelector("button")!;
-    approve.click();
+    approve.focus();
+    ageTimer();
+    assertEquals(page.activeElement?.textContent, "Approve");
+    main.querySelector("button")!.click();
+    assertEquals(page.activeElement?.textContent, "Approve");
     const post = pending.find((p) => p.url.endsWith("/decide"))!;
     post.resolve(Response.json({ ok: false, error: `Daemon says ${outcome}`, code: outcome }, {
       status: 409,

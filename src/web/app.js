@@ -92,8 +92,10 @@
     const button = (label, onClick, className) => {
       const b = el("button", "btn" + (className ? " " + className : ""), label);
       b.type = "button";
-      b.disabled = act.busy;
-      b.addEventListener("click", onClick);
+      b.setAttribute("aria-disabled", String(act.busy));
+      b.addEventListener("click", () => {
+        if (!act.busy) onClick();
+      });
       return b;
     };
     const bar = el("div", "bar");
@@ -159,6 +161,8 @@
     const previousRows = [...rail.querySelectorAll("button.row")];
     const focusedIndex = previousRows.indexOf(document.activeElement);
     const focusedId = previousRows[focusedIndex]?.dataset.escalationId;
+    const previousSummary = rail.querySelector("summary");
+    const focusedSummary = previousSummary !== null && previousSummary === document.activeElement;
     rail.replaceChildren(el("h2", "", "Needs you"));
     if (view.groups.length === 0) rail.append(el("p", "empty", "Nothing is waiting on you."));
     for (const group of view.groups) {
@@ -190,6 +194,7 @@
     }
     rail.append(decided);
     rail.scrollTop = scrolled;
+    if (focusedSummary) rail.querySelector("summary").focus({ preventScroll: true });
     if (focusedId) {
       const rows = [...rail.querySelectorAll("button.row")];
       const target = rows.find((button) => button.dataset.escalationId === focusedId) ??
@@ -251,6 +256,8 @@
 
   function render() {
     const mainFocused = main.contains(document.activeElement);
+    const mainButtons = [...main.querySelectorAll("button")];
+    const focusedButton = mainButtons.indexOf(document.activeElement);
     const reason = main.querySelector("textarea");
     const typing = reason !== null && reason === document.activeElement;
     const selection = typing
@@ -267,6 +274,11 @@
         nextReason.setSelectionRange(...selection);
         return;
       }
+    }
+    const nextButton = [...main.querySelectorAll("button")][focusedButton];
+    if (focusedButton >= 0 && nextButton) {
+      nextButton.focus({ preventScroll: true });
+      return;
     }
     if (focusMain || mainFocused) {
       const target = main.firstElementChild;
