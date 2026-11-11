@@ -126,11 +126,11 @@ export function createFaults(deps: FaultDeps) {
       if (!made) throw new Error(`branch ${wt.branch} is gone and cannot be made again`);
     }
     await Deno.mkdir(dirname(wt.path), { recursive: true });
+    await makeSupport(wt);
     const added = await git(clone, "worktree", "add", wt.path, wt.branch);
     if (added.code !== 0) {
       throw new Error(`cannot recreate worktree ${wt.path}: ${firstLine(added.stderr)}`);
     }
-    await makeSupport(wt);
   }
 
   /** Pause the Project and tell the user, once; or find that the fault was already raised. */

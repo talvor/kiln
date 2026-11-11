@@ -520,8 +520,9 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       if (!project) throw new WorktreeBlocked("The request's project has been removed.");
       return withProjectQueue(project.name, () => mergeAssignment(store, project, assignment.id));
     },
-    "worktrees.environment": (params) => {
+    "worktrees.environment": async (params) => {
       const wt = store.findLiveWorktree(resolve(String(params.path)));
+      if (wt) await makeTmpdir(wt);
       return wt ? infoOf(wt).env : {};
     },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),

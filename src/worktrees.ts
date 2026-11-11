@@ -50,7 +50,7 @@ export const MAX_TMPDIR_LENGTH = 72;
  */
 export function tmpdirOf(
   wt: WorktreeRecord,
-  runtimeDir: string | null = usableRuntimeDir(),
+  runtimeDir: string | null = usableRuntimeDir(wt),
   uid: number | null = Deno.uid(),
 ): string {
   const key = `${wt.id}-${createHash("sha256").update(wt.path).digest("hex").slice(0, 16)}`;
@@ -58,21 +58,13 @@ export function tmpdirOf(
   return join(root, key, "tmp");
 }
 
-function usableRuntimeDir(): string | null {
+function usableRuntimeDir(wt: WorktreeRecord): string | null {
   const dir = Deno.env.get("XDG_RUNTIME_DIR");
   if (!dir || !isAbsolute(dir)) return null;
+  const tmpdir = tmpdirOf(wt, dir);
+  if (new TextEncoder().encode(tmpdir).length > MAX_TMPDIR_LENGTH) return null;
   try {
-    const root = join(dir, "kiln");
-    let probeParent = dir;
-    try {
-      const info = Deno.statSync(root);
-      if (!info.isDirectory || (Deno.uid() !== null && info.uid !== Deno.uid())) return null;
-      probeParent = root;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) return null;
-    }
-    const probe = Deno.makeTempDirSync({ dir: probeParent, prefix: ".kiln-" });
-    Deno.removeSync(probe);
+    createPrivateTmpdir(tmpdir);
     return dir;
   } catch {
     return null;
@@ -100,29 +92,33 @@ function checkTmpdirLength(tmpdir: string): void {
   }
 }
 
+function createPrivateTmpdir(tmpdir: string): void {
+  const home = dirname(tmpdir);
+  const root = dirname(home);
+  Deno.mkdirSync(tmpdir, { recursive: true, mode: 0o700 });
+  for (const dir of [root, home, tmpdir]) {
+    const info = Deno.statSync(dir);
+    if (Deno.uid() !== null && info.uid !== Deno.uid()) {
+      throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is not yours.`);
+    }
+    Deno.chmodSync(dir, 0o700);
+  }
+}
+
 /** Make a Worktree's `TMPDIR`, and its parent directories, private to the user. */
 export async function makeTmpdir(wt: WorktreeRecord): Promise<void> {
   const tmpdir = infoOf(wt).env.TMPDIR;
   checkTmpdirLength(tmpdir);
-  const home = dirname(tmpdir);
-  const root = dirname(home);
-  await Deno.mkdir(tmpdir, { recursive: true, mode: 0o700 });
-  for (const dir of [root, home, tmpdir]) {
-    const info = await Deno.stat(dir);
-    if (Deno.uid() !== null && info.uid !== Deno.uid()) {
-      throw new WorktreeBlocked(`Cannot use ${dir} as a temporary directory: it is not yours.`);
-    }
-    await Deno.chmod(dir, 0o700);
-  }
+  createPrivateTmpdir(tmpdir);
 }
 
 /** Make a Worktree's support directories (caches and `TMPDIR`) if they are missing. */
 export async function makeSupport(wt: WorktreeRecord): Promise<void> {
+  await makeTmpdir(wt);
   const env = infoOf(wt).env;
   for (const dir of [env.XDG_CACHE_HOME, env.npm_config_cache]) {
     await Deno.mkdir(dir, { recursive: true });
   }
-  await makeTmpdir(wt);
 }
 
 async function removeSupport(wt: WorktreeRecord): Promise<void> {
@@ -182,7 +178,6 @@ async function createWorktree(
     }
     await Deno.mkdir(`${path}.kiln`);
     supportCreated = true;
-    checkTmpdirLength(infoOf(wt).env.TMPDIR);
     tmpTouched = true;
     await makeSupport(wt);
     const created = await run("git", ["branch", branch, base], project.clonePath);

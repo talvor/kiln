@@ -246,7 +246,7 @@ Deno.test("TMPDIR is under XDG_RUNTIME_DIR, or /tmp/kiln-<uid> without it", () =
 });
 
 withWorld(
-  "a start whose TMPDIR would be too long fails clearly and leaves nothing",
+  "a long runtime path uses a short fallback TMPDIR",
   async (world) => {
     await register(world);
     const runtime = join(world.root, "x".repeat(80));
@@ -257,9 +257,12 @@ withWorld(
       "start",
       "remote",
     ]);
-    assertEquals(r.code, 1);
-    assertStringIncludes(r.stderr, `limit of ${MAX_TMPDIR_LENGTH}`);
+    assertEquals(r.code, 0, r.stderr);
+    const tmpdir = fields(r.stdout).TMPDIR;
+    assert(tmpdir.startsWith(`/tmp/kiln-${Deno.uid()}/`), tmpdir);
+    assert(new TextEncoder().encode(tmpdir).length <= MAX_TMPDIR_LENGTH);
     assertEquals(await exists(join(runtime, "kiln")), false);
+    await Deno.remove(dirname(tmpdir), { recursive: true });
   },
 );
 
@@ -288,16 +291,17 @@ withWorld("an unwritable runtime directory or kiln child uses the fallback", asy
 Deno.test("a denied runtime directory write uses the fallback", async () => {
   const runtime = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-runtime-" });
   const wt = record(7, join(runtime, "request-7"));
+  const runtimeTmp = tmpdirOf(wt, runtime);
   const fallback = tmpdirOf(wt, null);
   const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
-  const originalMakeTemp = Object.getOwnPropertyDescriptor(Deno, "makeTempDirSync")!;
-  const makeTempDirSync = Deno.makeTempDirSync;
+  const originalMkdir = Object.getOwnPropertyDescriptor(Deno, "mkdirSync")!;
+  const mkdirSync = Deno.mkdirSync;
   Deno.env.set("XDG_RUNTIME_DIR", runtime);
-  Object.defineProperty(Deno, "makeTempDirSync", {
-    ...originalMakeTemp,
-    value: (options?: { dir?: string; prefix?: string }) => {
-      if (options?.dir === runtime) throw new Deno.errors.PermissionDenied("write denied");
-      return makeTempDirSync(options);
+  Object.defineProperty(Deno, "mkdirSync", {
+    ...originalMkdir,
+    value: (path: string | URL, options?: { recursive?: boolean; mode?: number }) => {
+      if (String(path) === runtimeTmp) throw new Deno.errors.PermissionDenied("write denied");
+      return mkdirSync(path, options);
     },
   });
   try {
@@ -305,7 +309,7 @@ Deno.test("a denied runtime directory write uses the fallback", async () => {
     assertEquals(tmpdirOf(wt), fallback);
     assert((await Deno.stat(fallback)).isDirectory);
   } finally {
-    Object.defineProperty(Deno, "makeTempDirSync", originalMakeTemp);
+    Object.defineProperty(Deno, "mkdirSync", originalMkdir);
     if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
     else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
     await Deno.remove(dirname(fallback), { recursive: true }).catch(() => {});
@@ -313,7 +317,7 @@ Deno.test("a denied runtime directory write uses the fallback", async () => {
   }
 });
 
-withWorld("a multibyte runtime path over the byte limit fails clearly", async (world) => {
+withWorld("a multibyte runtime path over the byte limit uses the fallback", async (world) => {
   await register(world);
   await world.kiln("daemon", "stop");
   const runtime = join(world.root, "é".repeat(20));
@@ -323,9 +327,39 @@ withWorld("a multibyte runtime path over the byte limit fails clearly", async (w
     "start",
     "remote",
   ]);
-  assertEquals(r.code, 1);
-  assertStringIncludes(r.stderr, `limit of ${MAX_TMPDIR_LENGTH}`);
+  assertEquals(r.code, 0, r.stderr);
+  const tmpdir = fields(r.stdout).TMPDIR;
+  assert(tmpdir.startsWith(`/tmp/kiln-${Deno.uid()}/`), tmpdir);
+  assert(new TextEncoder().encode(tmpdir).length <= MAX_TMPDIR_LENGTH);
   assertEquals(await exists(join(runtime, "kiln")), false);
+  await Deno.remove(dirname(tmpdir), { recursive: true });
+});
+
+withWorld("a file at the Worktree runtime path selects the fallback", async (world) => {
+  await register(world);
+  const path = join(world.dirs.data, "worktrees", "remote", "request-1");
+  const runtimeTmp = tmpdirOf(record(1, path), join(world.root, "xdg"));
+  await Deno.mkdir(dirname(dirname(runtimeTmp)), { recursive: true });
+  await Deno.writeTextFile(dirname(runtimeTmp), "blocked");
+  const started = await startRequest(world);
+  assert(started.TMPDIR.startsWith(`/tmp/kiln-${Deno.uid()}/`), started.TMPDIR);
+  assert((await Deno.stat(started.TMPDIR)).isDirectory);
+  await Deno.remove(dirname(started.TMPDIR), { recursive: true });
+});
+
+withWorld("CLI launch recreates TMPDIR when the runtime path is blocked", async (world) => {
+  await register(world);
+  const started = await startRequest(world);
+  const runtimeHome = dirname(started.TMPDIR);
+  await Deno.remove(runtimeHome, { recursive: true });
+  await Deno.writeTextFile(runtimeHome, "blocked");
+  await world.launcher.script([{ result: "done" }]);
+  const launched = await world.kiln("launch", "check environment", "--cwd", started.Worktree);
+  assertEquals(launched.code, 0, launched.stderr);
+  const tmpdir = (await world.launcher.calls()).at(-1)!.env!.TMPDIR!;
+  assert(tmpdir.startsWith(`/tmp/kiln-${Deno.uid()}/`), tmpdir);
+  assert((await Deno.stat(tmpdir)).isDirectory);
+  await Deno.remove(dirname(tmpdir), { recursive: true });
 });
 
 withWorld("request cleanup removes runtime and fallback TMPDIRs", async (world) => {

@@ -42,8 +42,9 @@ git status.
 `XDG_RUNTIME_DIR` is unset or unusable (macOS). Kiln makes it, and its parents, private (mode 0700), when it
 creates a worktree, recreates it after a fault, and before each launch there (the runtime directory
 is cleared on logout and reboot). It is removed with the worktree's other support directories. A
-`TMPDIR` that would be over the limit, for instance under a very long `XDG_RUNTIME_DIR`, fails the
-start with an error that names the limit. The sandbox of a launch in the worktree may write to it.
+runtime path that would exceed the limit uses the `/tmp` fallback. If the chosen `TMPDIR` still
+exceeds the limit, the start fails with an error that names it. The sandbox of a launch in the
+worktree may write to it.
 
 Port blocks are handed out lowest-free-first and returned when a worktree is
 released.
