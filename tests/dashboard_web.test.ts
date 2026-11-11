@@ -108,8 +108,11 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 Deno.test("dashboard script keeps text, count, focus and newest snapshot", async () => {
   const page = new Page();
   const location = { pathname: "/" };
-  const pending: Array<(response: Response) => void> = [];
-  const fetch = () => new Promise<Response>((resolve) => pending.push(resolve));
+  const pending: Array<{
+    resolve: (response: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const fetch = () => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject }));
   const timers = new Map<number, () => void>();
   let nextTimer = 0;
   let ageTimer = () => {};
@@ -139,7 +142,7 @@ Deno.test("dashboard script keeps text, count, focus and newest snapshot", async
   );
 
   stream!.emit("open");
-  pending[0](Response.json(snapshot(12)));
+  pending[0].resolve(Response.json(snapshot(12)));
   await tick();
   assertEquals(page.title, "(12) Kiln");
   assertEquals(decodeURIComponent(page.getElementById("favicon").href).includes("9+"), true);
@@ -158,16 +161,33 @@ Deno.test("dashboard script keeps text, count, focus and newest snapshot", async
   stream!.emit("changed");
   for (const callback of timers.values()) callback();
   timers.clear();
-  pending[1](Response.json(snapshot(12)));
+  pending[1].resolve(Response.json(snapshot(12)));
   await tick();
   assertEquals(page.activeElement?.dataset.escalationId, "2");
 
   stream!.emit("open");
   stream!.emit("open");
-  pending[3](Response.json(snapshot(3)));
+  pending[3].resolve(Response.json(snapshot(3)));
   await tick();
-  pending[2](Response.json(snapshot(1)));
+  pending[2].resolve(Response.json(snapshot(1)));
   await tick();
   assertEquals(page.title, "(3) Kiln");
+  assertEquals(page.activeElement?.dataset.escalationId, "2");
+
+  stream!.emit("open");
+  stream!.emit("open");
+  pending[5].resolve(new Response(null, { status: 503 }));
+  await tick();
+  pending[4].resolve(Response.json(snapshot(4)));
+  await tick();
+  assertEquals(page.title, "(4) Kiln");
+
+  stream!.emit("open");
+  stream!.emit("open");
+  pending[7].reject(new Error("offline"));
+  await tick();
+  pending[6].resolve(Response.json(snapshot(5)));
+  await tick();
+  assertEquals(page.title, "(5) Kiln");
   assertEquals(page.activeElement?.dataset.escalationId, "2");
 });

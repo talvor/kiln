@@ -130,6 +130,35 @@ withWorld("the first events.since response also announces a change", async (w) =
   }
 });
 
+withWorld("a failed poll announces that the daemon stopped", async (w) => {
+  await Deno.mkdir(w.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(w.dirs.runtime, "kiln.sock") });
+  const serving = (async () => {
+    const conn = await listener.accept();
+    const buf = new Uint8Array(65536);
+    await conn.read(buf);
+    await conn.write(new TextEncoder().encode(JSON.stringify({
+      id: 1,
+      ok: true,
+      result: { events: [], last: 0 },
+    }) + "\n"));
+    conn.close();
+    listener.close();
+  })();
+  try {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const stream = await d.fetch("/events", { cookie });
+    assertStringIncludes(await readUntil(stream, (text) => text.includes("event: changed")),
+      "event: changed");
+    const view: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
+    assertEquals(view.running, false);
+  } finally {
+    try { listener.close(); } catch {}
+    await serving.catch(() => {});
+  }
+});
+
 withWorld("events.since runs only while an event stream is connected", async (w) => {
   // Stand in for the daemon and write down every method it is asked.
   await Deno.mkdir(w.dirs.runtime, { recursive: true });

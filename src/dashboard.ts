@@ -75,17 +75,20 @@ function createEventHub(paths: KilnPaths) {
   const listeners = new Set<(cursor: number) => void>();
   let cursor: number | null = null;
   let running = false;
+  let listenerEpoch = 0;
 
   async function loop() {
     let down = false;
     let backoff = 500;
     while (listeners.size > 0) {
       const began = Date.now();
+      const epoch = listenerEpoch;
       try {
         const feed = await call<{ events: unknown[]; last: number }>(paths, "events.since", {
           after: cursor ?? 0,
           waitMs: cursor === null ? 0 : POLL_WAIT_MS,
         });
+        if (epoch !== listenerEpoch) return;
         cursor = feed.last;
         backoff = 500;
         if (feed.events.length > 0 || down) {
@@ -94,6 +97,10 @@ function createEventHub(paths: KilnPaths) {
         down = false;
         if (Date.now() - began < 500) await sleep(500); // never spin on an answer that came at once
       } catch {
+        if (epoch !== listenerEpoch) return;
+        if (!down) {
+          for (const listener of listeners) listener(cursor ?? 0);
+        }
         down = true;
         cursor = null; // a restarted daemon may count events afresh; look for the cursor again
         await sleep(backoff);
@@ -113,7 +120,10 @@ function createEventHub(paths: KilnPaths) {
     subscribe(listener: (cursor: number) => void): () => void {
       listeners.add(listener);
       start();
-      return () => listeners.delete(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) listenerEpoch++;
+      };
     },
   };
 }

@@ -130,21 +130,23 @@
   }
 
   let latestRefresh = 0;
+  let latestApplied = 0;
   async function refresh() {
     const request = ++latestRefresh;
     try {
       const res = await fetch("/api/needs-you");
+      if (res.status !== 403 && !res.ok) return;
       const next = res.ok ? await res.json() : null;
-      if (request !== latestRefresh) return;
+      if (request < latestApplied) return;
+      latestApplied = request;
       if (res.status === 403) {
         problem = "This dashboard was restarted, open the new URL.";
-      } else if (next !== null) {
+      } else {
         view = next;
         problem = null;
       }
+      render();
     } catch { /* the dashboard itself is unreachable; keep what is shown */ }
-    if (request !== latestRefresh) return;
-    render();
   }
 
   // Events are hints: a burst of them becomes one re-fetch of the snapshot.
