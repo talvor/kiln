@@ -9,7 +9,18 @@ the daemon's unix socket like the CLI (see `docs/adr/0001-dashboard-is-a-separat
 the daemon gains no network surface. It never starts the daemon: with Kiln not running the page
 still loads and says so.
 
-This first slice serves the page shell and the security around it. Views and actions come later.
+The page is a split pane. The left rail holds **Needs you**: the open Escalations, grouped by
+Project, oldest first, each row showing its Gate kind, Request, summary and age. Escalations whose
+Request has ended are stale: they sit in a dimmed group and cannot be acted on. Selecting a row
+expands it to the full detail as plain text (whitespace kept; nothing an agent wrote is read as
+Markdown or HTML). The tab title and favicon carry the open count, e.g. `(2) Kiln`.
+
+Views have their own addresses (`/` and `/escalations/<id>`), so reload, back and forward work, and
+moving between them swaps the main area without reloading the page.
+
+One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
+re-fetches its snapshot, debounced. The dashboard asks the daemon for events (`events.since`) only
+while at least one tab is connected. Actions and the other views come later.
 
 ## Starting it
 
