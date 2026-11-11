@@ -84,15 +84,11 @@ function createEventHub(paths: KilnPaths) {
       try {
         const feed = await call<{ events: unknown[]; last: number }>(paths, "events.since", {
           after: cursor ?? 0,
-          // The first look only finds the cursor: what happened before anyone listened is not news.
           waitMs: cursor === null ? 0 : POLL_WAIT_MS,
         });
-        const first = cursor === null;
         cursor = feed.last;
-        if (first && down) { for (const listener of listeners) listener(cursor); }
         backoff = 500;
-        // Recovering from an outage counts as news, so tabs re-fetch.
-        if ((!first && feed.events.length > 0) || down) {
+        if (feed.events.length > 0 || down) {
           for (const listener of listeners) listener(cursor);
         }
         down = false;

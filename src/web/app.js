@@ -40,6 +40,7 @@
     const selected = selectedId() === item.id;
     const node = el("button", "row" + (selected ? " selected" : "") + (isStale ? " stale" : ""));
     node.type = "button";
+    node.dataset.escalationId = String(item.id);
     const request = item.requestId === null ? "no Request" : "Request " + item.requestId;
     const kind = item.gate === null ? "question" : item.gate;
     node.append(
@@ -57,6 +58,9 @@
 
   function renderRail() {
     const scrolled = rail.scrollTop; // a live update must not throw the reader back to the top
+    const focusedId = rail.contains(document.activeElement)
+      ? document.activeElement.dataset.escalationId
+      : null;
     rail.replaceChildren(el("h2", "", "Needs you"));
     if (view.groups.length === 0) rail.append(el("p", "empty", "Nothing is waiting on you."));
     for (const group of view.groups) {
@@ -69,6 +73,14 @@
       for (const item of view.stale) rail.append(row(item, true));
     }
     rail.scrollTop = scrolled;
+    if (focusedId) {
+      for (const button of rail.querySelectorAll("button.row")) {
+        if (button.dataset.escalationId === focusedId) {
+          button.focus({ preventScroll: true });
+          break;
+        }
+      }
+    }
   }
 
   function renderMain() {
@@ -117,16 +129,21 @@
     renderMain();
   }
 
+  let latestRefresh = 0;
   async function refresh() {
+    const request = ++latestRefresh;
     try {
       const res = await fetch("/api/needs-you");
+      const next = res.ok ? await res.json() : null;
+      if (request !== latestRefresh) return;
       if (res.status === 403) {
         problem = "This dashboard was restarted, open the new URL.";
-      } else if (res.ok) {
-        view = await res.json();
+      } else if (next !== null) {
+        view = next;
         problem = null;
       }
     } catch { /* the dashboard itself is unreachable; keep what is shown */ }
+    if (request !== latestRefresh) return;
     render();
   }
 
@@ -137,12 +154,6 @@
     timer = setTimeout(refresh, 250);
   };
 
-  document.addEventListener("click", (event) => {
-    const link = event.target.closest && event.target.closest("a[href^='/']");
-    if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-    event.preventDefault();
-    go(link.getAttribute("href"));
-  });
   addEventListener("popstate", render);
   setInterval(render, 30000); // ages move on
 

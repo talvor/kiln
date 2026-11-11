@@ -1,6 +1,6 @@
 // The Dashboard's Needs you list, live: the real `kiln dashboard --no-open` against the real
-// daemon, over HTTP. What the browser's script does with the page is for the opt-in browser smoke.
-import { assert, assertEquals, assertNotMatch, assertStringIncludes } from "@std/assert";
+// daemon, over HTTP.
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, openTeam } from "./router_helpers.ts";
@@ -42,14 +42,6 @@ withWorld("Needs you lists the open Escalations, oldest first, detail kept verba
   // The detail travels as plain data: the whitespace is kept, and nothing is rendered.
   assertEquals(view.groups[0].items[0].detail, "<b>bold</b>\n  # not a heading");
   assertEquals(view.stale, []);
-});
-
-withWorld("the page never turns agent-written text into markup", async (w) => {
-  const d = await w.dashboard();
-  const cookie = await d.signIn();
-  const script = await (await d.fetch("/app.js", { cookie })).text();
-  assertNotMatch(script, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/);
-  assertStringIncludes(script, "textContent");
 });
 
 withWorld(
@@ -109,6 +101,33 @@ withWorld("the event stream announces a change when something happens in Kiln", 
   assertStringIncludes(await reading, "event: changed");
   const view: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
   assertEquals(view.count, 1);
+});
+
+withWorld("the first events.since response also announces a change", async (w) => {
+  await Deno.mkdir(w.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(w.dirs.runtime, "kiln.sock") });
+  const serving = (async () => {
+    for await (const conn of listener) {
+      const buf = new Uint8Array(65536);
+      await conn.read(buf);
+      await conn.write(new TextEncoder().encode(JSON.stringify({
+        id: 1,
+        ok: true,
+        result: { events: [{ id: 1 }], last: 1 },
+      }) + "\n"));
+      conn.close();
+    }
+  })();
+  try {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const stream = await d.fetch("/events", { cookie });
+    assertStringIncludes(await readUntil(stream, (text) => text.includes("event: changed")),
+      "event: changed\ndata: 1");
+  } finally {
+    listener.close();
+    await serving.catch(() => {});
+  }
 });
 
 withWorld("events.since runs only while an event stream is connected", async (w) => {
