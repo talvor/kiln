@@ -6,8 +6,11 @@
   const main = document.getElementById("main");
   const banner = document.getElementById("banner");
   const favicon = document.getElementById("favicon");
-  let view = { running: true, count: 0, groups: [], stale: [] };
+  let view = { running: true, count: 0, groups: [], stale: [], decided: [] };
   let problem = null;
+  // What the user is doing to the selected Escalation: a refusal to show, a reason being typed,
+  // a confirmation to offer. It survives live re-renders, and resets when another one is picked.
+  let act = { id: null, refusal: null, confirm: false, rejecting: false, reason: "", busy: false };
 
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -34,6 +37,85 @@
   function go(path) {
     if (path !== location.pathname) history.pushState(null, "", path);
     render(); // swap the main area: no page load
+  }
+
+  function when(iso) {
+    const a = age(iso);
+    return a === "just now" ? a : a + " ago";
+  }
+
+  async function settle(id, body) {
+    act.busy = true;
+    act.refusal = null;
+    render();
+    try {
+      const res = await fetch("/api/escalations/" + id + "/decide", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
+      if (out.ok) {
+        act = { id, refusal: null, confirm: false, rejecting: false, reason: "", busy: false };
+      } else {
+        act.busy = false;
+        act.refusal = out.error;
+        act.confirm = out.code === "needs-confirm";
+        if (res.status === 403) act.refusal = "This dashboard was restarted, open the new URL.";
+      }
+    } catch {
+      act.busy = false;
+      act.refusal = "The dashboard could not be reached.";
+    }
+    await refresh();
+    render();
+  }
+
+  function actions(item) {
+    const box = el("div", "actions");
+    if (act.refusal) box.append(el("p", "refusal", act.refusal));
+    const button = (label, onClick, className) => {
+      const b = el("button", "btn" + (className ? " " + className : ""), label);
+      b.type = "button";
+      b.disabled = act.busy;
+      b.addEventListener("click", onClick);
+      return b;
+    };
+    const bar = el("div", "bar");
+    if (act.confirm) {
+      bar.append(
+        button("Approve anyway", () => settle(item.id, { approved: true, confirm: true })),
+      );
+    } else {
+      bar.append(button("Approve", () => settle(item.id, { approved: true }), "approve"));
+    }
+    bar.append(button("Reject", () => {
+      act.rejecting = !act.rejecting;
+      render();
+    }));
+    box.append(bar);
+    if (act.rejecting) {
+      const form = el("form", "reject");
+      const label = el("label", "", "Why reject it? (required)");
+      const reason = el("textarea");
+      reason.rows = 3;
+      reason.value = act.reason;
+      reason.addEventListener("input", () => {
+        act.reason = reason.value;
+        send.disabled = act.busy || !reason.value.trim();
+      });
+      label.append(reason);
+      const send = el("button", "btn", "Reject with this reason");
+      send.type = "submit";
+      send.disabled = act.busy || !act.reason.trim();
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (act.reason.trim()) settle(item.id, { approved: false, reason: act.reason });
+      });
+      form.append(label, send);
+      box.append(form);
+    }
+    return box;
   }
 
   function row(item, isStale) {
@@ -72,6 +154,22 @@
       rail.append(el("p", "empty", "Their Request ended, so they cannot be acted on."));
       for (const item of view.stale) rail.append(row(item, true));
     }
+    rail.append(el("h2", "", "Recently decided"));
+    if (!(view.decided ?? []).length) rail.append(el("p", "empty", "Nothing decided yet."));
+    for (const d of view.decided ?? []) {
+      const node = el("div", "decided");
+      node.append(
+        el(
+          "div",
+          "meta",
+          (d.decision === "approved" ? "Approved" : "Rejected") + " · " + when(d.decidedAt) +
+            " · Source " + (d.source ?? "unknown"),
+        ),
+        el("div", "summary", d.summary),
+      );
+      if (d.reason) node.append(el("div", "reason", "Reason: " + d.reason));
+      rail.append(node);
+    }
     rail.scrollTop = scrolled;
     if (focusedId) {
       const rows = [...rail.querySelectorAll("button.row")];
@@ -106,6 +204,11 @@
     if (item.detail) main.append(el("pre", "detail", item.detail));
     if (stale) {
       main.append(el("p", "note", "Its Request ended, so there is nothing left to decide."));
+    } else {
+      if (act.id !== item.id) {
+        act = { ...act, id: item.id, refusal: null, confirm: false, rejecting: false, reason: "" };
+      }
+      main.append(actions(item));
     }
   }
 

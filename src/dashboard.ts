@@ -4,7 +4,7 @@
 //
 // The per-launch token lives in this process's memory and nowhere else: it is printed in the URL,
 // exchanged once for a session cookie, then dead.
-import { call, DaemonNotRunning } from "./client.ts";
+import { call, DaemonError, DaemonNotRunning } from "./client.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
 import type { KilnPaths } from "./paths.ts";
@@ -190,10 +190,82 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         call<EscalationView[]>(paths, "escalations.list", { all: true }),
         call<{ id: number; project: string }[]>(paths, "requests.list", { all: true }),
       ]);
-      return json({ running: true, ...needsYou(escalations, requests) });
+      return json({
+        running: true,
+        ...needsYou(escalations, requests),
+        decided: await recentlyDecided(escalations),
+      });
     } catch (err) {
       if (err instanceof DaemonNotRunning) {
-        return json({ running: false, count: 0, groups: [], stale: [] });
+        return json({ running: false, count: 0, groups: [], stale: [], decided: [] });
+      }
+      throw err;
+    }
+  }
+
+  /** The last 20 decisions, newest first. The Source lives in the decision's event. */
+  async function recentlyDecided(escalations: EscalationView[]) {
+    const decided = escalations.filter((e) =>
+      e.decidedAt !== null && e.status !== "open" &&
+      e.status !== "stale"
+    )
+      .sort((a, b) => Date.parse(b.decidedAt!) - Date.parse(a.decidedAt!) || b.id - a.id)
+      .slice(0, 20);
+    if (decided.length === 0) return [];
+    const sources = new Map<number, string>();
+    try {
+      const feed = await call<{ events: { data: { id?: number; via?: string } }[] }>(
+        paths,
+        "events.since",
+        { after: 0, kinds: ["escalation.decided"] },
+      );
+      for (const e of feed.events) {
+        if (typeof e.data?.id === "number" && e.data.via) sources.set(e.data.id, e.data.via);
+      }
+    } catch { /* no Source to show is better than no list */ }
+    return decided.map((e) => ({
+      id: e.id,
+      summary: e.summary,
+      decision: e.status,
+      reason: e.reason,
+      decidedAt: e.decidedAt,
+      source: sources.get(e.id) ?? null,
+    }));
+  }
+
+  /** Settle an Escalation for the user. The daemon's refusal is passed on as it was worded. */
+  async function decide(req: Request, id: number): Promise<Response> {
+    let body: { approved?: unknown; reason?: unknown; confirm?: unknown };
+    try {
+      body = await req.json();
+    } catch {
+      return json({ ok: false, error: "That was not a decision.", code: "invalid" }, 400);
+    }
+    if (typeof body !== "object" || body === null || typeof body.approved !== "boolean") {
+      return json({ ok: false, error: "That was not a decision.", code: "invalid" }, 400);
+    }
+    if (!body.approved && (typeof body.reason !== "string" || !body.reason.trim())) {
+      return json({
+        ok: false,
+        error: "Say why: a rejection needs a reason.",
+        code: "invalid",
+      }, 400);
+    }
+    try {
+      await call(paths, "escalations.decide", {
+        id,
+        approved: body.approved,
+        reason: body.approved ? undefined : body.reason,
+        confirm: body.approved && body.confirm === true,
+        via: "dashboard",
+      });
+      return json({ ok: true });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) {
+        return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
+      }
+      if (err instanceof DaemonError) {
+        return json({ ok: false, error: err.message, code: err.code ?? null }, 409);
       }
       throw err;
     }
@@ -235,7 +307,11 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       return refuse(403, "Not signed in. Open the URL printed by `kiln dashboard`.");
     }
 
-    if (!SAFE_METHODS.has(req.method)) return refuse(405, "No such action.");
+    if (!SAFE_METHODS.has(req.method)) {
+      const act = /^\/api\/escalations\/(\d+)\/decide$/.exec(url.pathname);
+      if (act && req.method === "POST") return await decide(req, Number(act[1]));
+      return refuse(405, "No such action.");
+    }
     // Every view has its own address; the page swaps its main area to match.
     if (url.pathname === "/" || /^\/escalations\/\d+$/.test(url.pathname)) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
@@ -253,8 +329,9 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     return refuse(404, "Not found.");
   }
 
-  const json = (body: unknown) =>
+  const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
+      status,
       headers: headers({ "content-type": "application/json" }),
     });
 

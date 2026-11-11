@@ -16,6 +16,13 @@ Selecting a row expands it to the full detail as plain text (whitespace kept; no
 is read as Markdown or HTML). The tab title shows the open count, e.g. `(2) Kiln`. The favicon uses
 `9+` above nine.
 
+The selected Escalation has **Approve** (one click) and **Reject** (it needs a reason). The daemon's
+refusals are shown as worded, for instance when the Escalation was already decided or went stale.
+Approving a `qa-passed` Gate whose pull request is not merged is refused by the daemon; the page
+shows that and offers **Approve anyway**, which sends the confirmation. Decisions made here record
+Source `dashboard`. Below Needs you, **Recently decided** lists the last 20 decisions with the
+decision, reason, when and Source.
+
 Views have their own addresses (`/` and `/escalations/<id>`), so reload, back and forward work, and
 moving between them swaps the main area without reloading the page.
 

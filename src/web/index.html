@@ -125,6 +125,68 @@
       border-radius: 6px;
       padding: 0.75rem;
     }
+    .decided {
+      border-top: 1px solid var(--line);
+      padding: 0.35rem 0.25rem;
+    }
+    .decided .meta {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .decided .summary,
+    .decided .reason {
+      overflow-wrap: anywhere;
+    }
+    .actions {
+      margin-top: 1rem;
+    }
+    .bar {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .btn {
+      font: inherit;
+      padding: 0.35rem 0.9rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--fg);
+      cursor: pointer;
+    }
+    .btn.approve {
+      background: #1e7e34;
+      border-color: #1e7e34;
+      color: #fff;
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .refusal {
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      background: #fde7e9;
+      color: #8a1c24;
+    }
+    @media (prefers-color-scheme: dark) {
+      .refusal {
+        background: #4a1d21;
+        color: #ffb3b9;
+      }
+    }
+    .reject {
+      margin-top: 0.75rem;
+    }
+    .reject label {
+      display: block;
+    }
+    .reject textarea {
+      display: block;
+      width: 100%;
+      max-width: 40rem;
+      font: inherit;
+      margin: 0.25rem 0 0.5rem;
+    }
     .note {
       color: var(--muted);
     }

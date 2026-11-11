@@ -492,6 +492,33 @@ withWorld(
   },
 );
 
+withWorld("the Dashboard shows the unmerged refusal and Approve anyway confirms", async (world) => {
+  await startTicket(world);
+  const told = await passQa(world);
+  await world.prStatus.script([OPEN]);
+  const d = await world.dashboard();
+  const cookie = await d.signIn();
+  const send = (body: unknown) =>
+    d.fetch(`/api/escalations/${told.id}/decide`, {
+      method: "POST",
+      cookie,
+      origin: d.origin,
+      body: JSON.stringify(body),
+    });
+
+  const refused = await send({ approved: true });
+  assertEquals(refused.status, 409);
+  const refusal = await refused.json();
+  assertEquals(refusal.code, "needs-confirm");
+  assertStringIncludes(refusal.error, "still open");
+  assertEquals((await escalations(world)).map((e) => e.status), ["open"]);
+
+  const confirmed = await send({ approved: true, confirm: true });
+  assertEquals(confirmed.status, 200);
+  await confirmed.body?.cancel();
+  assertEquals(await escalations(world), []); // none waits any more
+});
+
 withWorld("approving while the pull request is open asks to confirm first", async (world) => {
   await startTicket(world);
   const told = await passQa(world);

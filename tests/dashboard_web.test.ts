@@ -107,6 +107,7 @@ const snapshot = (count: number) => ({
   count,
   groups: [{ project: "Example", items: Array.from({ length: count }, (_, i) => item(i + 1)) }],
   stale: [],
+  decided: [],
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
