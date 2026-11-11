@@ -95,15 +95,28 @@ withWorld("Recently decided uses decision order when timestamps tie", async (w) 
     id: index + 1,
     data: { id, via: "cli" },
   }));
+  let currentCount = 20;
+  let failEvents = false;
   const serving = (async () => {
     for await (const conn of listener) {
       (async () => {
         try {
           for await (const line of readLines(conn)) {
             const request = JSON.parse(line);
-            const result = request.method === "escalations.list" ? escalations
-              : request.method === "requests.list" ? []
-              : { events, last: 21 };
+            if (request.method === "events.since" && failEvents) {
+              await writeJson(conn, { id: request.id, ok: false, error: "temporary failure" });
+              break;
+            }
+            const result = request.method === "escalations.list"
+              ? escalations.slice(0, currentCount)
+              : request.method === "requests.list"
+              ? []
+              : {
+                events: events.filter((event) =>
+                  event.id > request.params.after && event.id <= currentCount
+                ),
+                last: currentCount,
+              };
             await writeJson(conn, { id: request.id, ok: true, result });
             break;
           }
@@ -118,6 +131,13 @@ withWorld("Recently decided uses decision order when timestamps tie", async (w) 
   try {
     const d = await w.dashboard();
     const cookie = await d.signIn();
+    assertEquals((await decided(d, cookie)).length, 20);
+    currentCount = 21;
+    failEvents = true;
+    const failed = await d.fetch("/api/needs-you", { cookie });
+    assertEquals(failed.status, 500);
+    await failed.body?.cancel();
+    failEvents = false;
     const list = await decided(d, cookie);
     assertEquals(list.map((entry) => entry.id), [...order].reverse().slice(0, 20));
     assertEquals(list.every((entry) => entry.source === "cli"), true);

@@ -214,29 +214,29 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       e.status !== "stale"
     );
     if (decided.length === 0) return [];
-    if (decided.length > seenDecisionCount) {
-      try {
-        const feed = await call<{
-          events: { id: number; data: { id?: number; via?: string } }[];
-        }>(paths, "events.since", {
-          after: decisionCursor,
-          kinds: ["escalation.decided"],
-        });
-        for (const event of feed.events) {
-          if (typeof event.data?.id === "number") {
-            decisionCursor = Math.max(decisionCursor, event.id);
-            decisionSources.set(event.data.id, {
-              eventId: event.id,
-              source: event.data.via ?? null,
-            });
-          }
+    if (decided.length > seenDecisionCount || decided.some((e) => !decisionSources.has(e.id))) {
+      const feed = await call<{
+        events: { id: number; data: { id?: number; via?: string } }[];
+      }>(paths, "events.since", {
+        after: decisionCursor,
+        kinds: ["escalation.decided"],
+      });
+      for (const event of feed.events) {
+        if (typeof event.data?.id === "number") {
+          decisionCursor = Math.max(decisionCursor, event.id);
+          decisionSources.set(event.data.id, {
+            eventId: event.id,
+            source: event.data.via ?? null,
+          });
         }
-        seenDecisionCount = Math.max(seenDecisionCount, decided.length);
-      } catch { /* no Source to show is better than no list */ }
+      }
+      if (decided.some((e) => !decisionSources.has(e.id))) {
+        throw new Error("Decision events are not available yet.");
+      }
+      seenDecisionCount = Math.max(seenDecisionCount, decided.length);
     }
     return decided.sort((a, b) =>
-      (decisionSources.get(b.id)?.eventId ?? 0) - (decisionSources.get(a.id)?.eventId ?? 0) ||
-      Date.parse(b.decidedAt!) - Date.parse(a.decidedAt!) || b.id - a.id
+      decisionSources.get(b.id)!.eventId - decisionSources.get(a.id)!.eventId
     ).slice(0, 20).map((e) => ({
       id: e.id,
       summary: e.summary,

@@ -17,6 +17,7 @@
     rejecting: false,
     reason: "",
     busy: false,
+    confirmShownAt: null,
   };
   let act = { ...blankAct };
 
@@ -56,6 +57,9 @@
   }
 
   async function settle(id, body) {
+    if (act.busy) return;
+    const currentAct = act;
+    const stillHere = () => act === currentAct && act.id === id;
     act.busy = true;
     act.refusal = null;
     render();
@@ -67,17 +71,17 @@
       });
       const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
       // The user may have picked another Escalation meanwhile: the answer is not theirs to see.
-      const stillHere = act.id === id;
       if (out.ok) {
-        if (stillHere) act = { ...blankAct, id };
-      } else if (stillHere) {
+        if (stillHere()) act = { ...blankAct, id };
+      } else if (stillHere()) {
         act.busy = false;
         act.refusal = out.error;
         act.confirm = out.code === "needs-confirm";
+        act.confirmShownAt = act.confirm ? Date.now() : null;
         if (res.status === 403) act.refusal = "This dashboard was restarted, open the new URL.";
       }
     } catch {
-      if (act.id === id) {
+      if (stillHere()) {
         act.busy = false;
         act.refusal = "The dashboard could not be reached.";
       }
@@ -93,15 +97,18 @@
       const b = el("button", "btn" + (className ? " " + className : ""), label);
       b.type = "button";
       b.setAttribute("aria-disabled", String(act.busy));
-      b.addEventListener("click", () => {
-        if (!act.busy) onClick();
+      b.addEventListener("click", (event) => {
+        if (!act.busy) onClick(event);
       });
       return b;
     };
     const bar = el("div", "bar");
     if (act.confirm) {
       bar.append(
-        button("Approve anyway", () => settle(item.id, { approved: true, confirm: true })),
+        button("Approve anyway", (event) => {
+          if (event.detail > 1 || Date.now() - act.confirmShownAt < 500) return;
+          settle(item.id, { approved: true, confirm: true });
+        }),
       );
     } else {
       bar.append(button("Approve", () => settle(item.id, { approved: true }), "approve"));
@@ -276,7 +283,9 @@
       }
     }
     const nextButton = [...main.querySelectorAll("button")][focusedButton];
-    if (focusedButton >= 0 && nextButton) {
+    const approvalChanged = mainButtons[focusedButton]?.textContent === "Approve" &&
+      nextButton?.textContent === "Approve anyway";
+    if (focusedButton >= 0 && nextButton && !approvalChanged) {
       nextButton.focus({ preventScroll: true });
       return;
     }
