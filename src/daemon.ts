@@ -1,4 +1,10 @@
-import { listRequests, requestEvents, requestReport, requestTranscript } from "./observe.ts";
+import {
+  listRequests,
+  requestEvents,
+  requestIdOfEvent,
+  requestReport,
+  requestTranscript,
+} from "./observe.ts";
 import denoJson from "../deno.json" with { type: "json" };
 import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { run } from "./checks.ts";
@@ -397,6 +403,31 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
         store.appendEvent("project.registered", { id: project.id, name: project.name });
         return project;
       }),
+    "events.since": async (params) => {
+      const { after, kinds, waitMs } = eventsSinceParams(params);
+      const read = () =>
+        store.listEvents(after, kinds).map((e) => ({
+          ...e,
+          requestId: requestIdOfEvent(store, e),
+        }));
+      let events = read();
+      if (!events.length && waitMs > 0) {
+        let wake: () => void = () => {};
+        const woken = new Promise<void>((resolve) => wake = resolve);
+        const stop = store.onEvent(() => {
+          if (store.listEvents(after, kinds).length) wake();
+        });
+        const timer = setTimeout(wake, waitMs);
+        try {
+          await woken;
+        } finally {
+          clearTimeout(timer);
+          stop();
+        }
+        events = read();
+      }
+      return { events, last: events.at(-1)?.id ?? after };
+    },
     "kiln.halt": (params) => {
       const via = sourceOf(params.via);
       if (halted()) return { changed: false, since: store.haltedSince() };
@@ -703,6 +734,28 @@ function requestStatus(
           limitReached: a.limitReached,
         })),
     })),
+  };
+}
+
+/** The longest `events.since` holds a call open. */
+const MAX_EVENTS_WAIT_MS = 25_000;
+
+function eventsSinceParams(params: Record<string, unknown>) {
+  const invalid = (why: string) => Object.assign(new Error(why), { code: "invalid" as const });
+  const { after, kinds, waitMs } = params;
+  if (typeof after !== "number" || !Number.isInteger(after) || after < 0) {
+    throw invalid('"after" must be a whole number, 0 or more: the id of the last event seen.');
+  }
+  if (kinds !== undefined && (!Array.isArray(kinds) || kinds.some((k) => typeof k !== "string"))) {
+    throw invalid('"kinds" must be a list of event kinds.');
+  }
+  if (waitMs !== undefined && (typeof waitMs !== "number" || !(waitMs >= 0))) {
+    throw invalid('"waitMs" must be a number of milliseconds, 0 or more.');
+  }
+  return {
+    after,
+    kinds: kinds as string[] | undefined,
+    waitMs: Math.min(waitMs ?? 0, MAX_EVENTS_WAIT_MS),
   };
 }
 
