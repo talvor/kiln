@@ -5,7 +5,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@st
 import { basename, dirname, join, relative } from "@std/path";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
-import { cleanUpRequest, MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
+import { cleanUpRequest, makeTmpdir, MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
 import { sandboxFor } from "../src/daemon.ts";
 import { createLogger } from "../src/log.ts";
 import { openStore } from "../src/store.ts";
@@ -285,6 +285,34 @@ withWorld("an unwritable runtime directory or kiln child uses the fallback", asy
   for (const tmp of [firstTmp, secondTmp]) await Deno.remove(dirname(tmp), { recursive: true });
 });
 
+Deno.test("a denied runtime directory write uses the fallback", async () => {
+  const runtime = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-runtime-" });
+  const wt = record(7, join(runtime, "request-7"));
+  const fallback = tmpdirOf(wt, null);
+  const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
+  const originalMakeTemp = Object.getOwnPropertyDescriptor(Deno, "makeTempDirSync")!;
+  const makeTempDirSync = Deno.makeTempDirSync;
+  Deno.env.set("XDG_RUNTIME_DIR", runtime);
+  Object.defineProperty(Deno, "makeTempDirSync", {
+    ...originalMakeTemp,
+    value: (options?: { dir?: string; prefix?: string }) => {
+      if (options?.dir === runtime) throw new Deno.errors.PermissionDenied("write denied");
+      return makeTempDirSync(options);
+    },
+  });
+  try {
+    await makeTmpdir(wt);
+    assertEquals(tmpdirOf(wt), fallback);
+    assert((await Deno.stat(fallback)).isDirectory);
+  } finally {
+    Object.defineProperty(Deno, "makeTempDirSync", originalMakeTemp);
+    if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
+    else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
+    await Deno.remove(dirname(fallback), { recursive: true }).catch(() => {});
+    await Deno.remove(runtime, { recursive: true });
+  }
+});
+
 withWorld("a multibyte runtime path over the byte limit fails clearly", async (world) => {
   await register(world);
   await world.kiln("daemon", "stop");
@@ -312,10 +340,13 @@ withWorld("request cleanup removes runtime and fallback TMPDIRs", async (world) 
     log: createLogger({ file: join(world.root, "cleanup.log") }),
   });
   const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
-  Deno.env.set("XDG_RUNTIME_DIR", join(world.root, "xdg"));
+  const runtime = join(world.root, "xdg");
+  Deno.env.set("XDG_RUNTIME_DIR", runtime);
+  await Deno.chmod(runtime, 0o500);
   try {
     assertEquals(await cleanUpRequest(store, store.getProject("remote"), 1), []);
   } finally {
+    await Deno.chmod(runtime, 0o700);
     if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
     else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
     store.close();
@@ -366,14 +397,16 @@ withWorld("a failed worktree add leaves its branch and path reusable", async (wo
   await register(world);
   const fallback = tmpdirOf(record(1, join(world.dirs.data, "worktrees", "remote", "request-1")), null);
   await Deno.mkdir(fallback, { recursive: true });
+  const runtime = join(world.root, "xdg");
   const realGit = (await world.exec(world.root, "sh", "-c", "command -v git")).stdout.trim();
   const fakeGit = join(world.root, "fake", "bin", "git");
   await Deno.writeTextFile(
     fakeGit,
-    `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = add ]; then\n  "${realGit}" "$@" || exit $?\n  exit 1\nfi\nexec "${realGit}" "$@"\n`,
+    `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = add ]; then\n  "${realGit}" "$@" || exit $?\n  chmod 0500 "${runtime}"\n  exit 1\nfi\nexec "${realGit}" "$@"\n`,
   );
   await Deno.chmod(fakeGit, 0o755);
   const failed = await world.kiln("request", "start", "remote");
+  await Deno.chmod(runtime, 0o700);
   assertEquals(failed.code, 1);
   // The rollback removed the temp directory too.
   assertEquals([...Deno.readDirSync(join(world.root, "xdg", "kiln"))].length, 0);

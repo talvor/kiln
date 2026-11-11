@@ -62,18 +62,17 @@ function usableRuntimeDir(): string | null {
   const dir = Deno.env.get("XDG_RUNTIME_DIR");
   if (!dir || !isAbsolute(dir)) return null;
   try {
-    const uid = Deno.uid();
-    for (const path of [dir, join(dir, "kiln")]) {
-      let info: Deno.FileInfo;
-      try {
-        info = Deno.statSync(path);
-      } catch (error) {
-        if (path !== dir && error instanceof Deno.errors.NotFound) break;
-        return null;
-      }
-      if (!info.isDirectory || (uid !== null && info.uid !== uid) ||
-        (info.mode! & 0o300) !== 0o300) return null;
+    const root = join(dir, "kiln");
+    let probeParent = dir;
+    try {
+      const info = Deno.statSync(root);
+      if (!info.isDirectory || (Deno.uid() !== null && info.uid !== Deno.uid())) return null;
+      probeParent = root;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) return null;
     }
+    const probe = Deno.makeTempDirSync({ dir: probeParent, prefix: ".kiln-" });
+    Deno.removeSync(probe);
     return dir;
   } catch {
     return null;
@@ -82,9 +81,9 @@ function usableRuntimeDir(): string | null {
 
 /** The possible directories holding a Worktree's `TMPDIR`; removed with it. */
 function tmpHomes(wt: WorktreeRecord): string[] {
-  const runtime = usableRuntimeDir();
+  const runtime = Deno.env.get("XDG_RUNTIME_DIR");
   return [...new Set([
-    ...(runtime ? [dirname(tmpdirOf(wt, runtime))] : []),
+    ...(runtime && isAbsolute(runtime) ? [dirname(tmpdirOf(wt, runtime))] : []),
     dirname(tmpdirOf(wt, null)),
   ])];
 }
