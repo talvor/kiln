@@ -203,6 +203,9 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
+  let decisionCursor = 0;
+  const decisionSources = new Map<number, { decidedAt: string; source: string | null }>();
+
   /** The last 20 decisions, newest first. The Source lives in the decision's event. */
   async function recentlyDecided(escalations: EscalationView[]) {
     const decided = escalations.filter((e) =>
@@ -212,24 +215,39 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       .sort((a, b) => Date.parse(b.decidedAt!) - Date.parse(a.decidedAt!) || b.id - a.id)
       .slice(0, 20);
     if (decided.length === 0) return [];
-    const sources = new Map<number, string>();
-    try {
-      const feed = await call<{ events: { data: { id?: number; via?: string } }[] }>(
-        paths,
-        "events.since",
-        { after: 0, kinds: ["escalation.decided"] },
-      );
-      for (const e of feed.events) {
-        if (typeof e.data?.id === "number" && e.data.via) sources.set(e.data.id, e.data.via);
+    if (decided.some((e) => decisionSources.get(e.id)?.decidedAt !== e.decidedAt)) {
+      try {
+        const feed = await call<{
+          events: { id: number; data: { id?: number; via?: string } }[];
+        }>(paths, "events.since", {
+          after: decisionCursor,
+          kinds: ["escalation.decided"],
+        });
+        for (const event of feed.events) {
+          const match = decided.find((e) => e.id === event.data?.id);
+          if (match) {
+            decisionCursor = Math.max(decisionCursor, event.id);
+            decisionSources.set(match.id, {
+              decidedAt: match.decidedAt!,
+              source: event.data.via ?? null,
+            });
+          }
+        }
+      } catch { /* no Source to show is better than no list */ }
+      const oldest = [...decisionSources].sort((a, b) =>
+        Date.parse(b[1].decidedAt) - Date.parse(a[1].decidedAt) || b[0] - a[0]
+      ).slice(20);
+      for (const [id] of oldest) {
+        decisionSources.delete(id);
       }
-    } catch { /* no Source to show is better than no list */ }
+    }
     return decided.map((e) => ({
       id: e.id,
       summary: e.summary,
       decision: e.status,
       reason: e.reason,
       decidedAt: e.decidedAt,
-      source: sources.get(e.id) ?? null,
+      source: decisionSources.get(e.id)?.source ?? null,
     }));
   }
 

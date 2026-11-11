@@ -20,7 +20,7 @@ The selected Escalation has **Approve** (one click) and **Reject** (it needs a r
 refusals are shown as worded, for instance when the Escalation was already decided or went stale.
 Approving a `qa-passed` Gate whose pull request is not merged is refused by the daemon; the page
 shows that and offers **Approve anyway**, which sends the confirmation. Decisions made here record
-Source `dashboard`. Below Needs you, **Recently decided** lists the last 20 decisions with the
+Source `dashboard`. Below Needs you, the collapsed **Recently decided** list holds the last 20 decisions with the
 decision, reason, when and Source.
 
 Views have their own addresses (`/` and `/escalations/<id>`), so reload, back and forward work, and

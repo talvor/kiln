@@ -74,6 +74,7 @@ withWorld("Recently decided keeps the last 20, newest first", async (w) => {
   const list = await decided(d, cookie);
   assertEquals(list.length, 20);
   assertEquals(list[0].id, 21);
+  assertEquals(list.every((entry) => entry.source === "dashboard"), true);
 });
 
 withWorld("a wrong Origin cannot decide", async (w) => {

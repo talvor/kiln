@@ -43,7 +43,10 @@
   };
 
   function go(path) {
-    if (path !== location.pathname) history.pushState(null, "", path);
+    if (path !== location.pathname) {
+      act = { ...blankAct };
+      history.pushState(null, "", path);
+    }
     render(); // swap the main area: no page load
   }
 
@@ -152,6 +155,7 @@
 
   function renderRail() {
     const scrolled = rail.scrollTop; // a live update must not throw the reader back to the top
+    const decidedOpen = rail.querySelector("details")?.open ?? false;
     const previousRows = [...rail.querySelectorAll("button.row")];
     const focusedIndex = previousRows.indexOf(document.activeElement);
     const focusedId = previousRows[focusedIndex]?.dataset.escalationId;
@@ -166,8 +170,10 @@
       rail.append(el("p", "empty", "Their Request ended, so they cannot be acted on."));
       for (const item of view.stale) rail.append(row(item, true));
     }
-    rail.append(el("h2", "", "Recently decided"));
-    if (!(view.decided ?? []).length) rail.append(el("p", "empty", "Nothing decided yet."));
+    const decided = el("details");
+    decided.open = decidedOpen;
+    decided.append(el("summary", "", "Recently decided"));
+    if (!(view.decided ?? []).length) decided.append(el("p", "empty", "Nothing decided yet."));
     for (const d of view.decided ?? []) {
       const node = el("div", "decided");
       node.append(
@@ -180,8 +186,9 @@
         el("div", "summary", d.summary),
       );
       if (d.reason) node.append(el("div", "reason", "Reason: " + d.reason));
-      rail.append(node);
+      decided.append(node);
     }
+    rail.append(decided);
     rail.scrollTop = scrolled;
     if (focusedId) {
       const rows = [...rail.querySelectorAll("button.row")];
@@ -200,7 +207,11 @@
     if (id === null) return main.append(el("p", "note", "Pick an Escalation to see its detail."));
     const all = [...view.groups.flatMap((g) => g.items), ...view.stale];
     const item = all.find((i) => i.id === id);
-    if (!item) return main.append(el("p", "note", "Escalation " + id + " is not waiting on you."));
+    if (!item) {
+      main.append(el("p", "note", "Escalation " + id + " is not waiting on you."));
+      if (act.id === id && act.refusal) main.append(el("p", "refusal", act.refusal));
+      return;
+    }
     const stale = view.stale.includes(item);
     main.append(
       el("h2", "", "Escalation " + item.id + (stale ? " (stale)" : "")),
@@ -216,6 +227,7 @@
     if (item.detail) main.append(el("pre", "detail", item.detail));
     if (stale) {
       main.append(el("p", "note", "Its Request ended, so there is nothing left to decide."));
+      if (act.id === id && act.refusal) main.append(el("p", "refusal", act.refusal));
     } else {
       if (act.id !== item.id) {
         act = { ...blankAct, id: item.id };
@@ -239,10 +251,23 @@
 
   function render() {
     const mainFocused = main.contains(document.activeElement);
+    const reason = main.querySelector("textarea");
+    const typing = reason !== null && reason === document.activeElement;
+    const selection = typing
+      ? [reason.selectionStart, reason.selectionEnd, reason.selectionDirection]
+      : null;
     banner.style.display = view.running ? "none" : "block";
     renderTitle();
     const focusMain = renderRail();
     renderMain();
+    if (typing) {
+      const nextReason = main.querySelector("textarea");
+      if (nextReason) {
+        nextReason.focus({ preventScroll: true });
+        nextReason.setSelectionRange(...selection);
+        return;
+      }
+    }
     if (focusMain || mainFocused) {
       const target = main.firstElementChild;
       target.tabIndex = -1;
@@ -277,7 +302,10 @@
     timer = setTimeout(refresh, 250);
   };
 
-  addEventListener("popstate", render);
+  addEventListener("popstate", () => {
+    if (act.id !== selectedId()) act = { ...blankAct };
+    render();
+  });
   setInterval(render, 30000); // ages move on
 
   const stream = new EventSource("/events"); // one stream for this tab
