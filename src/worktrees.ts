@@ -3,7 +3,7 @@
 // merged) and one per Assignment (on its own branch). Each Worktree has its own ports, temporary
 // directory and caches, so concurrent work does not collide.
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join } from "@std/path";
+import { basename, dirname, isAbsolute, join, relative } from "@std/path";
 import { firstLine, REMOTE_TIMEOUT_MS, run } from "./checks.ts";
 import type { ProjectRecord, Store, WorktreeRecord } from "./store.ts";
 import { WORKTREE_PORTS } from "./store.ts";
@@ -62,6 +62,11 @@ function usableRuntimeDir(wt: WorktreeRecord): string | null {
   const dir = Deno.env.get("XDG_RUNTIME_DIR");
   if (!dir || !isAbsolute(dir)) return null;
   const tmpdir = tmpdirOf(wt, dir);
+  const fromWorktree = relative(wt.path, tmpdir);
+  if (fromWorktree === "" ||
+    (fromWorktree !== ".." && !fromWorktree.startsWith("../") && !isAbsolute(fromWorktree))) {
+    return null;
+  }
   if (new TextEncoder().encode(tmpdir).length > MAX_TMPDIR_LENGTH) return null;
   try {
     createPrivateTmpdir(tmpdir);
@@ -71,20 +76,22 @@ function usableRuntimeDir(wt: WorktreeRecord): string | null {
   }
 }
 
-/** The possible directories holding a Worktree's `TMPDIR`; removed with it. */
-function tmpHomes(wt: WorktreeRecord): string[] {
+async function removeTmpHomes(wt: WorktreeRecord): Promise<void> {
   const runtime = Deno.env.get("XDG_RUNTIME_DIR");
-  return [...new Set([
+  for (const home of new Set([
     ...(runtime && isAbsolute(runtime) ? [dirname(tmpdirOf(wt, runtime))] : []),
     dirname(tmpdirOf(wt, null)),
-  ])].filter((home) => {
+  ])) {
     try {
-      return !Deno.lstatSync(dirname(home)).isSymlink;
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return true;
-      throw error;
+      const root = Deno.lstatSync(dirname(home));
+      if (root.isSymlink) continue;
+      const candidate = Deno.lstatSync(home);
+      if (candidate.isSymlink || !candidate.isDirectory) continue;
+      await removeIfPresent(home);
+    } catch {
+      continue;
     }
-  });
+  }
 }
 
 /** Refuse a `TMPDIR` the worker sandbox could not use, saying why. */
@@ -140,7 +147,7 @@ export async function makeSupport(wt: WorktreeRecord): Promise<void> {
 
 async function removeSupport(wt: WorktreeRecord): Promise<void> {
   await removeIfPresent(`${wt.path}.kiln`);
-  for (const home of tmpHomes(wt)) await removeIfPresent(home);
+  await removeTmpHomes(wt);
 }
 
 export function infoOf(wt: WorktreeRecord): WorktreeInfo {
@@ -237,9 +244,7 @@ async function createWorktree(
         if (deleted.code !== 0) throw new Error(firstLine(deleted.stderr));
       }
       if (supportCreated) await removeIfPresent(`${path}.kiln`);
-      if (tmpTouched) {
-        for (const home of tmpHomes(wt)) await removeIfPresent(home);
-      }
+      if (tmpTouched) await removeTmpHomes(wt);
       store.releaseWorktree(wt.id);
     } catch (failure) {
       throw new WorktreeCleanupFailed(

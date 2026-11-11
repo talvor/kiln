@@ -245,6 +245,32 @@ Deno.test("TMPDIR is under XDG_RUNTIME_DIR, or /tmp/kiln-<uid> without it", () =
   assert(tmpdirOf(wt, null, 1000).startsWith("/tmp/kiln-1000/7-"));
 });
 
+Deno.test("a runtime TMPDIR inside the Worktree uses the fallback", async () => {
+  const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "kiln-inside-" });
+  const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
+  const cases = [
+    { path: join(root, "worktree"), runtime: join(root, "worktree", "run") },
+    { path: join(root, "kiln"), runtime: root },
+  ];
+  try {
+    for (const [index, testCase] of cases.entries()) {
+      await Deno.mkdir(testCase.runtime, { recursive: true });
+      const wt = record(index + 1, testCase.path);
+      Deno.env.set("XDG_RUNTIME_DIR", testCase.runtime);
+      await makeTmpdir(wt);
+      const fallback = tmpdirOf(wt, null);
+      assertEquals(tmpdirOf(wt), fallback);
+      assert((await Deno.stat(fallback)).isDirectory);
+      assert(relative(wt.path, fallback).startsWith(".."));
+      await Deno.remove(dirname(fallback), { recursive: true });
+    }
+  } finally {
+    if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
+    else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 withWorld(
   "a long runtime path uses a short fallback TMPDIR",
   async (world) => {
@@ -370,7 +396,40 @@ withWorld("a file at the Worktree runtime path selects the fallback", async (wor
   const started = await startRequest(world);
   assert(started.TMPDIR.startsWith(`/tmp/kiln-${Deno.uid()}/`), started.TMPDIR);
   assert((await Deno.stat(started.TMPDIR)).isDirectory);
-  await Deno.remove(dirname(started.TMPDIR), { recursive: true });
+  await world.kiln("daemon", "stop");
+  const store = await openStore({
+    file: join(world.dirs.data, "kiln.db"),
+    backupsDir: join(world.dirs.data, "backups"),
+    log: createLogger({ file: join(world.root, "cleanup.log") }),
+  });
+  const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
+  const originalRemove = Object.getOwnPropertyDescriptor(Deno, "remove")!;
+  const remove = Deno.remove;
+  const fallbackHome = dirname(started.TMPDIR);
+  let blocked = false;
+  Deno.env.set("XDG_RUNTIME_DIR", join(world.root, "xdg"));
+  Object.defineProperty(Deno, "remove", {
+    ...originalRemove,
+    value: (path: string | URL, options?: { recursive?: boolean }) => {
+      if (String(path) === fallbackHome) {
+        blocked = true;
+        return Promise.reject(new Deno.errors.PermissionDenied("inaccessible fallback"));
+      }
+      return remove(path, options);
+    },
+  });
+  try {
+    assertEquals(await cleanUpRequest(store, store.getProject("remote"), 1), []);
+    assert(blocked);
+    assert(store.getWorktree(1).releasedAt !== null);
+    assertEquals(await Deno.readTextFile(dirname(runtimeTmp)), "blocked");
+  } finally {
+    Object.defineProperty(Deno, "remove", originalRemove);
+    if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
+    else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
+    store.close();
+    await Deno.remove(fallbackHome, { recursive: true });
+  }
 });
 
 withWorld("CLI launch recreates TMPDIR when the runtime path is blocked", async (world) => {
