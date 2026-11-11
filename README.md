@@ -55,3 +55,6 @@ and model-free commands. See [the chat guide](docs/chat.md).
 Follow a Request with `kiln request list`, `kiln watch`, `kiln transcript` and `kiln report`, check
 the machine with `kiln doctor`, and set spend limits with `kiln setup`. See
 [the observability guide](docs/observe.md).
+
+Open the Dashboard, a browser window onto Kiln, with `kiln dashboard`; it listens on 127.0.0.1 only
+and needs the URL it prints. See [the dashboard guide](docs/dashboard.md).

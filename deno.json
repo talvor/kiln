@@ -14,6 +14,7 @@
     "test": "deno test -A",
     "smoke": "KILN_SMOKE=1 deno test -A tests/smoke/claude_smoke.ts"
   },
+  "unstable": ["raw-imports"],
   "compilerOptions": {
     "strict": true
   },

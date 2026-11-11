@@ -31,7 +31,7 @@ await Deno.mkdir(dirname(outFile), { recursive: true });
 const work = await Deno.makeTempDir({ prefix: "kiln-build-" });
 try {
   const bundle = join(work, "kiln.js");
-  await run(["bundle", "--output", bundle, entry]);
+  await run(["bundle", "--unstable-raw-imports", "--output", bundle, entry]);
   await run(["compile", "--allow-all", "--no-check", "--output", outFile, bundle]);
 } finally {
   await Deno.remove(work, { recursive: true });

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kiln</title>
+    <style>
+    body {
+      font: 16px/1.5 system-ui, sans-serif;
+      margin: 0;
+      background: #fafafa;
+      color: #1a1a1a;
+    }
+    header {
+      padding: 0.75rem 1rem;
+      background: #1a1a1a;
+      color: #fafafa;
+      font-weight: 600;
+    }
+    main {
+      padding: 1rem;
+    }
+    #banner {
+      display: none;
+      padding: 0.5rem 1rem;
+      background: #fff3cd;
+      color: #664d03;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: #181818;
+        color: #eee;
+      }
+      #banner {
+        background: #4d3b00;
+        color: #ffe69c;
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <header>Kiln</header>
+    <div id="banner">Kiln is not running.</div>
+    <main>
+      <p id="state">Loading…</p>
+    </main>
+    <script>
+    fetch("/api/status").then((r) => {
+      if (r.status === 403) throw new Error("restarted");
+      return r.json();
+    }).then((s) => {
+      document.getElementById("state").textContent = s.running
+        ? "Kiln " + s.version + " is running."
+        : "Kiln is not running.";
+      document.getElementById("banner").style.display = s.running ? "none" : "block";
+    }).catch(() => {
+      document.getElementById("state").textContent = "This dashboard was restarted, open the new URL.";
+    });
+    </script>
+  </body>
+</html>

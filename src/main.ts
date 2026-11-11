@@ -26,6 +26,7 @@ import {
 } from "./observe.ts";
 import { describeChecks, runDoctor } from "./doctor.ts";
 import { needsSetup, runSetup } from "./setup.ts";
+import { type Dashboard, openBrowser, startDashboard } from "./dashboard.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -56,6 +57,7 @@ const ESCALATION_USAGE = `Usage:
   kiln escalations [--all] [--json]
   kiln approve <escalation-id> [--confirm]
   kiln reject <escalation-id> --reason <text>`;
+const DASHBOARD_USAGE = "Usage: kiln dashboard [--port <n>] [--no-open]";
 const USAGE = `kiln ${VERSION}
 
 Usage:
@@ -98,6 +100,8 @@ Usage:
                          Approve an escalation; only you can
   kiln reject <escalation-id> --reason <text>
                          Reject an escalation, saying why
+  kiln dashboard [--port <n>] [--no-open]
+                         Serve the Dashboard, a browser window onto Kiln, on 127.0.0.1 until Ctrl-C
   kiln chat              Talk to the Overseer: interactive Claude, with Kiln's tools and status line
   kiln session open ...
                          Open the address an agent works under (see \`kiln session\`)
@@ -132,7 +136,8 @@ async function main(args: string[]): Promise<number> {
   const paths = resolvePaths();
 
   // The first time a person uses Kiln at a terminal, ask for the spend limits.
-  const asksFirst = !json && !["daemon", "tool-server", "setup", "doctor"].includes(cmd);
+  const asksFirst = !json &&
+    !["daemon", "tool-server", "setup", "doctor", "dashboard"].includes(cmd);
   if (asksFirst && Deno.stdin.isTerminal() && Deno.stdout.isTerminal() && await needsSetup(paths)) {
     await setupCommand();
   }
@@ -146,6 +151,8 @@ async function main(args: string[]): Promise<number> {
       console.log(path);
       return 0;
     }
+    case "dashboard":
+      return await dashboardCommand(args.slice(1));
     case "chat":
       if (args.length > 1) {
         console.error("Usage: kiln chat");
@@ -274,6 +281,38 @@ async function main(args: string[]): Promise<number> {
       console.error((err as Error).message);
       return 1;
     }
+  }
+
+  async function dashboardCommand(rest: string[]): Promise<number> {
+    let port: number | undefined;
+    let open = true;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--no-open") open = false;
+      else if (rest[i] === "--port" && /^\d+$/.test(rest[i + 1] ?? "")) port = Number(rest[++i]);
+      else {
+        console.error(DASHBOARD_USAGE);
+        return 2;
+      }
+    }
+    if (port !== undefined && port > 65535) {
+      console.error(DASHBOARD_USAGE);
+      return 2;
+    }
+    let dashboard: Dashboard;
+    try {
+      dashboard = startDashboard(paths, { port });
+    } catch (err) {
+      console.error(`Could not start the Dashboard: ${(err as Error).message}`);
+      return 1;
+    }
+    console.log(dashboard.url);
+    console.error("Press Ctrl-C to stop the Dashboard.");
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      Deno.addSignalListener(signal, () => void dashboard.stop());
+    }
+    if (open) openBrowser(dashboard.openUrl);
+    await dashboard.finished;
+    return 0;
   }
 
   async function setupCommand(): Promise<void> {

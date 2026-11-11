@@ -6,6 +6,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
+import { eventsOf } from "./helpers.ts";
 import { withWorld } from "./world.ts";
 import { asAgent, assignment, openTeam, stopHook, waitFor } from "./router_helpers.ts";
 
@@ -346,30 +347,22 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
 withWorld("a timed out launch does not hold another recipient's nudge", async (world) => {
   await openTeam(world);
   await world.launcher.script([{ hang: true }, { result: "ok" }]);
-  await asAgent(world, "dev-lead", async (agent) => {
-    await agent.send("dev-1", "assignment", assignment);
-    await agent.send("dev-2", "assignment", assignment);
-  });
+  await asAgent(world, "dev-lead", (agent) => agent.send("dev-1", "assignment", assignment));
+  await waitFor(() => world.launcher.prompts(), (items) => items.length === 1, 40_000);
+  await asAgent(world, "dev-lead", (agent) => agent.send("dev-2", "assignment", assignment));
   const prompts = await waitFor(
     () => world.launcher.prompts(),
     (items) => items.length >= 2,
     40_000,
   );
   assertEquals(prompts.length, 2);
-  // Which recipient is woken first is not fixed: the one that got the hang stays undelivered,
-  // and the other is still nudged.
-  // Reading the inbox consumes unread messages, so remember what each recipient was shown.
-  const seen = new Map<string, number>();
-  const deliveries = await waitFor(
-    async () => {
-      for (const name of ["dev-1", "dev-2"]) {
-        const [m] = await asAgent(world, name, (agent) => agent.inbox());
-        if (m && !seen.has(name)) seen.set(name, m.deliveries);
-      }
-      return [...seen.values()].sort();
-    },
-    (counts) => counts.length === 2 && counts[1] === 1,
-    10_000,
+  await waitFor(
+    () => eventsOf(world, "message.nudged"),
+    (events) => events.some((event) => event.to === "dev-2"),
+    40_000,
   );
-  assertEquals(deliveries, [0, 1]);
+  // Reading an inbox consumes its messages, so first wait for the recorded delivery.
+  const [hung] = await asAgent(world, "dev-1", (agent) => agent.inbox());
+  const [nudged] = await asAgent(world, "dev-2", (agent) => agent.inbox());
+  assertEquals([hung.deliveries, nudged.deliveries], [0, 1]);
 });
