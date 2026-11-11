@@ -1,11 +1,23 @@
 // Worktrees, request branches and Assignment merge-back, driven the way a person drives them:
 // `kiln request ...` and `kiln assignment ...` against the fake world (bare remote, scripted
 // claude). A "worker" is the scripted launcher run in the Assignment's Worktree plus a commit.
-import { assert, assertEquals, assertNotEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { basename, dirname, join, relative } from "@std/path";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
-import { cleanUpRequest, makeTmpdir, MAX_TMPDIR_LENGTH, tmpdirOf, WorktreeBlocked } from "../src/worktrees.ts";
+import {
+  cleanUpRequest,
+  makeTmpdir,
+  MAX_TMPDIR_LENGTH,
+  tmpdirOf,
+  WorktreeBlocked,
+} from "../src/worktrees.ts";
 import { sandboxFor } from "../src/daemon.ts";
 import { createLogger } from "../src/log.ts";
 import { openStore } from "../src/store.ts";
@@ -159,7 +171,10 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
       assert(relative(w.Worktree, dir).startsWith(".."), `${dir} is inside the worktree`);
     }
     // The temp directory is short, private, and under the runtime directory.
-    assert(new TextEncoder().encode(w.TMPDIR).length <= MAX_TMPDIR_LENGTH, `${w.TMPDIR} is too long`);
+    assert(
+      new TextEncoder().encode(w.TMPDIR).length <= MAX_TMPDIR_LENGTH,
+      `${w.TMPDIR} is too long`,
+    );
     assert(w.TMPDIR.startsWith(join(world.root, "xdg", "kiln") + "/"), w.TMPDIR);
     for (const dir of [w.TMPDIR, join(w.TMPDIR, ".."), join(w.TMPDIR, "..", "..")]) {
       assertEquals((await Deno.stat(dir)).mode! & 0o777, 0o700, `${dir} is not private`);
@@ -514,7 +529,10 @@ withWorld("a locked Assignment keeps its ports until cleanup succeeds", async (w
 
 withWorld("a failed worktree add leaves its branch and path reusable", async (world) => {
   await register(world);
-  const fallback = tmpdirOf(record(1, join(world.dirs.data, "worktrees", "remote", "request-1")), null);
+  const fallback = tmpdirOf(
+    record(1, join(world.dirs.data, "worktrees", "remote", "request-1")),
+    null,
+  );
   await Deno.mkdir(fallback, { recursive: true });
   const runtime = join(world.root, "xdg");
   const realGit = (await world.exec(world.root, "sh", "-c", "command -v git")).stdout.trim();

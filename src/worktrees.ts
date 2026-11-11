@@ -63,8 +63,10 @@ function usableRuntimeDir(wt: WorktreeRecord): string | null {
   if (!dir || !isAbsolute(dir)) return null;
   const tmpdir = tmpdirOf(wt, dir);
   const fromWorktree = relative(wt.path, tmpdir);
-  if (fromWorktree === "" ||
-    (fromWorktree !== ".." && !fromWorktree.startsWith("../") && !isAbsolute(fromWorktree))) {
+  if (
+    fromWorktree === "" ||
+    (fromWorktree !== ".." && !fromWorktree.startsWith("../") && !isAbsolute(fromWorktree))
+  ) {
     return null;
   }
   if (new TextEncoder().encode(tmpdir).length > MAX_TMPDIR_LENGTH) return null;
@@ -78,10 +80,12 @@ function usableRuntimeDir(wt: WorktreeRecord): string | null {
 
 async function removeTmpHomes(wt: WorktreeRecord): Promise<void> {
   const runtime = Deno.env.get("XDG_RUNTIME_DIR");
-  for (const home of new Set([
-    ...(runtime && isAbsolute(runtime) ? [dirname(tmpdirOf(wt, runtime))] : []),
-    dirname(tmpdirOf(wt, null)),
-  ])) {
+  for (
+    const home of new Set([
+      ...(runtime && isAbsolute(runtime) ? [dirname(tmpdirOf(wt, runtime))] : []),
+      dirname(tmpdirOf(wt, null)),
+    ])
+  ) {
     try {
       const root = Deno.lstatSync(dirname(home));
       if (root.isSymlink) continue;
