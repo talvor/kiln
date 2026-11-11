@@ -5,7 +5,10 @@
 // The per-launch token lives in this process's memory and nowhere else: it is printed in the URL,
 // exchanged once for a session cookie, then dead.
 import { call, DaemonNotRunning } from "./client.ts";
+import type { EscalationView } from "./escalations.ts";
+import { needsYou } from "./needs_you.ts";
 import type { KilnPaths } from "./paths.ts";
+import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
 
 const COOKIE = "kiln_dashboard";
@@ -58,6 +61,73 @@ const refuse = (status: number, why: string) =>
     headers: headers({ "content-type": "text/plain; charset=utf-8" }),
   });
 
+/** The longest the daemon is asked to hold an `events.since` call open. */
+const POLL_WAIT_MS = 25_000;
+const PING_MS = 15_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One feed of "something happened in Kiln" for every connected tab. The daemon's `events.since`
+ * long-poll runs only while at least one tab listens, and stops when the last one leaves. Events
+ * are only hints: a tab re-fetches what it shows, so a missed one cannot corrupt a page.
+ */
+function createEventHub(paths: KilnPaths) {
+  const listeners = new Set<(cursor: number) => void>();
+  let cursor: number | null = null;
+  let running = false;
+  let listenerEpoch = 0;
+
+  async function loop() {
+    let down = false;
+    let backoff = 500;
+    while (listeners.size > 0) {
+      const began = Date.now();
+      const epoch = listenerEpoch;
+      try {
+        const feed = await call<{ events: unknown[]; last: number }>(paths, "events.since", {
+          after: cursor ?? 0,
+          waitMs: cursor === null ? 0 : POLL_WAIT_MS,
+        });
+        if (epoch !== listenerEpoch) return;
+        cursor = feed.last;
+        backoff = 500;
+        if (feed.events.length > 0 || down) {
+          for (const listener of listeners) listener(cursor);
+        }
+        down = false;
+        if (Date.now() - began < 500) await sleep(500); // never spin on an answer that came at once
+      } catch {
+        if (epoch !== listenerEpoch) return;
+        if (!down) {
+          for (const listener of listeners) listener(cursor ?? 0);
+        }
+        down = true;
+        cursor = null; // a restarted daemon may count events afresh; look for the cursor again
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, 10_000);
+      }
+    }
+  }
+  const start = () => {
+    if (running) return;
+    running = true;
+    loop().finally(() => {
+      running = false;
+      if (listeners.size > 0) start(); // someone came back while the last call was finishing
+    });
+  };
+  return {
+    subscribe(listener: (cursor: number) => void): () => void {
+      listeners.add(listener);
+      start();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) listenerEpoch++;
+      };
+    },
+  };
+}
+
 /** Start serving on 127.0.0.1; port 0 picks a free one. */
 export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): Dashboard {
   const token = randomSecret();
@@ -67,6 +137,67 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   let port = 0;
   const hosts = () => new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+
+  const hub = createEventHub(paths);
+  const closers = new Set<() => void>();
+
+  /** One multiplexed Server-Sent Events stream for a tab. */
+  function events(): Response {
+    const encoder = new TextEncoder();
+    let release = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (text: string) => {
+          try {
+            controller.enqueue(encoder.encode(text));
+          } catch { /* the tab is gone; cancel() cleans up */ }
+        };
+        send("retry: 2000\n\n");
+        const unsubscribe = hub.subscribe((cursor) => send(`event: changed\ndata: ${cursor}\n\n`));
+        const ping = setInterval(() => send(": ping\n\n"), PING_MS);
+        let closed = false;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          closers.delete(end);
+          unsubscribe();
+          clearInterval(ping);
+        };
+        // What stop() calls: leave, and finish the stream. The same reference is removed on leaving.
+        const end = () => {
+          close();
+          try {
+            controller.close();
+          } catch { /* already closed */ }
+        };
+        release = close;
+        closers.add(end);
+      },
+      // Cleanup lives here, not on request.signal, which is not reliable for streams.
+      cancel() {
+        release();
+      },
+    });
+    return new Response(body, {
+      headers: headers({ "content-type": "text/event-stream", "x-accel-buffering": "no" }),
+    });
+  }
+
+  /** The Needs you list, as the page draws it. */
+  async function needsYouView(): Promise<Response> {
+    try {
+      const [escalations, requests] = await Promise.all([
+        call<EscalationView[]>(paths, "escalations.list", { all: true }),
+        call<{ id: number; project: string }[]>(paths, "requests.list", { all: true }),
+      ]);
+      return json({ running: true, ...needsYou(escalations, requests) });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) {
+        return json({ running: false, count: 0, groups: [], stale: [] });
+      }
+      throw err;
+    }
+  }
 
   const redirectHome = (setCookie?: string) =>
     new Response(null, {
@@ -105,21 +236,30 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
 
     if (!SAFE_METHODS.has(req.method)) return refuse(405, "No such action.");
-    if (url.pathname === "/") {
+    // Every view has its own address; the page swaps its main area to match.
+    if (url.pathname === "/" || /^\/escalations\/\d+$/.test(url.pathname)) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
       });
     }
+    if (url.pathname === "/app.js") {
+      return new Response(req.method === "HEAD" ? null : appJs, {
+        headers: headers({ "content-type": "text/javascript; charset=utf-8" }),
+      });
+    }
+    if (url.pathname === "/events") return events();
+    if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");
   }
 
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      headers: headers({ "content-type": "application/json" }),
+    });
+
   /** Whether Kiln is running; never starts it. */
   async function status(): Promise<Response> {
-    const json = (body: unknown) =>
-      new Response(JSON.stringify(body), {
-        headers: headers({ "content-type": "application/json" }),
-      });
     try {
       const s = await call<{ pid: number; version: string; startedAt: string }>(paths, "status");
       return json({ running: true, pid: s.pid, version: s.version, startedAt: s.startedAt });
@@ -138,7 +278,10 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     url: `http://127.0.0.1:${port}/?token=${token}`,
     openUrl: `http://127.0.0.1:${port}/launch/${launch}`,
     port,
-    stop: () => server.shutdown(),
+    stop: () => {
+      for (const close of [...closers]) close(); // open streams would hold a graceful shutdown
+      return server.shutdown();
+    },
     finished: server.finished,
   };
 }
