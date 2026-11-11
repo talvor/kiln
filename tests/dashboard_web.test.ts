@@ -18,6 +18,9 @@ class PageElement {
   get textContent(): string {
     return this.content + this.children.map((child) => child.textContent).join("");
   }
+  get firstElementChild(): PageElement | null {
+    return this.children[0] ?? null;
+  }
   set textContent(value: string) {
     this.replaceChildren();
     this.content = value;
@@ -42,7 +45,9 @@ class PageElement {
     return false;
   }
   querySelectorAll(_selector: string): PageElement[] {
-    const descendants = this.children.flatMap((child) => [child, ...child.querySelectorAll(_selector)]);
+    const descendants = this.children.flatMap((
+      child,
+    ) => [child, ...child.querySelectorAll(_selector)]);
     return descendants.filter((node) =>
       node.tag === "button" && node.className.split(" ").includes("row")
     );
@@ -90,7 +95,7 @@ class PageEvents {
 
 const item = (id: number) => ({
   id,
-  gate: "approval",
+  gate: id === 1 ? null : "approval",
   requestId: 7,
   project: "Example",
   summary: `Summary ${id}`,
@@ -105,7 +110,7 @@ const snapshot = (count: number) => ({
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-Deno.test("dashboard script keeps text, count, focus and newest snapshot", async () => {
+Deno.test("dashboard script keeps labels, text, count, focus and newest snapshot", async () => {
   const page = new Page();
   const location = { pathname: "/" };
   const pending: Array<{
@@ -124,8 +129,16 @@ Deno.test("dashboard script keeps text, count, focus and newest snapshot", async
     }
   }
   new Function(
-    "document", "location", "history", "fetch", "EventSource", "addEventListener",
-    "setInterval", "setTimeout", "clearTimeout", appJs,
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    appJs,
   )(
     page,
     location,
@@ -149,6 +162,12 @@ Deno.test("dashboard script keeps text, count, focus and newest snapshot", async
 
   const rail = page.getElementById("rail");
   const main = page.getElementById("main");
+  assertEquals(
+    rail.querySelectorAll("button.row")[0].children[0].textContent.startsWith("No gate"),
+    true,
+  );
+  rail.querySelectorAll("button.row")[0].click();
+  assertEquals(main.children[1].textContent.startsWith("No gate"), true);
   rail.querySelectorAll("button.row")[1].click();
   assertEquals(location.pathname, "/escalations/2");
   assertEquals(page.activeElement?.dataset.escalationId, "2");
@@ -190,4 +209,26 @@ Deno.test("dashboard script keeps text, count, focus and newest snapshot", async
   await tick();
   assertEquals(page.title, "(5) Kiln");
   assertEquals(page.activeElement?.dataset.escalationId, "2");
+
+  stream!.emit("error");
+  for (const callback of timers.values()) callback();
+  timers.clear();
+  pending[8].resolve(new Response(null, { status: 403 }));
+  await tick();
+  assertEquals(main.textContent, "This dashboard was restarted, open the new URL.");
+
+  stream!.emit("open");
+  pending[9].resolve(Response.json(snapshot(5)));
+  await tick();
+  stream!.emit("open");
+  pending[10].resolve(Response.json(snapshot(1)));
+  await tick();
+  assertEquals(page.activeElement?.dataset.escalationId, "1");
+  stream!.emit("open");
+  pending[11].resolve(Response.json(snapshot(0)));
+  await tick();
+  assertEquals(page.activeElement, main.firstElementChild);
+  assertEquals(main.firstElementChild?.textContent, "Escalation 2 is not waiting on you.");
+  ageTimer();
+  assertEquals(page.activeElement, main.firstElementChild);
 });

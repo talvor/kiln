@@ -42,7 +42,7 @@
     node.type = "button";
     node.dataset.escalationId = String(item.id);
     const request = item.requestId === null ? "no Request" : "Request " + item.requestId;
-    const kind = item.gate === null ? "question" : item.gate;
+    const kind = item.gate ?? "No gate";
     node.append(
       el(
         "div",
@@ -58,9 +58,9 @@
 
   function renderRail() {
     const scrolled = rail.scrollTop; // a live update must not throw the reader back to the top
-    const focusedId = rail.contains(document.activeElement)
-      ? document.activeElement.dataset.escalationId
-      : null;
+    const previousRows = [...rail.querySelectorAll("button.row")];
+    const focusedIndex = previousRows.indexOf(document.activeElement);
+    const focusedId = previousRows[focusedIndex]?.dataset.escalationId;
     rail.replaceChildren(el("h2", "", "Needs you"));
     if (view.groups.length === 0) rail.append(el("p", "empty", "Nothing is waiting on you."));
     for (const group of view.groups) {
@@ -74,13 +74,13 @@
     }
     rail.scrollTop = scrolled;
     if (focusedId) {
-      for (const button of rail.querySelectorAll("button.row")) {
-        if (button.dataset.escalationId === focusedId) {
-          button.focus({ preventScroll: true });
-          break;
-        }
-      }
+      const rows = [...rail.querySelectorAll("button.row")];
+      const target = rows.find((button) => button.dataset.escalationId === focusedId) ??
+        rows[Math.min(focusedIndex, rows.length - 1)];
+      if (target) target.focus({ preventScroll: true });
+      else return true;
     }
+    return false;
   }
 
   function renderMain() {
@@ -97,7 +97,7 @@
       el(
         "p",
         "meta",
-        (item.gate === null ? "question" : item.gate) + " · " +
+        (item.gate ?? "No gate") + " · " +
           (item.requestId === null ? "no Request" : "Request " + item.requestId) +
           (item.project === null ? "" : " · " + item.project) + " · " + age(item.createdAt),
       ),
@@ -123,10 +123,16 @@
   }
 
   function render() {
+    const mainFocused = main.contains(document.activeElement);
     banner.style.display = view.running ? "none" : "block";
     renderTitle();
-    renderRail();
+    const focusMain = renderRail();
     renderMain();
+    if (focusMain || mainFocused) {
+      const target = main.firstElementChild;
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
   }
 
   let latestRefresh = 0;
@@ -162,5 +168,6 @@
   const stream = new EventSource("/events"); // one stream for this tab
   stream.addEventListener("changed", refreshSoon);
   stream.addEventListener("open", refresh); // the first load, and after a reconnect
+  stream.addEventListener("error", refreshSoon);
   render();
 })();
