@@ -10,7 +10,15 @@
   let problem = null;
   // What the user is doing to the selected Escalation: a refusal to show, a reason being typed,
   // a confirmation to offer. It survives live re-renders, and resets when another one is picked.
-  let act = { id: null, refusal: null, confirm: false, rejecting: false, reason: "", busy: false };
+  const blankAct = {
+    id: null,
+    refusal: null,
+    confirm: false,
+    rejecting: false,
+    reason: "",
+    busy: false,
+  };
+  let act = { ...blankAct };
 
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -55,17 +63,21 @@
         body: JSON.stringify(body),
       });
       const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
+      // The user may have picked another Escalation meanwhile: the answer is not theirs to see.
+      const stillHere = act.id === id;
       if (out.ok) {
-        act = { id, refusal: null, confirm: false, rejecting: false, reason: "", busy: false };
-      } else {
+        if (stillHere) act = { ...blankAct, id };
+      } else if (stillHere) {
         act.busy = false;
         act.refusal = out.error;
         act.confirm = out.code === "needs-confirm";
         if (res.status === 403) act.refusal = "This dashboard was restarted, open the new URL.";
       }
     } catch {
-      act.busy = false;
-      act.refusal = "The dashboard could not be reached.";
+      if (act.id === id) {
+        act.busy = false;
+        act.refusal = "The dashboard could not be reached.";
+      }
     }
     await refresh();
     render();
@@ -206,7 +218,7 @@
       main.append(el("p", "note", "Its Request ended, so there is nothing left to decide."));
     } else {
       if (act.id !== item.id) {
-        act = { ...act, id: item.id, refusal: null, confirm: false, rejecting: false, reason: "" };
+        act = { ...blankAct, id: item.id };
       }
       main.append(actions(item));
     }
