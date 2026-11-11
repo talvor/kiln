@@ -26,7 +26,7 @@ import {
 } from "./observe.ts";
 import { describeChecks, runDoctor } from "./doctor.ts";
 import { needsSetup, runSetup } from "./setup.ts";
-import { openBrowser, startDashboard } from "./dashboard.ts";
+import { type Dashboard, openBrowser, startDashboard } from "./dashboard.ts";
 
 const DAEMON_USAGE = "Usage: kiln daemon start|stop|restart|status [--json]";
 const LAUNCH_USAGE = "Usage: kiln launch <prompt> [--cwd <dir>] [--max-budget-usd <n>] [--json]";
@@ -298,7 +298,7 @@ async function main(args: string[]): Promise<number> {
       console.error(DASHBOARD_USAGE);
       return 2;
     }
-    let dashboard;
+    let dashboard: Dashboard;
     try {
       dashboard = startDashboard(paths, { port });
     } catch (err) {
@@ -310,7 +310,7 @@ async function main(args: string[]): Promise<number> {
     for (const signal of ["SIGINT", "SIGTERM"] as const) {
       Deno.addSignalListener(signal, () => void dashboard.stop());
     }
-    if (open) openBrowser(dashboard.url);
+    if (open) openBrowser(dashboard.openUrl);
     await dashboard.finished;
     return 0;
   }

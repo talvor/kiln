@@ -12,8 +12,14 @@ const COOKIE = "kiln_dashboard";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 
 export interface Dashboard {
-  /** The URL to open: it carries the token, which works once. */
+  /** The URL to print: it carries the token, which works once. */
   url: string;
+  /**
+   * The URL to hand to the browser-opening command. A command's arguments are visible to every
+   * process of the user, so this carries a one-time launch code, never the token. Using either
+   * the launch code or the token kills both.
+   */
+  openUrl: string;
   port: number;
   /** Stop serving and wait until the server has finished. */
   stop(): Promise<void>;
@@ -55,11 +61,18 @@ const refuse = (status: number, why: string) =>
 /** Start serving on 127.0.0.1; port 0 picks a free one. */
 export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): Dashboard {
   const token = randomSecret();
+  const launch = randomSecret();
   const session = randomSecret();
   let tokenSpent = false;
   let port = 0;
   const hosts = () => new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+
+  const redirectHome = (setCookie?: string) =>
+    new Response(null, {
+      status: 303,
+      headers: headers({ location: "/", ...(setCookie ? { "set-cookie": setCookie } : {}) }),
+    });
 
   async function handle(req: Request): Promise<Response> {
     if (!hosts().has(req.headers.get("host") ?? "")) return refuse(403, "Wrong Host.");
@@ -69,22 +82,21 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     const url = new URL(req.url);
 
     // The first load: the token buys the session cookie, once, and the page moves to a clean URL.
-    const offered = url.searchParams.get("token");
-    if (req.method === "GET" && url.pathname === "/" && offered !== null) {
-      if (tokenSpent || !same(offered, token)) {
+    const offered = req.method === "GET" && url.pathname === "/"
+      ? url.searchParams.get("token")
+      : null;
+    const launched = req.method === "GET" && url.pathname === `/launch/${launch}`;
+    if (offered !== null || launched) {
+      const mine = cookieOf(req, COOKIE);
+      if (mine !== undefined && same(mine, session)) return redirectHome(); // a reload
+      if (tokenSpent || (!launched && !same(offered!, token))) {
         return refuse(
           403,
           "This link has already been used or is wrong. Open the URL printed by `kiln dashboard`.",
         );
       }
       tokenSpent = true;
-      return new Response(null, {
-        status: 303,
-        headers: headers({
-          location: "/",
-          "set-cookie": `${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/`,
-        }),
-      });
+      return redirectHome(`${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/`);
     }
 
     const cookie = cookieOf(req, COOKIE);
@@ -113,7 +125,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       return json({ running: true, pid: s.pid, version: s.version, startedAt: s.startedAt });
     } catch (err) {
       if (err instanceof DaemonNotRunning) return json({ running: false });
-      return json({ running: false });
+      throw err; // a daemon that answers badly is not "not running"
     }
   }
 
@@ -124,6 +136,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   port = server.addr.port;
   return {
     url: `http://127.0.0.1:${port}/?token=${token}`,
+    openUrl: `http://127.0.0.1:${port}/launch/${launch}`,
     port,
     stop: () => server.shutdown(),
     finished: server.finished,

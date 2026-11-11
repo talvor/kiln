@@ -120,6 +120,9 @@ withWorld("a refused request never reaches the daemon", async (w) => {
   (async () => {
     for await (const conn of listener) {
       connections++;
+      await conn.read(new Uint8Array(4096));
+      const reply = { id: 1, ok: true, result: { pid: 1, version: "x", startedAt: "now" } };
+      await conn.write(new TextEncoder().encode(JSON.stringify(reply) + "\n"));
       conn.close();
     }
   })().catch(() => {});
@@ -210,3 +213,36 @@ withWorld("the token is in no argv, environment or file of the Kiln home", async
   }).output();
   assertEquals(new TextDecoder().decode(found.stdout), "");
 });
+
+withWorld("the browser is opened on a launch link that is not the token", async (w) => {
+  const d = await w.dashboard("--open");
+  const [opened] = await waitFor(() => w.openedUrls(), (urls) => urls.length > 0);
+  assert(!opened.includes(d.token), "the token is in the opener's argv");
+  assertStringIncludes(opened, `127.0.0.1:${d.port}`);
+  const path = new URL(opened).pathname;
+  const launched = await d.fetch(path);
+  assertEquals(launched.status, 303);
+  assertEquals(launched.headers.get("location"), "/");
+  const cookie = (launched.headers.get("set-cookie") ?? "").split(";")[0];
+  assertMatch(launched.headers.get("set-cookie") ?? "", /HttpOnly.*SameSite=Strict/i);
+  assertEquals((await d.fetch("/", { cookie })).status, 200);
+  // Using the launch link killed both it and the token, for anyone without the cookie.
+  for (const dead of [path, `/?token=${d.token}`]) {
+    const res = await d.fetch(dead);
+    assertEquals(res.status, 403, dead);
+    await res.body?.cancel();
+  }
+  // A reload of the original URL, with the cookie, just goes home.
+  const reload = await d.fetch(`/?token=${d.token}`, { cookie });
+  assertEquals(reload.status, 303);
+  assertEquals(reload.headers.get("set-cookie"), null);
+});
+
+async function waitFor<T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> {
+  for (let i = 0; i < 100; i++) {
+    const v = await read();
+    if (done(v)) return v;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("timed out");
+}

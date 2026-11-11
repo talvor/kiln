@@ -46,7 +46,9 @@ export interface DashboardProcess {
 }
 
 export interface World extends Home {
-  /** Start the real `kiln dashboard --no-open` against this world's daemon socket. */
+  /** What the browser-opening command was asked to open, in order. */
+  openedUrls(): Promise<string[]>;
+  /** Start the real `kiln dashboard --no-open` (pass `--open` to let it open the fake browser) against this world's daemon socket. */
   dashboard(...args: string[]): Promise<DashboardProcess>;
   /** Bare git repository standing in for the Project's remote (`origin`). */
   remote: {
@@ -125,6 +127,13 @@ export async function makeWorld(): Promise<World> {
     await Deno.chmod(file, 0o755);
   }
 
+  // The browser-opening commands (Linux and macOS) only write down what they were asked to open.
+  for (const name of ["xdg-open", "open"]) {
+    const file = join(bin, name);
+    await Deno.writeTextFile(file, `#!/bin/sh\necho "$@" >> "${join(fakeDir, "opened.txt")}"\n`);
+    await Deno.chmod(file, 0o755);
+  }
+
   const gitConfig = join(base.root, "gitconfig");
   await Deno.writeTextFile(gitConfig, "");
   const env: Record<string, string> = {
@@ -184,7 +193,14 @@ export async function makeWorld(): Promise<World> {
   const dashboards: { child: Deno.ChildProcess; done: boolean }[] = [];
   const dashboard = async (...args: string[]): Promise<DashboardProcess> => {
     const child = new Deno.Command(Deno.execPath(), {
-      args: ["run", "-A", MAIN, "dashboard", "--no-open", ...args],
+      args: [
+        "run",
+        "-A",
+        MAIN,
+        "dashboard",
+        ...(args.includes("--open") ? [] : ["--no-open"]),
+        ...args.filter((a) => a !== "--open"),
+      ],
       env,
       clearEnv: true,
       stdin: "null",
@@ -247,6 +263,14 @@ export async function makeWorld(): Promise<World> {
     ...base,
     env,
     dashboard,
+    openedUrls: async () => {
+      try {
+        return (await Deno.readTextFile(join(fakeDir, "opened.txt"))).split("\n").filter(Boolean);
+      } catch (err) {
+        if (err instanceof Deno.errors.NotFound) return [];
+        throw err;
+      }
+    },
     stopDashboards,
     kiln: (...args) => runKiln(env, args),
     kilnWithInput: (input, ...args) => runKiln(env, args, input),

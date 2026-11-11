@@ -45,7 +45,10 @@
       <p id="state">Loading…</p>
     </main>
     <script>
-    fetch("/api/status").then((r) => r.json()).then((s) => {
+    fetch("/api/status").then((r) => {
+      if (r.status === 403) throw new Error("restarted");
+      return r.json();
+    }).then((s) => {
       document.getElementById("state").textContent = s.running
         ? "Kiln " + s.version + " is running."
         : "Kiln is not running.";

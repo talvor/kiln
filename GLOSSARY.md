@@ -112,6 +112,10 @@ _Avoid_: plan, decomposition
 The worker that takes one ticket in a Request and either charts it (the route: the pieces of work in order) or resolves it (the answer). There is one Wayfinder session per Request. A ticket labelled `research` goes to the **Researcher** instead, who answers its question from primary sources.
 _Avoid_: scout, navigator
 
+**Source**:
+Who asked for a change to Kiln: the client behind a decision, halt, resume or cancel, sent as `via` (the command line sends `cli`, the Dashboard `dashboard`) and kept in the event the change makes. `kiln report` shows the Source of each decision.
+_Avoid_: origin, channel, actor
+
 **Halt**:
 The user's model-free stop of all work (`kiln halt`, or from the Dashboard): agents are stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
 _Avoid_: pause, freeze
@@ -147,7 +151,3 @@ _Avoid_: UI, web app, console, admin panel
 **Needs you**:
 The Dashboard's list of open Escalations, grouped by Project, oldest first. A condition that is not a decision (a Halt, the daily cap, a Stuck agent) is shown beside it, not in it.
 _Avoid_: Inbox (that is an agent's), to-do list
-
-**Source**:
-Where a decision, Halt, Resume or Cancel came from: the command line or the Dashboard. Recorded with it and shown in the Request's report.
-_Avoid_: origin, channel
