@@ -123,7 +123,7 @@ withWorld("Recently decided uses decision order when timestamps tie", async (w) 
         } finally {
           try {
             conn.close();
-          } catch {}
+          } catch { /* the peer may already have closed the connection */ }
         }
       })().catch(() => {});
     }
