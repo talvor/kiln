@@ -122,7 +122,10 @@ withWorld("health.report shows the daily cap once it holds", async (w) => {
     concurrency: { perProject: 5 },
     budgets: { dailyUsd: 1 },
   }, [{ result: "ok", costUsd: 1.2 }]);
-  const capped = await waitFor(() => health(w), (h) => h.dailyCap.reached);
+  const capped = await waitFor(
+    () => health(w),
+    (h) => h.dailyCap.reached && h.dailyCap.since !== null,
+  );
   assertEquals([capped.dailyCap.capUsd, capped.dailyCap.todayUsd], [1, 1.2]);
   assert(capped.dailyCap.since !== null);
 });
