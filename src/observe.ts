@@ -76,6 +76,44 @@ function requestOf(store: Store, e: EventRecord, scoped: ReturnType<typeof scope
   return false;
 }
 
+/**
+ * The Request an event is about, or null when it is about none (the daemon, a Project, Kiln
+ * itself). Follows the same links as `kiln watch` but one event at a time.
+ */
+export function requestIdOfEvent(store: Store, e: EventRecord): number | null {
+  const d = e.data;
+  const num = (v: unknown) => typeof v === "number" ? v : null;
+  const attempt = (find: () => number | null | undefined): number | null => {
+    try {
+      return find() ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const viaMessage = (id: number | null): number | null => {
+    for (let hops = 0; id !== null && hops < 20; hops++) {
+      const assignment = attempt(() => store.getAssignment(id!).requestId);
+      if (assignment !== null) return assignment;
+      const m = store.getMessage(id);
+      if (!m) return null;
+      id = m.assignmentId ?? m.inReplyTo ?? m.relayOf;
+    }
+    return null;
+  };
+  const request = num(d.request);
+  if (request !== null) return request;
+  if (e.kind.startsWith("request.")) return num(d.id);
+  if (e.kind.startsWith("assignment.")) {
+    return attempt(() => store.getAssignment(d.id as number).requestId);
+  }
+  if (e.kind === "message.sent" || e.kind === "message.dead_lettered") {
+    return viaMessage(num(d.id));
+  }
+  const escalation = e.kind.startsWith("escalation.") ? num(d.id) : num(d.escalation);
+  if (escalation !== null) return attempt(() => store.getEscalation(escalation).requestId);
+  return null;
+}
+
 const END_KINDS = ["request.done", "request.cancelled", "step.failed"];
 
 /** The events of a Request after `after`, in words, and whether it has ended. */

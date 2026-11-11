@@ -773,6 +773,8 @@ export interface Store {
   /** Write a consistent copy of the store into the backups directory; returns its path. */
   backup(label?: string): Promise<string>;
   appendEvent(kind: string, data?: Record<string, unknown>): void;
+  /** Call `listener` after every event appended from now on; returns the way to stop. */
+  onEvent(listener: () => void): () => void;
   /** Record a Project; throws DuplicateProjectError if the name is taken. */
   addProject(project: NewProject): ProjectRecord;
   /** Registered Projects; removed ones only when asked for. */
@@ -1027,6 +1029,7 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       }
     }
 
+    const eventListeners = new Set<() => void>();
     const insertEvent = db.prepare("insert into events (ts, kind, data) values (?, ?, ?)");
     const insertProject = db.prepare(
       `insert into projects (name, source, remote_url, clone_path, default_branch, head_commit,
@@ -1850,6 +1853,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       backup,
       appendEvent: (kind, data = {}) => {
         insertEvent.run(new Date().toISOString(), kind, JSON.stringify(data));
+        for (const listener of [...eventListeners]) listener();
+      },
+      onEvent: (listener) => {
+        eventListeners.add(listener);
+        return () => void eventListeners.delete(listener);
       },
       startChat: () => {
         const now = new Date().toISOString();
