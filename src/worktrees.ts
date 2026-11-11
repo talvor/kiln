@@ -38,14 +38,14 @@ export interface MergedAssignment {
 /**
  * The longest `TMPDIR` a worker may have. Claude's command sandbox listens on sockets named
  * `$TMPDIR/claude-socks-<16 hex>.sock` (35 characters); a unix socket path holds at most 107
- * usable characters, and a longer one makes the sandbox fail to start.
+ * usable bytes, and a longer one makes the sandbox fail to start.
  */
 export const MAX_TMPDIR_LENGTH = 72;
 
 /**
  * The private, short temporary directory of a Worktree: `$XDG_RUNTIME_DIR/kiln/<key>/tmp`, or
  * `/tmp/kiln-<uid>/<key>/tmp` where there is no usable runtime directory (macOS). It is not
- * beside the Worktree, whose path can be long. The key is the Worktree's id plus a short hash of
+ * beside the Worktree, whose path can be long. The key is the Worktree's id plus a hash of
  * its path, so two Kiln homes of one user never share a directory.
  */
 export function tmpdirOf(
@@ -53,7 +53,7 @@ export function tmpdirOf(
   runtimeDir: string | null = usableRuntimeDir(),
   uid: number | null = Deno.uid(),
 ): string {
-  const key = `${wt.id}-${createHash("sha256").update(wt.path).digest("hex").slice(0, 8)}`;
+  const key = `${wt.id}-${createHash("sha256").update(wt.path).digest("hex").slice(0, 16)}`;
   const root = runtimeDir ? join(runtimeDir, "kiln") : join("/tmp", `kiln-${uid ?? "user"}`);
   return join(root, key, "tmp");
 }
@@ -62,23 +62,40 @@ function usableRuntimeDir(): string | null {
   const dir = Deno.env.get("XDG_RUNTIME_DIR");
   if (!dir || !isAbsolute(dir)) return null;
   try {
-    return Deno.statSync(dir).isDirectory ? dir : null;
+    const uid = Deno.uid();
+    for (const path of [dir, join(dir, "kiln")]) {
+      let info: Deno.FileInfo;
+      try {
+        info = Deno.statSync(path);
+      } catch (error) {
+        if (path !== dir && error instanceof Deno.errors.NotFound) break;
+        return null;
+      }
+      if (!info.isDirectory || (uid !== null && info.uid !== uid) ||
+        (info.mode! & 0o300) !== 0o300) return null;
+    }
+    return dir;
   } catch {
     return null;
   }
 }
 
-/** The directory holding a Worktree's `TMPDIR`; removed with it. */
-function tmpHome(wt: WorktreeRecord): string {
-  return dirname(infoOf(wt).env.TMPDIR);
+/** The possible directories holding a Worktree's `TMPDIR`; removed with it. */
+function tmpHomes(wt: WorktreeRecord): string[] {
+  const runtime = usableRuntimeDir();
+  return [...new Set([
+    ...(runtime ? [dirname(tmpdirOf(wt, runtime))] : []),
+    dirname(tmpdirOf(wt, null)),
+  ])];
 }
 
 /** Refuse a `TMPDIR` the worker sandbox could not use, saying why. */
 function checkTmpdirLength(tmpdir: string): void {
-  if (tmpdir.length > MAX_TMPDIR_LENGTH) {
+  const bytes = new TextEncoder().encode(tmpdir).length;
+  if (bytes > MAX_TMPDIR_LENGTH) {
     throw new WorktreeBlocked(
-      `Cannot use ${tmpdir} as a worktree's TMPDIR: it is ${tmpdir.length} characters, over the ` +
-        `limit of ${MAX_TMPDIR_LENGTH} (the worker sandbox's sockets must fit in a 107 character ` +
+      `Cannot use ${tmpdir} as a worktree's TMPDIR: it is ${bytes} bytes, over the ` +
+        `limit of ${MAX_TMPDIR_LENGTH} (the worker sandbox's sockets must fit in a 107 byte ` +
         `unix socket path). Point XDG_RUNTIME_DIR at a shorter directory.`,
     );
   }
@@ -111,7 +128,7 @@ export async function makeSupport(wt: WorktreeRecord): Promise<void> {
 
 async function removeSupport(wt: WorktreeRecord): Promise<void> {
   await removeIfPresent(`${wt.path}.kiln`);
-  await removeIfPresent(tmpHome(wt));
+  for (const home of tmpHomes(wt)) await removeIfPresent(home);
 }
 
 export function infoOf(wt: WorktreeRecord): WorktreeInfo {
@@ -209,7 +226,9 @@ async function createWorktree(
         if (deleted.code !== 0) throw new Error(firstLine(deleted.stderr));
       }
       if (supportCreated) await removeIfPresent(`${path}.kiln`);
-      if (tmpTouched) await removeIfPresent(tmpHome(wt));
+      if (tmpTouched) {
+        for (const home of tmpHomes(wt)) await removeIfPresent(home);
+      }
       store.releaseWorktree(wt.id);
     } catch (failure) {
       throw new WorktreeCleanupFailed(

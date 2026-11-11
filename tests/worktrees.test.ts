@@ -5,8 +5,10 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from "@st
 import { basename, dirname, join, relative } from "@std/path";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
-import { MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
+import { cleanUpRequest, MAX_TMPDIR_LENGTH, tmpdirOf } from "../src/worktrees.ts";
 import { sandboxFor } from "../src/daemon.ts";
+import { createLogger } from "../src/log.ts";
+import { openStore } from "../src/store.ts";
 import type { WorktreeRecord } from "../src/store.ts";
 import { asAgent, assignment, openTeam } from "./router_helpers.ts";
 
@@ -157,7 +159,7 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
       assert(relative(w.Worktree, dir).startsWith(".."), `${dir} is inside the worktree`);
     }
     // The temp directory is short, private, and under the runtime directory.
-    assert(w.TMPDIR.length <= MAX_TMPDIR_LENGTH, `${w.TMPDIR} is too long`);
+    assert(new TextEncoder().encode(w.TMPDIR).length <= MAX_TMPDIR_LENGTH, `${w.TMPDIR} is too long`);
     assert(w.TMPDIR.startsWith(join(world.root, "xdg", "kiln") + "/"), w.TMPDIR);
     for (const dir of [w.TMPDIR, join(w.TMPDIR, ".."), join(w.TMPDIR, "..", "..")]) {
       assertEquals((await Deno.stat(dir)).mode! & 0o777, 0o700, `${dir} is not private`);
@@ -196,10 +198,13 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
 
   // Finishing an Assignment gives its ports back for the next one.
   await work(world, a.Worktree, { "a.txt": "a\n" });
+  const fallback = tmpdirOf(record(Number(key.split("-")[0]), a.Worktree), null);
+  await Deno.mkdir(fallback, { recursive: true });
   assertEquals((await world.kiln("assignment", "merge", "1")).code, 0);
   // ... and removes its support and temp directories.
   assertEquals(await exists(`${a.Worktree}.kiln`), false);
   assertEquals(await exists(a.TMPDIR), false);
+  assertEquals(await exists(fallback), false);
   assertEquals(await exists(b.TMPDIR), true);
   const c = await startAssignment(world, 1);
   assertEquals(c.KILN_PORT_BASE, a.KILN_PORT_BASE);
@@ -222,12 +227,16 @@ Deno.test("TMPDIR stays short whatever the data dir, project name or ids", () =>
     for (const path of [`${long}/request-${id}`, `${long}/request-${id}-assignment-${id}${id}`]) {
       for (const runtime of ["/run/user/1000", null]) {
         const tmp = tmpdirOf(record(id, path), runtime, 1000);
-        assert(tmp.length <= MAX_TMPDIR_LENGTH, `${tmp} is ${tmp.length} characters`);
+        assert(new TextEncoder().encode(tmp).length <= MAX_TMPDIR_LENGTH, `${tmp} is too long`);
         seen.add(tmp);
       }
     }
   }
   assertEquals(seen.size, 12, "every Worktree has its own TMPDIR");
+  assertNotEquals(
+    tmpdirOf(record(1, "/tmp/kiln-home-5746/worktrees/project/request-1"), null, 1000),
+    tmpdirOf(record(1, "/tmp/kiln-home-174803/worktrees/project/request-1"), null, 1000),
+  );
 });
 
 Deno.test("TMPDIR is under XDG_RUNTIME_DIR, or /tmp/kiln-<uid> without it", () => {
@@ -253,6 +262,67 @@ withWorld(
     assertEquals(await exists(join(runtime, "kiln")), false);
   },
 );
+
+withWorld("an unwritable runtime directory or kiln child uses the fallback", async (world) => {
+  await register(world);
+  await world.kiln("daemon", "stop");
+  const runtime = join(world.root, "xdg");
+  await Deno.chmod(runtime, 0o500);
+  const first = await runKiln(world.env, ["request", "start", "remote"]);
+  await Deno.chmod(runtime, 0o700);
+  assertEquals(first.code, 0, first.stderr);
+  const firstTmp = fields(first.stdout).TMPDIR;
+  assert(firstTmp.startsWith(`/tmp/kiln-${Deno.uid()}/`), firstTmp);
+  await world.kiln("daemon", "stop");
+
+  const child = join(runtime, "kiln");
+  await Deno.mkdir(child, { mode: 0o500 });
+  const second = await runKiln(world.env, ["request", "start", "remote"]);
+  await Deno.chmod(child, 0o700);
+  assertEquals(second.code, 0, second.stderr);
+  const secondTmp = fields(second.stdout).TMPDIR;
+  assert(secondTmp.startsWith(`/tmp/kiln-${Deno.uid()}/`), secondTmp);
+  for (const tmp of [firstTmp, secondTmp]) await Deno.remove(dirname(tmp), { recursive: true });
+});
+
+withWorld("a multibyte runtime path over the byte limit fails clearly", async (world) => {
+  await register(world);
+  await world.kiln("daemon", "stop");
+  const runtime = join(world.root, "é".repeat(20));
+  await Deno.mkdir(runtime);
+  const r = await runKiln({ ...world.env, XDG_RUNTIME_DIR: runtime }, [
+    "request",
+    "start",
+    "remote",
+  ]);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stderr, `limit of ${MAX_TMPDIR_LENGTH}`);
+  assertEquals(await exists(join(runtime, "kiln")), false);
+});
+
+withWorld("request cleanup removes runtime and fallback TMPDIRs", async (world) => {
+  await register(world);
+  const request = await startRequest(world);
+  const fallback = tmpdirOf(record(1, request.Worktree), null);
+  await Deno.mkdir(fallback, { recursive: true });
+  await world.kiln("daemon", "stop");
+  const store = await openStore({
+    file: join(world.dirs.data, "kiln.db"),
+    backupsDir: join(world.dirs.data, "backups"),
+    log: createLogger({ file: join(world.root, "cleanup.log") }),
+  });
+  const originalRuntime = Deno.env.get("XDG_RUNTIME_DIR");
+  Deno.env.set("XDG_RUNTIME_DIR", join(world.root, "xdg"));
+  try {
+    assertEquals(await cleanUpRequest(store, store.getProject("remote"), 1), []);
+  } finally {
+    if (originalRuntime === undefined) Deno.env.delete("XDG_RUNTIME_DIR");
+    else Deno.env.set("XDG_RUNTIME_DIR", originalRuntime);
+    store.close();
+  }
+  assertEquals(await exists(request.TMPDIR), false);
+  assertEquals(await exists(fallback), false);
+});
 
 withWorld("an Assignment uses its router Message ID across start and merge", async (world) => {
   await register(world);
@@ -294,6 +364,8 @@ withWorld("a locked Assignment keeps its ports until cleanup succeeds", async (w
 
 withWorld("a failed worktree add leaves its branch and path reusable", async (world) => {
   await register(world);
+  const fallback = tmpdirOf(record(1, join(world.dirs.data, "worktrees", "remote", "request-1")), null);
+  await Deno.mkdir(fallback, { recursive: true });
   const realGit = (await world.exec(world.root, "sh", "-c", "command -v git")).stdout.trim();
   const fakeGit = join(world.root, "fake", "bin", "git");
   await Deno.writeTextFile(
@@ -305,6 +377,7 @@ withWorld("a failed worktree add leaves its branch and path reusable", async (wo
   assertEquals(failed.code, 1);
   // The rollback removed the temp directory too.
   assertEquals([...Deno.readDirSync(join(world.root, "xdg", "kiln"))].length, 0);
+  assertEquals(await exists(fallback), false);
   await Deno.remove(fakeGit);
   const retried = await startRequest(world);
   assertEquals(retried.Branch, "kiln/request-1");

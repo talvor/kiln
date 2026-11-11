@@ -29,7 +29,7 @@ A code repository registered with Kiln, which Kiln can do work on.
 _Avoid_: repo, codebase, target
 
 **Support directories**:
-The private directories a Worktree's work runs with, kept outside the Worktree so they never show in its git status: caches beside it (`<worktree>.kiln/`) and a short `TMPDIR` under the runtime directory (at most 72 characters, so the worker sandbox's sockets fit a unix socket path). Made with the Worktree and removed with it.
+The private directories a Worktree's work runs with, kept outside the Worktree so they never show in its git status: caches beside it (`<worktree>.kiln/`) and a short `TMPDIR` under the runtime directory or `/tmp` fallback (at most 72 bytes, so the worker sandbox's sockets fit a unix socket path). Made with the Worktree and removed with it.
 _Avoid_: scratch dir, temp folder
 
 **Request**:

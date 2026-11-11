@@ -29,17 +29,17 @@ worktree.
 | Variable | Meaning |
 | --- | --- |
 | `KILN_PORT_BASE`, `KILN_PORT_COUNT` | A block of ports (from 20000) reserved for this worktree |
-| `TMPDIR` | Private temporary directory, at most 72 characters (see below) |
+| `TMPDIR` | Private temporary directory, at most 72 bytes (see below) |
 | `XDG_CACHE_HOME`, `npm_config_cache` | Private caches |
 
 The cache directories sit beside the worktree (`<worktree>.kiln/`), so they never show up in its
 git status.
 
 `TMPDIR` is elsewhere, because it must be short: Claude's command sandbox puts two sockets in it
-(35 characters of file name) and a unix socket path holds at most 107 characters, so a worker whose
-`TMPDIR` is longer than 72 characters cannot run any Bash command. It is
+(35 bytes of file name) and a unix socket path holds at most 107 bytes, so a worker whose
+`TMPDIR` is longer than 72 bytes cannot run any Bash command. It is
 `$XDG_RUNTIME_DIR/kiln/<worktree id>-<hash>/tmp`, or `/tmp/kiln-<uid>/<worktree id>-<hash>/tmp` where
-`XDG_RUNTIME_DIR` is unset (macOS). Kiln makes it, and its parents, private (mode 0700), when it
+`XDG_RUNTIME_DIR` is unset or unusable (macOS). Kiln makes it, and its parents, private (mode 0700), when it
 creates a worktree, recreates it after a fault, and before each launch there (the runtime directory
 is cleared on logout and reboot). It is removed with the worktree's other support directories. A
 `TMPDIR` that would be over the limit, for instance under a very long `XDG_RUNTIME_DIR`, fails the
