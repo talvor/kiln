@@ -979,7 +979,8 @@ Deno.test("the Transcript tab loads Messages, appends live, flags and truncates 
     main.children.find((child) => child.className === "tabs")!.children[1],
   );
 
-  main.querySelectorAll("button").find((button) => button.textContent === "Cancel Request")!.focus();
+  main.querySelectorAll("button").find((button) => button.textContent === "Cancel Request")!
+    .focus();
   const fourth = message(4, { body: { text: long } });
   stream!.emit("changed");
   await answer(
@@ -1045,10 +1046,15 @@ Deno.test("the Transcript tab loads Messages, appends live, flags and truncates 
   await answer(
     (p) => p.url === "/api/requests/3/transcript",
     Response.json({
-      messages: [message(1), message(2), message(3), message(4, {
-        kind: "answer",
-        body: { text: "arrived during Overview" },
-      })],
+      messages: [
+        message(1),
+        message(2),
+        message(3),
+        message(4, {
+          kind: "answer",
+          body: { text: "arrived during Overview" },
+        }),
+      ],
     }),
   );
   assertEquals(items().length, 4);
