@@ -121,18 +121,14 @@ export function createRouter(opts: RouterOptions) {
       !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
     );
 
-  /** For a refused reply: the ids that would have been right, so the sender need not guess. */
-  function openHint(kind: "result" | "answer", from: string, to: string): string {
-    const open = kind === "result"
-      ? openAssignments(from).filter((a) => a.from === to && a.deadLetteredAt === null)
-      : store.listMessages({ from: to, to: from, kind: "question" }).filter((q) =>
-        !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
-      );
-    const noun = kind === "result" ? "assignment" : "question";
-    if (!open.length) return `; there is no open ${noun} from ${to}`;
+  function openHint(from: string, to: string): string {
+    const open = openAssignments(from).filter((a) =>
+      a.from === to && a.deadLetteredAt === null
+    );
+    if (!open.length) return `; there is no open assignment from ${to}`;
     return open.length === 1
-      ? `; the open ${noun} ${to} sent you is ${open[0].id}: reply to ${noun} ${open[0].id}`
-      : `; the open ${noun}s ${to} sent you are ${open.map((m) => m.id).join(", ")}`;
+      ? `; the open assignment ${to} sent you is ${open[0].id}: reply to assignment ${open[0].id}`
+      : `; the open assignments ${to} sent you are ${open.map((m) => m.id).join(", ")}`;
   }
 
   const append = (m: Parameters<Store["appendMessage"]>[0]): MessageRecord => {
@@ -140,7 +136,9 @@ export function createRouter(opts: RouterOptions) {
       m.kind === "result" && m.inReplyTo !== undefined && m.inReplyTo !== null &&
       hasResult(m.inReplyTo)
     ) {
-      throw new RouterError(`assignment ${m.inReplyTo} already has a result`);
+      throw new RouterError(
+        `assignment ${m.inReplyTo} already has a result` + openHint(m.from, m.to),
+      );
     }
     const sent = store.appendMessage(m);
     store.appendEvent("message.sent", {
@@ -218,7 +216,7 @@ export function createRouter(opts: RouterOptions) {
           `a ${kind} must reply to ${
             target === "assignment" ? "an" : "a"
           } ${target} that ${to} sent you (set inReplyTo to its id)` +
-            openHint(kind, from, to),
+            (kind === "result" ? openHint(from, to) : ""),
         );
       }
       if (kind === "answer" && store.listMessages({ kind, inReplyTo: original.id }).length) {

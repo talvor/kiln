@@ -415,6 +415,24 @@ withWorld("a result to the wrong assignment names the open one", async (world) =
     await agent.send("overseer", "result", { status: "done", summary: "x" }, fromOverseer.id);
   });
 
+  const next = await asAgent(
+    world,
+    "overseer",
+    (agent) => agent.send("dev-lead", "assignment", assignment),
+  );
+  await asAgent(world, "dev-lead", async (agent) => {
+    const completed = await agent.call("send", {
+      to: "overseer",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+      inReplyTo: fromOverseer.id,
+    });
+    assert(completed.isError);
+    assertStringIncludes(completed.text, "already has a result");
+    assertStringIncludes(completed.text, `assignment ${next.id}`);
+    await agent.send("overseer", "result", { status: "done", summary: "x" }, next.id);
+  });
+
   // With nothing open, the refusal says so instead of naming an id.
   await asAgent(world, "dev-lead", async (agent) => {
     const none = await agent.call("send", {

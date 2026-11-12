@@ -15,13 +15,6 @@ import type { ChatRecord, MessageRecord, SessionRecord, Store } from "./store.ts
 export const ROLLOVER_TOKENS = 150_000;
 /** `kiln chat` is attached while it has shown a sign of life this recently. */
 const ATTACHED_MS = 15_000;
-/**
- * A turn that began this long ago and never ended (an interrupted one fires no Stop hook) no
- * longer counts as the Overseer being mid-turn.
- */
-const TURN_STALE_MS = 5 * 60_000;
-/** Events that wake an idle chat, besides mail: the user's request finished. */
-const WAKE_EVENTS = ["request.done"];
 /** How much of the conversation seeds a fresh session. */
 const HISTORY_TURNS = 20;
 const TURN_CHARS = 600;
@@ -241,25 +234,22 @@ export function createChat(opts: ChatOptions) {
     return lines.join("\n");
   }
 
-  // What the Overseer has been told of, so that a wake-up happens once per piece of news. Held in
-  // memory: a restarted daemon starts from what is there, rather than waking for old news.
-  let told: { message: number; event: number } | undefined;
+  let checked: { chatId: number; through: number } | undefined;
   // Set when a chat was replaced for news: the next digest tells everything since then.
   let wokenFrom: number | undefined;
-  // When the Overseer's current turn began; null while it is idle.
-  let turnSince: number | null = null;
-  const newestMail = () => unread().reduce((id, m) => Math.max(id, m.id), 0);
-  /** The Overseer has been shown everything that is in its inbox now. */
-  const markMailTold = () => {
-    if (told) told.message = Math.max(told.message, newestMail());
-  };
-  const midTurn = () => turnSince !== null && Date.now() - turnSince < TURN_STALE_MS;
+  let midTurn = false;
   /** Something has happened that the Overseer has not been told, and it is not mid-turn. */
   function newsWaiting(chat: ChatRecord): boolean {
-    if (midTurn()) return false;
-    told ??= { message: newestMail(), event: chat.eventsThrough };
-    return unread().some((m) => m.id > told!.message) ||
-      store.listEvents(told.event, WAKE_EVENTS).length > 0;
+    if (midTurn) return false;
+    if (checked?.chatId !== chat.id) checked = { chatId: chat.id, through: chat.eventsThrough };
+    const events = store.listEvents(checked.through);
+    const mail = new Set(unread().map((m) => m.id));
+    const wake = events.some((e) =>
+      e.kind === "request.done" ||
+      (e.kind === "message.sent" && e.data.to === overseer()?.address && mail.has(e.data.id as number))
+    );
+    if (!wake) checked.through = events.at(-1)?.id ?? checked.through;
+    return wake;
   }
 
   const attached = (chat: ChatRecord | undefined): boolean =>
@@ -294,9 +284,8 @@ export function createChat(opts: ChatOptions) {
       opts.told?.();
       const chat = store.startChat();
       store.appendEvent("chat.started", { id: chat.id });
-      // The digest tells this session everything up to now.
-      told = { message: newestMail(), event: chat.eventsThrough };
-      turnSince = news.length ? Date.now() : null;
+      checked = { chatId: chat.id, through: chat.eventsThrough };
+      midTurn = news.length > 0;
       return {
         chatId: chat.id,
         system: `${role.prompt}\n\n${RULES}\n\n${text}`,
@@ -321,7 +310,7 @@ export function createChat(opts: ChatOptions) {
       if (chat.rolloverRequestedAt !== null) return { rollover: true, wake: false };
       const wake = chat.endedAt === null && newsWaiting(chat);
       if (wake) {
-        wokenFrom = told?.event;
+        wokenFrom = chat.eventsThrough;
         store.appendEvent("chat.woken", { id: chatId });
       }
       return { rollover: false, wake };
@@ -340,8 +329,7 @@ export function createChat(opts: ChatOptions) {
       const reply = command(text);
       if (reply !== undefined) return { reply };
       store.addChatTurn(chatId, "user", text);
-      turnSince = Date.now();
-      markMailTold();
+      midTurn = true;
       const notes: string[] = [];
       const mail = unread().length;
       if (mail) {
@@ -366,13 +354,12 @@ export function createChat(opts: ChatOptions) {
         ? router.checkStop(seat.address, turn.alreadyBlocked === true)
         : { block: false };
       if (verdict.block) {
-        markMailTold();
         return {
           block: true,
           reason: `${verdict.reason} Tell the user only what is theirs to act on, once.`,
         };
       }
-      turnSince = null;
+      midTurn = false;
       if ((turn.tokens ?? 0) >= (turn.limit ?? ROLLOVER_TOKENS)) {
         store.requestRollover(chatId);
         store.appendEvent("chat.rollover_requested", { id: chatId, tokens: turn.tokens });

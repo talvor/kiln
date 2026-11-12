@@ -441,9 +441,8 @@ withWorld("the Overseer's mail waits for the chat instead of being nudged", asyn
   assertStringIncludes(status.stdout, "1 unread");
   const prompt = await hook(world, "prompt", { prompt: "any news?" });
   assertStringIncludes(prompt.hookSpecificOutput.additionalContext, "read_inbox");
-  // The Overseer may not end its turn with the mail unread; once told, it may.
+  // The Overseer may not end its turn with the mail unread.
   assertStringIncludes((await hook(world, "stop", {})).reason, "unread message");
-  assertEquals(await hook(world, "stop", { stop_hook_active: true }), null);
 
   // Once the user has left, the mail is delivered the usual way.
   await chatting.output();
@@ -487,6 +486,28 @@ withWorld("mail for an idle chat is surfaced without a user prompt", async (worl
   assertEquals(calls.length, 2);
 });
 
+withWorld("mail sent during a daemon restart wakes the attached chat", async (world) => {
+  const chatting = await idleChat(world);
+  assertEquals((await world.kiln("daemon", "stop")).code, 0);
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  try {
+    const sent = db.prepare(
+      "insert into messages (sender, recipient, kind, body, sent_at) values (?, ?, ?, ?, ?)",
+    ).run("dev-lead", "overseer", "question", '{"question":"Which id?"}', new Date().toISOString());
+    const id = Number(sent.lastInsertRowid);
+    db.prepare("insert into message_status (message_id) values (?)").run(id);
+    db.prepare("insert into events (ts, kind, data) values (?, ?, ?)")
+      .run(new Date().toISOString(), "message.sent", JSON.stringify({ id, to: "overseer" }));
+  } finally {
+    db.close();
+  }
+  assertEquals((await world.kiln("daemon", "start")).code, 0);
+
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
+});
+
 withWorld("a finished request is announced to an idle chat", async (world) => {
   const chatting = await idleChat(world);
   const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
@@ -517,11 +538,11 @@ withWorld("mail waits for the end of the turn when the Overseer is mid-turn", as
   await new Promise((resolve) => setTimeout(resolve, 4_000));
   assertEquals((await world.launcher.calls()).length, 1);
 
-  // The turn ends; the stop hook has the Overseer read its mail before it does.
+  const prompt = await hook(world, "prompt", { prompt: "any news?" });
+  assertStringIncludes(prompt.hookSpecificOutput.additionalContext, "read_inbox");
   assertStringIncludes((await hook(world, "stop", {})).reason, "unread message");
   assertEquals(await hook(world, "stop", { stop_hook_active: true }), null);
-  // The mail was surfaced by the hook: the chat is not replaced as well.
-  await new Promise((resolve) => setTimeout(resolve, 4_000));
-  assertEquals((await world.launcher.calls()).length, 1);
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
   await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
 });
