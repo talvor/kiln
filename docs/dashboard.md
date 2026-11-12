@@ -34,12 +34,12 @@ Under Needs you, the **Requests** rail lists the Requests that are running or wa
 that failed in the last 24 hours. An unfinished one with an open Escalation is marked **waiting on
 you**. **Show finished** adds the Requests that finished or failed longer ago. A failure without an
 end event uses its last recorded event for the 24-hour check; without any timestamp it appears only
-under **Show finished**. Selecting one opens its **Overview** at `/requests/<id>`: the step timeline
-with each step's assignments, the Budget bar (cost against the Request's Budget) and a live event
-feed that updates as events arrive. A running or waiting Request has **Cancel**: it asks "Cancel
-Request N?" first; only the confirmation cancels. As with **Approve anyway**, a double click or a
-held key cannot confirm. The Request then shows as failed, and the cancel records Source
-`dashboard`.
+under **Show finished**. Selecting one opens its Request page at `/requests/<id>`. The **Overview**
+shows the step timeline with each step's assignments, the Budget bar (cost against the Request's
+Budget) and a live event feed that updates as events arrive. A running or waiting Request has
+**Cancel**: it asks "Cancel Request N?" first; only the confirmation cancels. As with **Approve
+anyway**, a double click or a held key cannot confirm. The Request then shows as failed, and the
+cancel records Source `dashboard`.
 
 The **Transcript** tab (`/requests/<id>/transcript`) loads the Request's Messages, oldest first, and
 appends new ones live while the Request is active. Each shows sender → recipient and kind, with
@@ -53,8 +53,8 @@ Overview; a finished or failed one opens on Report. The Overview tab has its own
 (`/requests/<id>/overview`) once the Request has finished.
 
 Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>`,
-`/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back and forward work, and
-moving between them swaps the main area without reloading the page.
+`/requests/<id>/overview`, `/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back
+and forward work, and moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
 re-fetches its snapshot, debounced. It also re-fetches every 30 seconds so the strip picks up a new
