@@ -273,8 +273,9 @@ withWorld("a finished Request shows what it cost", async (w) => {
   const text = (await w.kiln("request", "status", "1")).stdout;
   assertStringIncludes(text, `Cost: $${done.costUsd.toFixed(2)}`);
   const cost = JSON.parse((await w.kiln("cost", "--json")).stdout);
-  assertEquals(cost.requests[0].usd, done.costUsd);
-  assertEquals(cost.todayUsd, done.costUsd);
+  const reportedUsd = Math.round(done.costUsd * 1e6) / 1e6;
+  assertEquals(cost.requests[0].usd, reportedUsd);
+  assertEquals(cost.todayUsd, reportedUsd);
 });
 
 withWorld("the daily digest is sent once a day, and only when there is news", async (w) => {
