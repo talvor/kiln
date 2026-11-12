@@ -557,9 +557,12 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   await show(quiet);
   assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
   assertEquals(strip.querySelector("a")?.href, "/cost");
+  assertEquals(page.activeElement, null);
+  strip.querySelector("a")!.focus();
 
   const previousRequests = pending.length;
   ageTimer();
+  assertEquals(page.activeElement, strip.querySelector("a"));
   refreshTimer();
   assertEquals(pending.length, previousRequests + 1);
   assertEquals(pending.at(-1)!.url, "/api/needs-you");
@@ -569,6 +572,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   }));
   await tick();
   assertEquals(strip.textContent, "$0.00 of $6.00 todayHalt");
+  assertEquals(page.activeElement, strip.querySelector("a"));
 
   await show({
     ...quiet,
@@ -580,8 +584,12 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     strip.textContent,
     "Halted just nowDaily cap reached2 Stuck agents$1.50 of $5.00 todayResume",
   );
+  assertEquals(page.activeElement, strip.querySelector("a"));
 
   await show({ ...quiet, capUsd: null });
+  assertEquals(page.activeElement, strip.querySelector("a"));
+  strip.querySelector("a")!.click();
+  assertEquals(location.pathname, "/cost");
   const halt = strip.querySelector("button")!;
   assertEquals(strip.textContent, "$1.50 todayHalt");
   halt.click(2); // a held key or a double click

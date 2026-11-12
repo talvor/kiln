@@ -272,8 +272,11 @@
   }
 
   function renderStrip() {
-    const hadFocus = stripBox.contains(document.activeElement);
-    const focusedLabel = hadFocus ? document.activeElement.textContent : null;
+    const focusedLink = document.activeElement !== null &&
+      stripBox.querySelector("a") === document.activeElement;
+    const focusedLabel = !focusedLink && stripBox.contains(document.activeElement)
+      ? document.activeElement.textContent
+      : null;
     stripBox.replaceChildren();
     const strip = view.strip;
     if (!view.running || !strip) return;
@@ -315,7 +318,8 @@
     if (strip.haltedSince !== null || strip.stuck > 0) {
       stripBox.append(button("Resume", "/api/resume"));
     }
-    if (focusedLabel) {
+    if (focusedLink) cost.focus({ preventScroll: true });
+    else if (focusedLabel) {
       const same = [...stripBox.querySelectorAll("button")].find((b) =>
         b.textContent === focusedLabel
       );
