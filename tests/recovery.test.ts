@@ -77,11 +77,15 @@ async function oneAssignment(world: World, runs: LauncherRun[], limits: unknown 
   assertEquals(started.code, 0, started.stderr);
   await asAgent(world, "engineering-leader", (a) => a.inbox());
   await world.launcher.script(runs);
-  const job = await asAgent(world, "engineering-leader", (a) =>
-    a.send("diagnostician-1", "assignment", {
-      title: "Diagnose",
-      instructions: "Find the cause",
-    }));
+  const job = await asAgent(
+    world,
+    "engineering-leader",
+    (a) =>
+      a.send("diagnostician-1", "assignment", {
+        title: "Diagnose",
+        instructions: "Find the cause",
+      }),
+  );
   await waitFor(() => workerWakeups(world), (n) => n >= 1, 15_000);
   return job;
 }

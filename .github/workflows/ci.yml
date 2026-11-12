@@ -33,8 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest] # Kiln supports Linux and macOS
-        # router.test.ts alone is ~40% of total test time, so it gets its own job.
-        # "rest" ignores it, so new test files are picked up automatically.
+        # Keep router tests in their own job; "rest" ignores them and picks up new test files.
         suite:
           - name: router
             args: tests/router.test.ts

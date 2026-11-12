@@ -75,7 +75,7 @@ withWorld("kiln watch follows a request live until it ends", async (w) => {
   const reading = (async () => {
     for await (const chunk of watching.stdout) stdout += new TextDecoder().decode(chunk);
   })();
-  await waitFor(async () => stdout, (text) => text.includes("The request started"));
+  await waitFor(() => Promise.resolve(stdout), (text) => text.includes("The request started"));
   const cancelled = await w.kiln("request", "cancel", "1");
   assertEquals(cancelled.code, 0, cancelled.stderr);
 
