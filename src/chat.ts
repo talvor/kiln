@@ -15,6 +15,13 @@ import type { ChatRecord, MessageRecord, SessionRecord, Store } from "./store.ts
 export const ROLLOVER_TOKENS = 150_000;
 /** `kiln chat` is attached while it has shown a sign of life this recently. */
 const ATTACHED_MS = 15_000;
+/**
+ * A turn that began this long ago and never ended (an interrupted one fires no Stop hook) no
+ * longer counts as the Overseer being mid-turn.
+ */
+const TURN_STALE_MS = 5 * 60_000;
+/** Events that wake an idle chat, besides mail: the user's request finished. */
+const WAKE_EVENTS = ["request.done"];
 /** How much of the conversation seeds a fresh session. */
 const HISTORY_TURNS = 20;
 const TURN_CHARS = 600;
@@ -234,6 +241,27 @@ export function createChat(opts: ChatOptions) {
     return lines.join("\n");
   }
 
+  // What the Overseer has been told of, so that a wake-up happens once per piece of news. Held in
+  // memory: a restarted daemon starts from what is there, rather than waking for old news.
+  let told: { message: number; event: number } | undefined;
+  // Set when a chat was replaced for news: the next digest tells everything since then.
+  let wokenFrom: number | undefined;
+  // When the Overseer's current turn began; null while it is idle.
+  let turnSince: number | null = null;
+  const newestMail = () => unread().reduce((id, m) => Math.max(id, m.id), 0);
+  /** The Overseer has been shown everything that is in its inbox now. */
+  const markMailTold = () => {
+    if (told) told.message = Math.max(told.message, newestMail());
+  };
+  const midTurn = () => turnSince !== null && Date.now() - turnSince < TURN_STALE_MS;
+  /** Something has happened that the Overseer has not been told, and it is not mid-turn. */
+  function newsWaiting(chat: ChatRecord): boolean {
+    if (midTurn()) return false;
+    told ??= { message: newestMail(), event: chat.eventsThrough };
+    return unread().some((m) => m.id > told!.message) ||
+      store.listEvents(told.event, WAKE_EVENTS).length > 0;
+  }
+
   const attached = (chat: ChatRecord | undefined): boolean =>
     !!chat && chat.endedAt === null && Date.now() - Date.parse(chat.seenAt) < ATTACHED_MS;
 
@@ -244,12 +272,14 @@ export function createChat(opts: ChatOptions) {
       const previous = store.latestChat();
       // A session that never said goodbye (a crash) is over.
       const crashed = !!previous && previous.endedAt === null;
-      const since = crashed
+      let since = crashed
         ? previous.eventsThrough
         : previous
         ? store.getChat(previous.id).eventsThrough
         : (store.listEvents(0).at(-1)?.id ?? 0);
       if (crashed) store.endChat(previous.id, "exit");
+      if (wokenFrom !== undefined) since = Math.min(since, wokenFrom);
+      wokenFrom = undefined;
       const role = overseerRole(config);
       if (!overseer()) {
         router.openSession({
@@ -264,6 +294,9 @@ export function createChat(opts: ChatOptions) {
       opts.told?.();
       const chat = store.startChat();
       store.appendEvent("chat.started", { id: chat.id });
+      // The digest tells this session everything up to now.
+      told = { message: newestMail(), event: chat.eventsThrough };
+      turnSince = news.length ? Date.now() : null;
       return {
         chatId: chat.id,
         system: `${role.prompt}\n\n${RULES}\n\n${text}`,
@@ -277,10 +310,21 @@ export function createChat(opts: ChatOptions) {
       };
     },
 
-    /** A sign of life from `kiln chat`; says whether the session should be replaced. */
-    heartbeat(chatId: number): { rollover: boolean } {
+    /**
+     * A sign of life from `kiln chat`; says whether the session should be replaced: because its
+     * context has grown too large, or because news arrived for an idle Overseer that nothing else
+     * would wake. The replacement is seeded with that news and tells the user at once.
+     */
+    heartbeat(chatId: number): { rollover: boolean; wake: boolean } {
       store.touchChat(chatId);
-      return { rollover: store.getChat(chatId).rolloverRequestedAt !== null };
+      const chat = store.getChat(chatId);
+      if (chat.rolloverRequestedAt !== null) return { rollover: true, wake: false };
+      const wake = chat.endedAt === null && newsWaiting(chat);
+      if (wake) {
+        wokenFrom = told?.event;
+        store.appendEvent("chat.woken", { id: chatId });
+      }
+      return { rollover: false, wake };
     },
 
     end(chatId: number, reason: "exit" | "rollover"): void {
@@ -296,6 +340,8 @@ export function createChat(opts: ChatOptions) {
       const reply = command(text);
       if (reply !== undefined) return { reply };
       store.addChatTurn(chatId, "user", text);
+      turnSince = Date.now();
+      markMailTold();
       const notes: string[] = [];
       const mail = unread().length;
       if (mail) {
@@ -320,11 +366,13 @@ export function createChat(opts: ChatOptions) {
         ? router.checkStop(seat.address, turn.alreadyBlocked === true)
         : { block: false };
       if (verdict.block) {
+        markMailTold();
         return {
           block: true,
           reason: `${verdict.reason} Tell the user only what is theirs to act on, once.`,
         };
       }
+      turnSince = null;
       if ((turn.tokens ?? 0) >= (turn.limit ?? ROLLOVER_TOKENS)) {
         store.requestRollover(chatId);
         store.appendEvent("chat.rollover_requested", { id: chatId, tokens: turn.tokens });
@@ -344,7 +392,10 @@ export function createChat(opts: ChatOptions) {
       return `kiln · ${parts.length ? parts.join(" · ") : "all quiet"}`;
     },
 
-    /** The Overseer's mail waits for the chat while the user is in it, rather than being nudged. */
+    /**
+     * The Overseer's mail waits for the chat while the user is in it, rather than being nudged: the
+     * hooks surface it mid-turn, and `heartbeat` replaces an idle session so it is not left waiting.
+     */
     holds: (m: MessageRecord): boolean => {
       const seat = overseer();
       return !!seat && m.to === seat.address && attached(store.latestChat());
