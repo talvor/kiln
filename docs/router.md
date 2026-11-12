@@ -33,6 +33,22 @@ superior), and, for the overseer, `raise_escalation`, `read_escalations` (see
 [escalations](escalations.md)), `list_projects`, `list_playbooks`, `start_request` and
 `request_status` (see [the chat guide](chat.md)). Same-user local processes are trusted for now.
 
+### Reading GitHub: the `gh` tool
+
+A worker's sandbox cannot see Kiln's GitHub credentials (`~/.config/gh` is unreadable), so a bare
+`gh` in its shell is unauthenticated. The `gh` tool takes the arguments the worker would give
+`gh`, and the daemon runs them with Kiln's credentials, in the Project's clone, and returns
+`{code, output, truncated}` (output is cut at 64 KiB). It is read-only and scoped to the worker's own
+Project: `issue view|list`, `pr view|list|diff|checks`, `run list|view`, `repo view`, `label list`,
+and `api` for GET of `repos/<owner>/<repo>/...`. Everything else is refused with the reason, as is
+`--repo`, `--hostname`, `--web`, other repositories, and anything that writes. Kiln still opens
+pull requests, comments and closes tickets itself. Each call is recorded as a `gh.read` event.
+No token ever enters the sandbox.
+
+When a Request starts from a tracker item, Kiln also reads the ticket once and quotes its text
+(title, state, labels, body and comments, up to 6000 characters) in the leader's assignment, as
+data and not instructions, so most workers need no read at all.
+
 ## Worker confinement
 
 Every agent Kiln wakes runs deny-by-default: it may use only the built-in tools its role lists

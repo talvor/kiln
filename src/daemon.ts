@@ -37,6 +37,7 @@ import {
   WorktreeBlocked,
 } from "./worktrees.ts";
 import { resolve } from "@std/path";
+import { ghRead, projectSlug } from "./ghread.ts";
 import { type Change, RecheckBlocked, recheckProject, removeClone } from "./manage.ts";
 import {
   type MessageKind,
@@ -519,6 +520,22 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       const project = store.listProjects().find((p) => p.id === request.projectId);
       if (!project) throw new WorktreeBlocked("The request's project has been removed.");
       return withProjectQueue(project.name, () => mergeAssignment(store, project, assignment.id));
+    },
+    "gh.read": async (params) => {
+      const session = store.getSession(String(params.from));
+      if (session.role === "overseer") throw new Error("The overseer does not use gh.");
+      const wt = store.findLiveWorktree(resolve(session.cwd));
+      const request = wt &&
+        store.listRequests("active").find((r) =>
+          r.worktreeId === wt.id || store.listAssignments(r.id).some((a) => a.worktreeId === wt.id)
+        );
+      const project = request && store.listProjects().find((p) => p.id === request.projectId);
+      const slug = project && await projectSlug(project.clonePath, project.remoteUrl);
+      if (!project || !slug) {
+        throw new Error("gh works from a worktree of a Project hosted on GitHub.");
+      }
+      store.appendEvent("gh.read", { address: session.address, args: params.args });
+      return await ghRead(project.clonePath, slug, params.args);
     },
     "worktrees.environment": async (params) => {
       const wt = store.findLiveWorktree(resolve(String(params.path)));

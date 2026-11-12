@@ -85,6 +85,23 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "gh",
+    description: "Read this Project's GitHub repository with the gh command: pass the arguments " +
+      'you would give gh, e.g. ["issue", "view", "12", "--comments"]. Kiln runs it for you ' +
+      "with its own credentials, so you need none. Reads only: issue view|list, pr view|list|diff|" +
+      "checks, run list|view, repo view, label list, and api for GET of repos/<owner>/<repo>/... " +
+      "of this Project. Writes, other repositories and --repo are refused; Kiln opens pull " +
+      "requests, comments and closes tickets itself. Returns {code, output, truncated}.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        args: { type: "array", items: { type: "string" }, description: "Arguments to gh" },
+      },
+      required: ["args"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_projects",
     description: "Overseer only: the projects registered with Kiln, and whether each is paused.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -183,6 +200,8 @@ async function callTool(
       };
     case "read_escalations":
       return { escalations: await call(paths, "escalations.raised", { from: address }) };
+    case "gh":
+      return await call(paths, "gh.read", { from: address, args: args.args });
     case "list_projects":
       return { projects: await call(paths, "overseer.projects", { from: address }) };
     case "list_playbooks":
@@ -214,6 +233,8 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
     ? { project: "string", playbook: "string", description: "string", trackerItem: "string" }
     : name === "request_status"
     ? { id: "integer" }
+    : name === "gh"
+    ? { args: "strings" }
     : name === "send"
     ? { to: "string", kind: "kind", body: "object", inReplyTo: "integer", assignmentId: "integer" }
     : name === "raise_question"
@@ -235,6 +256,8 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
         ? !Number.isSafeInteger(item) || (item as number) <= 0
         : type === "object"
         ? typeof item !== "object" || item === null || Array.isArray(item)
+        : type === "strings"
+        ? !Array.isArray(item) || item.some((x) => typeof x !== "string")
         : type === "kind"
         ? typeof item !== "string" || !["assignment", "result", "question", "answer"].includes(item)
         : typeof item !== "string"
@@ -253,6 +276,8 @@ function validateArgs(name: string, value: unknown): Record<string, unknown> {
       ? ["project", "playbook", "description"]
       : name === "request_status"
       ? ["id"]
+      : name === "gh"
+      ? ["args"]
       : []
   ) {
     if (!Object.hasOwn(args, field)) throw new Error(`missing argument "${field}"`);

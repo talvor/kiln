@@ -679,3 +679,46 @@ withWorld("requests and assignments are refused when they cannot start", async (
   assertEquals(paused.code, 1);
   assertStringIncludes(paused.stderr, "paused");
 });
+
+withWorld("a worker reads its Project's repository through the gh tool", async (world) => {
+  await register(world);
+  await startRequest(world);
+  const a = await startAssignment(world, 1);
+  const open = await world.kiln(
+    "session",
+    "open",
+    "gh-worker",
+    "--role",
+    "worker",
+    "--department",
+    "dev",
+    "--cwd",
+    a.Worktree,
+  );
+  assertEquals(open.code, 0, open.stderr);
+  await world.tracker.scriptViews([{ stdout: '{"title":"Words split on spaces only"}\n' }]);
+  await asAgent(world, "gh-worker", async (agent) => {
+    const read = await agent.call("gh", { args: ["issue", "view", "1", "--json", "title"] });
+    assertEquals(read.isError, false, read.text);
+    const out = JSON.parse(read.text) as { code: number; output: string };
+    assertEquals(out.code, 0);
+    assertStringIncludes(out.output, "Words split on spaces only");
+
+    // Writes, and other repositories, are refused and never reach gh.
+    for (
+      const args of [
+        ["issue", "close", "1"],
+        ["issue", "view", "1", "--repo", "someone/else"],
+        ["api", "repos/someone/else/issues"],
+        ["auth", "token"],
+      ]
+    ) {
+      const refused = await agent.call("gh", { args });
+      assertEquals(refused.isError, false, refused.text);
+      assertEquals(JSON.parse(refused.text).code, 1, args.join(" "));
+    }
+    const bad = await agent.call("gh", { args: "issue view 1" });
+    assert(bad.isError);
+  });
+  assertEquals((await world.tracker.closed()).length, 0);
+});

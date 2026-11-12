@@ -178,3 +178,42 @@ export async function isResearchTicket(clonePath: string, item: string): Promise
     return false;
   }
 }
+
+/** Most of a ticket Kiln copies into an assignment: enough to act on, not a thread's worth. */
+const MAX_TICKET_CHARS = 6000;
+
+/**
+ * The ticket's text, as Kiln read it from the tracker, for an assignment whose workers cannot
+ * reach the forge themselves; null when it cannot be read.
+ */
+export async function readTicket(clonePath: string, item: string): Promise<string | null> {
+  try {
+    const result = await run(
+      "gh",
+      ["issue", "view", item, "--json", "number,title,state,labels,body,comments"],
+      clonePath,
+      REMOTE_TIMEOUT_MS,
+    );
+    if (result.code !== 0) return null;
+    const t = JSON.parse(result.stdout);
+    if (typeof t.title !== "string") return null;
+    const labels = (t.labels ?? []).map((l: { name?: string }) => l.name).filter(Boolean);
+    const comments = (t.comments ?? []).map(
+      (c: { author?: { login?: string }; body?: string }) =>
+        `- ${c.author?.login ?? "someone"}: ${String(c.body ?? "").trim()}`,
+    );
+    const text = [
+      `#${t.number} ${t.title} (${String(t.state).toLowerCase()}${
+        labels.length ? `; labels: ${labels.join(", ")}` : ""
+      })`,
+      "",
+      String(t.body ?? "").trim() || "(no description)",
+      ...(comments.length ? ["", "Comments:", ...comments] : []),
+    ].join("\n");
+    return text.length > MAX_TICKET_CHARS
+      ? `${text.slice(0, MAX_TICKET_CHARS)}\n[... cut: read the rest with the gh tool]`
+      : text;
+  } catch {
+    return null;
+  }
+}

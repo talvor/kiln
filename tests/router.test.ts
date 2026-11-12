@@ -14,6 +14,7 @@ withWorld("tools, inbox reads, and message history", async (world) => {
   await openTeam(world);
   await asAgent(world, "dev-1", async (agent) => {
     assertEquals((await agent.tools()).sort(), [
+      "gh",
       "list_playbooks",
       "list_projects",
       "raise_escalation",

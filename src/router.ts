@@ -29,6 +29,7 @@ export const TOOL_NAMES = [
   "list_playbooks",
   "start_request",
   "request_status",
+  "gh",
 ] as const;
 const LAUNCH_TIMEOUT_MS = 30_000;
 const RENUDGE_AFTER_MS = 60_000;
