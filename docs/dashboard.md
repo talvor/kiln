@@ -22,7 +22,15 @@ shows that and offers **Approve anyway**, which sends the confirmation. Decision
 Source `dashboard`. Below Needs you, the collapsed **Recently decided** list holds the last 20
 decisions, newest first, with their outcome, time, Source and any reason.
 
-Views have their own addresses (`/` and `/escalations/<id>`), so reload, back and forward work, and
+The **header strip** shows what needs attention at a glance: **Halted** (with how long ago),
+**Daily cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap
+(or just today's spend when no cap is set), which links to `/cost`. The Cost view itself comes in a
+later change. **Halt** shows while Kiln is running and **Resume** while it is halted or has Stuck
+agents; each is one click, with no confirmation, and records Source `dashboard`. A held key or double
+click counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
+`health.report`, in the same snapshot as Needs you.
+
+Views have their own addresses (`/`, `/cost` and `/escalations/<id>`), so reload, back and forward work, and
 moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
