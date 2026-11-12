@@ -46,8 +46,8 @@ budget is blocked on you, and the daily cap stops all work. `kiln cost` shows th
 daily digest (only when there is news) and warnings go to a command you configure. See
 [the budgets guide](docs/budgets.md).
 
-Decisions that are the user's to make wait in `kiln escalations`; only `kiln approve <id>` and
-`kiln reject <id> --reason <text>` settle them. See [the escalation guide](docs/escalations.md).
+Decisions that are the user's to make wait in `kiln escalations`. Settle them with `kiln approve <id>`,
+`kiln reject <id> --reason <text>`, or the Dashboard. See [the escalation guide](docs/escalations.md).
 
 Talk to the Overseer with `kiln chat`: an interactive Claude session with Kiln's tools, status line
 and model-free commands. See [the chat guide](docs/chat.md).

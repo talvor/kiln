@@ -8,10 +8,20 @@ class PageElement {
   scrollTop = 0;
   href = "";
   type = "";
+  value = "";
+  disabled = false;
+  open = false;
+  selectionStart = 0;
+  selectionEnd = 0;
+  selectionDirection = "none";
   parent: PageElement | null = null;
   children: PageElement[] = [];
   private content = "";
-  private listeners = new Map<string, () => void>();
+  private attributes = new Map<string, string>();
+  private listeners = new Map<
+    string,
+    (event: { preventDefault: () => void; detail: number }) => void
+  >();
 
   constructor(readonly tag: string, readonly page: Page) {}
 
@@ -44,23 +54,49 @@ class PageElement {
     }
     return false;
   }
-  querySelectorAll(_selector: string): PageElement[] {
+  querySelectorAll(selector: string): PageElement[] {
     const descendants = this.children.flatMap((
       child,
-    ) => [child, ...child.querySelectorAll(_selector)]);
+    ) => [child, ...child.querySelectorAll(selector)]);
     return descendants.filter((node) =>
-      node.tag === "button" && node.className.split(" ").includes("row")
+      node.tag === "button" &&
+      (selector === "button" || node.className.split(" ").includes("row"))
     );
   }
-  addEventListener(event: string, listener: () => void) {
+  querySelector(selector: string): PageElement | null {
+    for (const child of this.children) {
+      if (child.tag === selector) return child;
+      const match = child.querySelector(selector);
+      if (match) return match;
+    }
+    return null;
+  }
+  addEventListener(
+    event: string,
+    listener: (event: { preventDefault: () => void; detail: number }) => void,
+  ) {
     this.listeners.set(event, listener);
+  }
+  setAttribute(name: string, value: string) {
+    this.attributes.set(name, value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+  setSelectionRange(start: number, end: number, direction = "none") {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+    this.selectionDirection = direction;
   }
   focus(_options?: { preventScroll: boolean }) {
     this.page.activeElement = this;
   }
-  click() {
+  click(detail = 1) {
     this.focus();
-    this.listeners.get("click")?.();
+    this.listeners.get("click")?.({ preventDefault: () => {}, detail });
+  }
+  input() {
+    this.listeners.get("input")?.({ preventDefault: () => {}, detail: 0 });
   }
 }
 
@@ -107,8 +143,183 @@ const snapshot = (count: number) => ({
   count,
   groups: [{ project: "Example", items: Array.from({ length: count }, (_, i) => item(i + 1)) }],
   stale: [],
+  decided: [],
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+Deno.test("a repeated gesture cannot confirm and an old action cannot replace the current one", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{
+    url: string;
+    body?: string;
+    resolve: (response: Response) => void;
+  }> = [];
+  const fetch = (url: string, init?: { body?: string }) =>
+    new Promise<Response>((resolve) => pending.push({ url, body: init?.body, resolve }));
+  let now = 1_000_000;
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    { pushState: (_state: null, _title: string, path: string) => location.pathname = path },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    () => 1,
+    () => {},
+    { now: () => now, parse: Date.parse },
+  );
+  stream!.emit("open");
+  pending[0].resolve(Response.json(snapshot(2)));
+  await tick();
+  const rail = page.getElementById("rail");
+  const main = page.getElementById("main");
+  rail.querySelectorAll("button.row")[0].click();
+  main.querySelector("button")!.click();
+  const first = pending.filter((request) => request.url.endsWith("/decide"))[0];
+  rail.querySelectorAll("button.row")[1].click();
+  rail.querySelectorAll("button.row")[0].click();
+  main.querySelector("button")!.click();
+  const second = pending.filter((request) => request.url.endsWith("/decide"))[1];
+  first.resolve(Response.json({ ok: false, error: "Old refusal", code: "needs-confirm" }, {
+    status: 409,
+  }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json(snapshot(2)));
+  await tick();
+  assertEquals(main.textContent.includes("Old refusal"), false);
+  assertEquals(main.querySelector("button")?.textContent, "Approve");
+  assertEquals(main.querySelector("button")?.getAttribute("aria-disabled"), "true");
+
+  second.resolve(Response.json({ ok: false, error: "PR is unmerged", code: "needs-confirm" }, {
+    status: 409,
+  }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json(snapshot(2)));
+  await tick();
+  const confirm = main.querySelector("button")!;
+  assertEquals(confirm.textContent, "Approve anyway");
+  assertEquals(page.activeElement === confirm, false);
+  confirm.click(0);
+  assertEquals(pending.filter((request) => request.url.endsWith("/decide")).length, 2);
+  now += 500;
+  confirm.click(2);
+  assertEquals(pending.filter((request) => request.url.endsWith("/decide")).length, 2);
+  confirm.click();
+  const decisions = pending.filter((request) => request.url.endsWith("/decide"));
+  assertEquals(decisions.length, 3);
+  assertEquals(JSON.parse(decisions[2].body!), { approved: true, confirm: true });
+});
+
+for (const outcome of ["final", "stale"]) {
+  Deno.test(`dashboard keeps a ${outcome} refusal after refresh`, async () => {
+    const page = new Page();
+    const location = { pathname: "/" };
+    const pending: Array<{ url: string; resolve: (response: Response) => void }> = [];
+    const fetch = (url: string) =>
+      new Promise<Response>((resolve) => pending.push({ url, resolve }));
+    let ageTimer = () => {};
+    let stream: EventSource;
+    class EventSource extends PageEvents {
+      constructor(url: string) {
+        super(url);
+        stream = this;
+      }
+    }
+    new Function(
+      "document",
+      "location",
+      "history",
+      "fetch",
+      "EventSource",
+      "addEventListener",
+      "setInterval",
+      "setTimeout",
+      "clearTimeout",
+      appJs,
+    )(
+      page,
+      location,
+      { pushState: (_state: null, _title: string, path: string) => location.pathname = path },
+      fetch,
+      EventSource,
+      () => {},
+      (callback: () => void) => ageTimer = callback,
+      () => 1,
+      () => {},
+    );
+    stream!.emit("open");
+    pending[0].resolve(Response.json(snapshot(1)));
+    await tick();
+    const rail = page.getElementById("rail");
+    const main = page.getElementById("main");
+    assertEquals(rail.querySelector("details")?.open, false);
+    rail.querySelector("details")!.open = true;
+    rail.querySelector("summary")!.focus();
+    ageTimer();
+    assertEquals(rail.querySelector("details")?.open, true);
+    assertEquals(page.activeElement, rail.querySelector("summary"));
+    rail.querySelectorAll("button.row")[0].click();
+    const rejectButton = main.querySelectorAll("button").find((button) =>
+      button.textContent === "Reject"
+    )!;
+    rejectButton.click();
+    ageTimer();
+    assertEquals(page.activeElement?.textContent, "Reject");
+    const reason = main.querySelector("textarea")!;
+    reason.value = "A reason in progress";
+    reason.input();
+    reason.setSelectionRange(2, 8, "backward");
+    reason.focus();
+    ageTimer();
+    const restored = main.querySelector("textarea")!;
+    assertEquals(page.activeElement, restored);
+    assertEquals([
+      restored.value,
+      restored.selectionStart,
+      restored.selectionEnd,
+      restored.selectionDirection,
+    ], ["A reason in progress", 2, 8, "backward"]);
+    const approve = main.querySelector("button")!;
+    approve.focus();
+    ageTimer();
+    assertEquals(page.activeElement?.textContent, "Approve");
+    main.querySelector("button")!.click();
+    assertEquals(page.activeElement?.textContent, "Approve");
+    const post = pending.find((p) => p.url.endsWith("/decide"))!;
+    post.resolve(Response.json({ ok: false, error: `Daemon says ${outcome}`, code: outcome }, {
+      status: 409,
+    }));
+    await tick();
+    pending.at(-1)!.resolve(
+      Response.json(outcome === "final" ? snapshot(0) : { ...snapshot(0), stale: [item(1)] }),
+    );
+    await tick();
+    assertEquals(main.textContent.includes(`Daemon says ${outcome}`), true);
+    ageTimer();
+    assertEquals(main.textContent.includes(`Daemon says ${outcome}`), true);
+  });
+}
 
 Deno.test("dashboard script keeps labels, text, count, focus and newest snapshot", async () => {
   const page = new Page();

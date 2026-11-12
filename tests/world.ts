@@ -37,7 +37,7 @@ export interface DashboardProcess {
   /** One HTTP request, never following redirects; `host` and `origin` override the defaults. */
   fetch(
     path: string,
-    init?: { method?: string; cookie?: string; host?: string; origin?: string },
+    init?: { method?: string; cookie?: string; host?: string; origin?: string; body?: string },
   ): Promise<Response>;
   /** Spend the URL's token and return the session cookie ("name=value"). */
   signIn(): Promise<string>;
@@ -238,7 +238,13 @@ export async function makeWorld(): Promise<World> {
         if (init.host !== undefined) {
           return rawRequest(port, init.method ?? "GET", path, { ...headers, host: init.host });
         }
-        return fetch(origin + path, { method: init.method, headers, redirect: "manual" });
+        if (init.body !== undefined) headers["content-type"] = "application/json";
+        return fetch(origin + path, {
+          method: init.method,
+          headers,
+          body: init.body,
+          redirect: "manual",
+        });
       },
       signIn: async () => {
         const res = await self.fetch(`/?token=${self.token}`);

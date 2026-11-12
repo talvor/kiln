@@ -16,13 +16,20 @@ Selecting a row expands it to the full detail as plain text (whitespace kept; no
 is read as Markdown or HTML). The tab title shows the open count, e.g. `(2) Kiln`. The favicon uses
 `9+` above nine.
 
+The selected Escalation has **Approve** (one click) and **Reject** (it needs a reason). The daemon's
+refusals are shown as worded, for instance when the Escalation was already decided or went stale.
+Approving a `qa-passed` Gate whose pull request is not merged is refused by the daemon; the page
+shows that and offers **Approve anyway**, which sends the confirmation. Decisions made here record
+Source `dashboard`. Below Needs you, the collapsed **Recently decided** list holds the last 20
+decisions, newest first, with their outcome, time, Source and any reason.
+
 Views have their own addresses (`/` and `/escalations/<id>`), so reload, back and forward work, and
 moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
-re-fetches its snapshot, debounced. The dashboard starts daemon event polls (`events.since`) only
+re-fetches its snapshot, debounced. The dashboard long-polls for changes (`events.since`) only
 while at least one tab is connected. A poll already in flight may finish after the last tab leaves;
-its result is discarded. Actions and the other views come later.
+its result is discarded.
 
 ## Starting it
 
@@ -35,7 +42,7 @@ its result is discarded. Actions and the other views come later.
 
 ## What protects it
 
-The Dashboard will be able to approve spend, so anything else on the machine that can reach a
+The Dashboard can approve spend, so anything else on the machine that can reach a
 loopback port must not be able to drive it.
 
 - The token exists only in the dashboard's memory. It is printed in the URL and never put in the
