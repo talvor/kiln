@@ -507,9 +507,16 @@ withWorld("an old page reports a restart on another port after retries", async (
 Deno.test("the header strip shows conditions and spend, and Halt and Resume ignore repeats", async () => {
   const page = new Page();
   const location = { pathname: "/" };
-  const pending: Array<{ url: string; method?: string; resolve: (r: Response) => void }> = [];
+  const pending: Array<{
+    url: string;
+    method?: string;
+    resolve: (r: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
   const fetch = (url: string, init?: { method?: string }) =>
-    new Promise<Response>((resolve) => pending.push({ url, method: init?.method, resolve }));
+    new Promise<Response>((resolve, reject) =>
+      pending.push({ url, method: init?.method, resolve, reject })
+    );
   let ageTimer = () => {};
   let refreshTimer = () => {};
   let stream: EventSource;
@@ -604,4 +611,44 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
   await tick();
   assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({ ok: false, error: "Cannot halt", code: "blocked" }, {
+    status: 409,
+  }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent.includes("Cannot halt"), true);
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({
+    ok: false,
+    error: "Kiln is not running.",
+    code: "down",
+  }, { status: 503 }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ running: false, count: 0, groups: [], stale: [], decided: [] }));
+  await tick();
+  assertEquals(strip.textContent, "");
+  await show(quiet);
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({
+    ok: false,
+    error: "Kiln is not running.",
+    code: "down",
+  }, { status: 503 }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.reject(new Error("offline"));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
 });

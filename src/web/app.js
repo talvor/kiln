@@ -262,9 +262,9 @@
     try {
       const res = await fetch(path, { method: "POST" });
       const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
-      if (!out.ok) stripRefusal = out.error;
+      if (!out.ok) stripRefusal = { message: out.error, transient: out.code === "down" };
     } catch {
-      stripRefusal = "The dashboard could not be reached.";
+      stripRefusal = { message: "The dashboard could not be reached.", transient: true };
     }
     await refresh();
     stripBusy = false;
@@ -302,7 +302,7 @@
       go("/cost");
     });
     stripBox.append(cost);
-    if (stripRefusal) stripBox.append(el("span", "cond", stripRefusal));
+    if (stripRefusal) stripBox.append(el("span", "cond", stripRefusal.message));
     const button = (label, path) => {
       const b = el("button", "btn", label);
       b.type = "button";
@@ -417,6 +417,7 @@
       clearTimeout(retryTimer);
       retryTimer = null;
       failedRefreshes = 0;
+      if (next.running && stripRefusal?.transient) stripRefusal = null;
       view = next;
       render();
     } catch {
