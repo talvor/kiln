@@ -90,7 +90,10 @@ withWorld("failed Requests without an end time use a known start or stay finishe
   const cookie = await d.signIn();
   const rows = await rail(d, cookie);
   assertEquals(rows.map((r) => [r.id, r.recent]), [
-    [4, false], [3, true], [2, false], [1, true],
+    [4, false],
+    [3, true],
+    [2, false],
+    [1, true],
   ]);
   const db = new DatabaseSync(join(w.dirs.data, "kiln.db"));
   try {
@@ -99,7 +102,10 @@ withWorld("failed Requests without an end time use a known start or stay finishe
     db.close();
   }
   assertEquals((await rail(d, cookie)).map((r) => [r.id, r.recent]), [
-    [4, false], [3, true], [2, true], [1, true],
+    [4, false],
+    [3, true],
+    [2, true],
+    [1, true],
   ]);
 });
 
