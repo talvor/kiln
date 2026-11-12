@@ -72,7 +72,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * are only hints: a tab re-fetches what it shows, so a missed one cannot corrupt a page.
  */
 function createEventHub(paths: KilnPaths) {
-  const listeners = new Set<(cursor: number) => void>();
+  const listeners = new Set<(cursor: number, outage: boolean) => void>();
   let cursor: number | null = null;
   let running = false;
   let listenerEpoch = 0;
@@ -84,7 +84,7 @@ function createEventHub(paths: KilnPaths) {
       const began = Date.now();
       const epoch = listenerEpoch;
       try {
-        const feed = await call<{ events: unknown[]; last: number }>(paths, "events.since", {
+        const feed: { events: unknown[]; last: number } = await call(paths, "events.since", {
           after: cursor ?? 0,
           waitMs: cursor === null ? 0 : POLL_WAIT_MS,
         });
@@ -92,14 +92,14 @@ function createEventHub(paths: KilnPaths) {
         cursor = feed.last;
         backoff = 500;
         if (feed.events.length > 0 || down) {
-          for (const listener of listeners) listener(cursor);
+          for (const listener of listeners) listener(feed.last, down);
         }
         down = false;
         if (Date.now() - began < 500) await sleep(500); // never spin on an answer that came at once
       } catch {
         if (epoch !== listenerEpoch) return;
         if (!down) {
-          for (const listener of listeners) listener(cursor ?? 0);
+          for (const listener of listeners) listener(cursor ?? 0, true);
         }
         down = true;
         cursor = null; // a restarted daemon may count events afresh; look for the cursor again
@@ -117,7 +117,9 @@ function createEventHub(paths: KilnPaths) {
     });
   };
   return {
-    subscribe(listener: (cursor: number) => void): () => void {
+    /** The newest event id this hub knows of, or null before it has looked. */
+    cursor: () => cursor,
+    subscribe(listener: (cursor: number, outage: boolean) => void): () => void {
       listeners.add(listener);
       start();
       return () => {
@@ -142,7 +144,10 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   const closers = new Set<() => void>();
 
   /** One multiplexed Server-Sent Events stream for a tab. */
-  function events(): Response {
+  function events(lastEventId: string | null): Response {
+    // A reconnecting EventSource says which event it saw last. Only what came after that is news
+    // to it, apart from the daemon going away or coming back, which always is.
+    let seen = lastEventId !== null && /^\d+$/.test(lastEventId) ? Number(lastEventId) : null;
     const encoder = new TextEncoder();
     let release = () => {};
     const body = new ReadableStream<Uint8Array>({
@@ -153,7 +158,14 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
           } catch { /* the tab is gone; cancel() cleans up */ }
         };
         send("retry: 2000\n\n");
-        const unsubscribe = hub.subscribe((cursor) => send(`event: changed\ndata: ${cursor}\n\n`));
+        const tell = (cursor: number, outage: boolean) => {
+          if (seen !== null && !outage && cursor <= seen) return;
+          seen = cursor;
+          send(`event: changed\ndata: ${cursor}\nid: ${cursor}\n\n`);
+        };
+        const unsubscribe = hub.subscribe(tell);
+        const known = hub.cursor();
+        if (seen !== null && known !== null) tell(known, false); // what it missed, if the feed is running
         const ping = setInterval(() => send(": ping\n\n"), PING_MS);
         let closed = false;
         const close = () => {
@@ -337,7 +349,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         headers: headers({ "content-type": "text/javascript; charset=utf-8" }),
       });
     }
-    if (url.pathname === "/events") return events();
+    if (url.pathname === "/events") return events(req.headers.get("last-event-id"));
     if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");

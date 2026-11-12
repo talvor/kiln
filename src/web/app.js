@@ -78,7 +78,6 @@
         act.refusal = out.error;
         act.confirm = out.code === "needs-confirm";
         act.confirmShownAt = act.confirm ? Date.now() : null;
-        if (res.status === 403) act.refusal = "This dashboard was restarted, open the new URL.";
       }
     } catch {
       if (stillHere()) {
@@ -214,7 +213,6 @@
 
   function renderMain() {
     main.replaceChildren();
-    if (problem) return main.append(el("p", "note", problem));
     const id = selectedId();
     if (id === null) return main.append(el("p", "note", "Pick an Escalation to see its detail."));
     const all = [...view.groups.flatMap((g) => g.items), ...view.stale];
@@ -262,6 +260,13 @@
   }
 
   function render() {
+    if (problem) {
+      banner.style.display = "none";
+      renderTitle();
+      rail.replaceChildren();
+      main.replaceChildren(el("p", "note", problem));
+      return;
+    }
     const mainFocused = main.contains(document.activeElement);
     const mainButtons = [...main.querySelectorAll("button")];
     const focusedButton = mainButtons.indexOf(document.activeElement);
@@ -298,27 +303,48 @@
 
   let latestRefresh = 0;
   let latestApplied = 0;
+  let retryTimer = null;
+  let failedRefreshes = 0;
+  const retryDelays = [500, 1000, 2000];
+  function failedRefresh(request) {
+    if (request < latestRefresh || retryTimer !== null) return;
+    if (failedRefreshes === retryDelays.length) {
+      problem =
+        "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.";
+      view = { running: true, count: 0, groups: [], stale: [], decided: [] };
+      stream.close();
+      render();
+      return;
+    }
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      refresh();
+    }, retryDelays[failedRefreshes++]);
+  }
   async function refresh() {
+    if (problem || retryTimer !== null) return;
     const request = ++latestRefresh;
     try {
       const res = await fetch("/api/needs-you");
       if (res.status !== 403 && !res.ok) return;
-      const next = res.ok ? await res.json() : null;
+      if (res.status === 403) return failedRefresh(request);
+      const next = await res.json();
       if (request < latestApplied) return;
       latestApplied = request;
-      if (res.status === 403) {
-        problem = "This dashboard was restarted, open the new URL.";
-      } else {
-        view = next;
-        problem = null;
-      }
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      failedRefreshes = 0;
+      view = next;
       render();
-    } catch { /* the dashboard itself is unreachable; keep what is shown */ }
+    } catch {
+      failedRefresh(request);
+    }
   }
 
   // Events are hints: a burst of them becomes one re-fetch of the snapshot.
   let timer;
   const refreshSoon = () => {
+    if (problem || retryTimer !== null) return;
     clearTimeout(timer);
     timer = setTimeout(refresh, 250);
   };

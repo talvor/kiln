@@ -6,8 +6,7 @@ kiln dashboard [--port <n>] [--no-open]
 
 The Dashboard is a browser window onto Kiln. It runs as its own foreground process, a client of
 the daemon's unix socket like the CLI (see `docs/adr/0001-dashboard-is-a-separate-client-process.md`);
-the daemon gains no network surface. It never starts the daemon: with Kiln not running the page
-still loads and says so.
+the daemon gains no network surface.
 
 The page is a split pane. The left rail holds **Needs you**: the open Escalations, grouped by
 Project, oldest first, each row showing its Gate kind (or `No gate`), Request, summary and age.
@@ -30,6 +29,20 @@ One Server-Sent Events stream per tab tells the page that something happened in 
 re-fetches its snapshot, debounced. The dashboard long-polls for changes (`events.since`) only
 while at least one tab is connected. A poll already in flight may finish after the last tab leaves;
 its result is discarded.
+
+## When Kiln is not running
+
+The dashboard keeps serving. The page shows a **Kiln is not running** banner, and the dashboard
+retries the daemon's socket with backoff (0.5 s, doubling to 10 s) for as long as a tab is open.
+When the daemon is back, every tab is told and does a full refresh of its snapshot. The dashboard
+never starts the daemon; run `kiln daemon start` yourself.
+
+Each change the stream announces carries the event id (`id:`), so a tab whose stream drops
+reconnects with `Last-Event-ID` and resumes from there: it is told at once only if something
+happened while it was away. A dashboard restart gives a new session cookie, so an old tab is
+refused; after a few retries, its page says the dashboard was restarted or stopped and asks you
+to open the new URL printed by `kiln dashboard`. The same message appears if the old server is
+unreachable after a restart on another port.
 
 ## Starting it
 

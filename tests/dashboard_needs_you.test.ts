@@ -71,10 +71,14 @@ withWorld("with no daemon Needs you is empty and says Kiln is not running", asyn
 });
 
 /** Read an event stream until `done` accepts what has arrived. */
-async function readUntil(res: Response, done: (text: string) => boolean): Promise<string> {
+async function readUntil(
+  res: Response,
+  done: (text: string) => boolean,
+  limitMs = 15_000,
+): Promise<string> {
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let text = "";
-  const timer = setTimeout(() => reader.cancel(), 15_000);
+  const timer = setTimeout(() => reader.cancel(), limitMs);
   try {
     while (!done(text)) {
       const { value, done: ended } = await reader.read();
@@ -214,5 +218,82 @@ withWorld("events.since runs only while an event stream is connected", async (w)
     assertEquals(polls(), stopped, "the last client left, the long-poll stopped");
   } finally {
     listener.close();
+  }
+});
+
+withWorld(
+  "a down daemon is retried with backoff and the tab is told when it returns",
+  async (w) => {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const stream = await d.fetch("/events", { cookie });
+    const reading = readUntil(stream, (t) => (t.match(/event: changed/g) ?? []).length >= 2);
+    await new Promise((r) => setTimeout(r, 1500)); // down, and retrying
+    const down: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
+    assertEquals(down.running, false);
+    assertEquals((await w.kiln("daemon", "status")).code, 3, "the dashboard did not start it");
+    assertEquals((await w.kiln("daemon", "start")).code, 0);
+    const text = await reading; // one change for going down, one for coming back
+    assertEquals((text.match(/event: changed/g) ?? []).length >= 2, true);
+    const up: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
+    assertEquals(up.running, true);
+  },
+);
+
+withWorld("a reconnecting tab resumes from the last event id it saw", async (w) => {
+  await openTeam(w);
+  const d = await w.dashboard();
+  const cookie = await d.signIn();
+  const first = await d.fetch("/events", { cookie });
+  const reading = readUntil(first, () => false, 3000); // everything one Escalation sets off
+  await new Promise((r) => setTimeout(r, 1000));
+  assertEquals((await raise(w, { summary: "One" })).isError, false);
+  const seen = [...(await reading).matchAll(/\nid: (\d+)\n/g)].at(-1)![1];
+  // Nothing happened while the tab was away: it is not told anything changed.
+  const quiet = await d.fetch("/events", { cookie, lastEventId: seen });
+  const nothing = await readUntil(quiet, (t) => t.includes("event: changed"), 2000);
+  assertEquals(nothing.includes("event: changed"), false);
+  // Something happened while it was away: it is told at once.
+  const gone = await d.fetch("/events", { cookie, lastEventId: String(Number(seen) - 1) });
+  const missed = await readUntil(gone, (t) => t.includes("event: changed"));
+  assertStringIncludes(missed, `id: ${seen}\n`);
+});
+
+withWorld("a hub reconnect polls after its retained cursor", async (w) => {
+  await Deno.mkdir(w.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(w.dirs.runtime, "kiln.sock") });
+  const asked: number[] = [];
+  const serving = (async () => {
+    for await (const conn of listener) {
+      const buf = new Uint8Array(65536);
+      const n = await conn.read(buf);
+      const req = JSON.parse(new TextDecoder().decode(buf.subarray(0, n ?? 0)));
+      asked.push(req.params.after);
+      await conn.write(new TextEncoder().encode(
+        JSON.stringify({ id: 1, ok: true, result: { events: [], last: 7 } }) + "\n",
+      ));
+      conn.close();
+    }
+  })();
+  try {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const first = await d.fetch("/events", { cookie });
+    for (let i = 0; asked.length === 0 && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assertEquals(asked[0], 0);
+    await first.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const before = asked.length;
+    const resumed = await d.fetch("/events", { cookie });
+    for (let i = 0; asked.length === before && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assertEquals(asked[before], 7);
+    await resumed.body?.cancel();
+  } finally {
+    listener.close();
+    await serving.catch(() => {});
   }
 });
