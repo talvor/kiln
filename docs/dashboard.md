@@ -30,13 +30,14 @@ agents; each is one click, with no confirmation, and records Source `dashboard`.
 click counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
 `health.report`, in the same snapshot as Needs you.
 
-Views have their own addresses (`/`, `/cost` and `/escalations/<id>`), so reload, back and forward work, and
-moving between them swaps the main area without reloading the page.
+Views have their own addresses (`/`, `/cost` and `/escalations/<id>`), so reload, back and forward
+work, and moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
-re-fetches its snapshot, debounced. The dashboard long-polls for changes (`events.since`) only
-while at least one tab is connected. A poll already in flight may finish after the last tab leaves;
-its result is discarded.
+re-fetches its snapshot, debounced. It also re-fetches every 30 seconds so the strip picks up a new
+day's spend or a changed daily cap without an event. The dashboard long-polls for changes
+(`events.since`) while at least one tab is connected. A poll already in flight may finish after the
+last tab leaves; its result is discarded.
 
 ## When Kiln is not running
 

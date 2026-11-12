@@ -195,7 +195,6 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     });
   }
 
-  /** The Needs you list, as the page draws it. */
   async function needsYouView(): Promise<Response> {
     try {
       const [escalations, requests, strip] = await Promise.all([
@@ -299,7 +298,6 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
-  /** The header strip's facts: Halt, the daily cap and the Stuck agents, from `health.report`. */
   async function stripFacts() {
     const h = await call<{
       haltedSince: string | null;
