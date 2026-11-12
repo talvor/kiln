@@ -30,7 +30,17 @@ agents; each is one click, with no confirmation, and records Source `dashboard`.
 click counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
 `health.report`, in the same snapshot as Needs you.
 
-Views have their own addresses (`/`, `/cost` and `/escalations/<id>`), so reload, back and forward
+Under Needs you, the **Requests** rail lists the Requests that are running or waiting, and those
+that failed in the last 24 hours. One with an open Escalation is marked **waiting on you**. **Show
+finished** adds the Requests that finished or failed longer ago. Selecting one opens its
+**Overview** at `/requests/<id>`: the step timeline with each step's assignments, the Budget bar
+(cost against the Request's Budget) and a live feed of what is happening to it, which updates as
+events arrive. A running or waiting Request has **Cancel**: it asks "Cancel Request N?" first, and
+only the confirmation cancels. As with **Approve anyway**, a double click or a held key cannot
+confirm. The Request then shows as failed, and the cancel records Source `dashboard`. The
+Transcript and Report tabs come in a later change.
+
+Views have their own addresses (`/`, `/cost`, `/escalations/<id>` and `/requests/<id>`), so reload, back and forward
 work, and moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page

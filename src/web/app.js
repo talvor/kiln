@@ -9,7 +9,12 @@
   const stripBox = document.getElementById("strip");
   let stripBusy = false; // Halt or Resume is in flight: one at a time
   let stripRefusal = null;
-  let view = { running: true, count: 0, groups: [], stale: [], decided: [] };
+  let view = { running: true, count: 0, groups: [], stale: [], decided: [], requests: [] };
+  let showFinished = false; // the rail's "Show finished" toggle
+  // The selected Request's Overview, fetched on its own. `cancelling` is the Cancel confirm step.
+  let detail = { id: null, data: null, error: null };
+  const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
+  let cancelAct = { ...blankCancel };
   let problem = null;
   // What the user is doing to the selected Escalation: a refusal to show, a reason being typed,
   // a confirmation to offer. It survives live re-renders, and resets when another one is picked.
@@ -46,12 +51,19 @@
     return match ? Number(match[1]) : null;
   };
 
+  const selectedRequestId = () => {
+    const match = /^\/requests\/(\d+)$/.exec(location.pathname);
+    return match ? Number(match[1]) : null;
+  };
+
   function go(path) {
     if (path !== location.pathname) {
       act = { ...blankAct };
+      cancelAct = { ...blankCancel };
       history.pushState(null, "", path);
     }
     render(); // swap the main area: no page load
+    loadDetail();
   }
 
   function when(iso) {
@@ -164,12 +176,49 @@
     return node;
   }
 
+  function requestRow(r) {
+    const selected = selectedRequestId() === r.id;
+    const node = el("button", "row request" + (selected ? " selected" : ""));
+    node.type = "button";
+    node.dataset.requestId = String(r.id);
+    const state = r.waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status;
+    node.append(
+      el("div", "meta", "Request " + r.id + " · " + r.project + " · " + state),
+      el("div", "summary", r.description ?? r.playbook ?? "No description"),
+    );
+    node.addEventListener("click", () => go("/requests/" + r.id));
+    return node;
+  }
+
+  function renderRequestsRail() {
+    rail.append(el("h2", "", "Requests"));
+    const toggle = el("button", "btn toggle", showFinished ? "Hide finished" : "Show finished");
+    toggle.type = "button";
+    toggle.setAttribute("aria-pressed", String(showFinished));
+    toggle.addEventListener("click", () => {
+      showFinished = !showFinished;
+      render();
+    });
+    rail.append(toggle);
+    const shown = (view.requests ?? []).filter((r) => showFinished || r.recent);
+    if (shown.length === 0) rail.append(el("p", "empty", "No Requests are running."));
+    for (const r of shown) rail.append(requestRow(r));
+  }
+
   function renderRail() {
     const scrolled = rail.scrollTop; // a live update must not throw the reader back to the top
     const decidedOpen = rail.querySelector("details")?.open ?? false;
     const previousRows = [...rail.querySelectorAll("button.row")];
     const focusedIndex = previousRows.indexOf(document.activeElement);
-    const focusedId = previousRows[focusedIndex]?.dataset.escalationId;
+    const rowKey = (button) =>
+      button?.dataset.escalationId !== undefined
+        ? "e" + button.dataset.escalationId
+        : button?.dataset.requestId !== undefined
+        ? "r" + button.dataset.requestId
+        : undefined;
+    const focusedId = rowKey(previousRows[focusedIndex]);
+    const toggleFocused = document.activeElement !== null &&
+      rail.contains(document.activeElement) && document.activeElement.className.includes("toggle");
     const previousSummary = rail.querySelector("summary");
     const focusedSummary = previousSummary !== null && previousSummary === document.activeElement;
     rail.replaceChildren(el("h2", "", "Needs you"));
@@ -183,6 +232,7 @@
       rail.append(el("p", "empty", "Their Request ended, so they cannot be acted on."));
       for (const item of view.stale) rail.append(row(item, true));
     }
+    renderRequestsRail();
     const decided = el("details");
     decided.open = decidedOpen;
     decided.append(el("summary", "", "Recently decided"));
@@ -204,9 +254,10 @@
     rail.append(decided);
     rail.scrollTop = scrolled;
     if (focusedSummary) rail.querySelector("summary").focus({ preventScroll: true });
+    if (toggleFocused) rail.querySelector("button.toggle")?.focus({ preventScroll: true });
     if (focusedId) {
       const rows = [...rail.querySelectorAll("button.row")];
-      const target = rows.find((button) => button.dataset.escalationId === focusedId) ??
+      const target = rows.find((button) => rowKey(button) === focusedId) ??
         rows[Math.min(focusedIndex, rows.length - 1)];
       if (target) target.focus({ preventScroll: true });
       else return true;
@@ -214,8 +265,203 @@
     return false;
   }
 
+  let detailSeq = 0;
+  /** Fetch the selected Request's Overview. Events are hints: this is the whole picture again. */
+  async function loadDetail() {
+    const id = selectedRequestId();
+    if (id === null) return;
+    const mine = ++detailSeq;
+    const current = () => mine === detailSeq && selectedRequestId() === id;
+    try {
+      const res = await fetch("/api/requests/" + id);
+      const out = await res.json().catch(() => ({ error: "Something went wrong." }));
+      if (!current()) return;
+      detail = res.ok
+        ? { id, data: out, error: null }
+        : { id, data: null, error: out.error ?? "Something went wrong." };
+    } catch {
+      if (!current()) return;
+      detail = {
+        id,
+        data: detail.id === id ? detail.data : null,
+        error: "The dashboard could not be reached.",
+      };
+    }
+    render();
+  }
+
+  async function cancelRequest(id) {
+    if (cancelAct.busy) return;
+    const mine = cancelAct;
+    mine.busy = true;
+    mine.refusal = null;
+    render();
+    try {
+      const res = await fetch("/api/requests/" + id + "/cancel", { method: "POST" });
+      const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
+      if (out.ok) {
+        if (cancelAct === mine) cancelAct = { ...blankCancel };
+      } else if (cancelAct === mine) {
+        mine.busy = false;
+        mine.asking = false;
+        mine.refusal = out.error;
+      }
+    } catch {
+      if (cancelAct === mine) {
+        mine.busy = false;
+        mine.refusal = "The dashboard could not be reached.";
+      }
+    }
+    await refresh();
+    render();
+  }
+
+  function cancelControls(r) {
+    const box = el("div", "actions");
+    if (cancelAct.refusal) box.append(el("p", "refusal", cancelAct.refusal));
+    const button = (label, onClick, className) => {
+      const b = el("button", "btn" + (className ? " " + className : ""), label);
+      b.type = "button";
+      b.setAttribute("aria-disabled", String(cancelAct.busy));
+      b.addEventListener("click", (event) => {
+        if (!cancelAct.busy) onClick(event);
+      });
+      return b;
+    };
+    if (!cancelAct.asking) {
+      box.append(button("Cancel Request", () => {
+        cancelAct.asking = true;
+        cancelAct.shownAt = Date.now();
+        render();
+      }));
+      return box;
+    }
+    box.append(
+      el(
+        "p",
+        "",
+        "Cancel Request " + r.id + "? Its workers stop and it fails. Its branches, Worktrees " +
+          "and anything pushed stay.",
+      ),
+    );
+    const bar = el("div", "bar");
+    // The safe choice comes first, so focus that survives the re-render lands on it.
+    bar.append(
+      button("Keep it running", () => {
+        cancelAct = { ...blankCancel };
+        render();
+      }),
+      button("Yes, cancel it", (event) => {
+        // A double click or a held key repeats the click that opened this step: it cannot confirm.
+        if (event.detail > 1 || Date.now() - cancelAct.shownAt < 500) return;
+        cancelRequest(r.id);
+      }, "danger"),
+    );
+    box.append(bar);
+    return box;
+  }
+
+  const clock = (iso) => new Date(iso).toLocaleTimeString();
+
+  function budgetBar(r) {
+    const box = el("div", "budget");
+    if (r.budgetUsd === null) {
+      box.append(el("p", "meta", "Budget: " + usd(r.costUsd) + " spent, no Budget set"));
+      return box;
+    }
+    const share = r.budgetUsd > 0 ? r.costUsd / r.budgetUsd : 1;
+    box.append(
+      el(
+        "p",
+        "meta",
+        "Budget: " + usd(r.costUsd) + " of " + usd(r.budgetUsd) + " (" + Math.round(share * 100) +
+          "%)",
+      ),
+    );
+    const track = el("div", "track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", String(r.budgetUsd));
+    track.setAttribute("aria-valuenow", String(r.costUsd));
+    const fill = el("div", "fill" + (share >= 1 ? " over" : ""));
+    fill.style.width = Math.min(100, share * 100) + "%";
+    track.append(fill);
+    box.append(track);
+    return box;
+  }
+
+  function timeline(r) {
+    const list = el("ol", "timeline");
+    for (const step of r.steps) {
+      const item = el("li", "step " + step.status);
+      item.append(
+        el(
+          "div",
+          "",
+          step.position + ". " + step.name + " · " + step.department + " · " + step.status +
+            (step.retries > 0 ? " · retried " + step.retries + "×" : ""),
+        ),
+      );
+      if (step.failure) item.append(el("div", "refusal", step.failure));
+      for (const a of step.assignments) {
+        item.append(
+          el(
+            "div",
+            "meta assignment",
+            "Assignment " + a.id + " · " + a.worker + " · " + a.status + " · " + a.turnsUsed +
+              " turns · " + usd(a.spendUsd) + (a.limitReached ? " · limit: " + a.limitReached : ""),
+          ),
+        );
+      }
+      list.append(item);
+    }
+    return list;
+  }
+
+  function renderRequest(id) {
+    const row = (view.requests ?? []).find((r) => r.id === id);
+    if (detail.id !== id || (detail.data === null && detail.error === null)) {
+      return main.append(el("p", "note", "Loading Request " + id + "…"));
+    }
+    if (detail.data === null) {
+      return main.append(el("p", "note", "Request " + id + ": " + detail.error));
+    }
+    const r = detail.data.request;
+    const live = r.status === "planned" || r.status === "active";
+    const waiting = row?.waiting === true;
+    main.append(
+      el("h2", "", "Request " + r.id),
+      el(
+        "p",
+        "meta",
+        r.project + " · " +
+          (waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status) +
+          (r.playbook ? " · " + r.playbook : ""),
+      ),
+    );
+    if (r.description) main.append(el("p", "", r.description));
+    const tabs = el("div", "tabs");
+    tabs.append(el("span", "tab active", "Overview"));
+    main.append(tabs);
+    if (r.failure) main.append(el("p", "refusal", "Failed: " + r.failure));
+    main.append(budgetBar(r), el("h3", "", "Steps"));
+    if (r.steps.length === 0) main.append(el("p", "empty", "No steps yet."));
+    else main.append(timeline(r));
+    main.append(el("h3", "", "Live feed"));
+    const feed = el("ul", "feed");
+    const events = detail.data.events;
+    if (events.length === 0) feed.append(el("li", "empty", "Nothing has happened yet."));
+    for (const e of events.slice(-100).reverse()) {
+      feed.append(el("li", "", clock(e.ts) + " · " + e.text));
+    }
+    main.append(feed);
+    if (live) main.append(cancelControls(r));
+  }
+
   function renderMain() {
     main.replaceChildren();
+    const requestId = selectedRequestId();
+    if (requestId !== null) return renderRequest(requestId);
     const id = selectedId();
     if (location.pathname === "/cost") {
       return main.append(el("p", "note", "The Cost view is not built yet."));
@@ -394,7 +640,7 @@
     if (failedRefreshes === retryDelays.length) {
       problem =
         "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.";
-      view = { running: true, count: 0, groups: [], stale: [], decided: [] };
+      view = { running: true, count: 0, groups: [], stale: [], decided: [], requests: [] };
       stream.close();
       render();
       return;
@@ -420,6 +666,7 @@
       if (next.running && stripRefusal?.transient) stripRefusal = null;
       view = next;
       render();
+      await loadDetail();
     } catch {
       failedRefresh(request);
     }
@@ -435,7 +682,9 @@
 
   addEventListener("popstate", () => {
     if (act.id !== selectedId()) act = { ...blankAct };
+    cancelAct = { ...blankCancel };
     render();
+    loadDetail();
   });
   setInterval(() => {
     render(); // ages move on

@@ -11,6 +11,17 @@ import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
 
+/** What `requests.list` says about a Request. */
+interface RequestRow {
+  id: number;
+  project: string;
+  status: string;
+  playbook: string | null;
+  description: string | null;
+  costUsd: number;
+  budgetUsd: number | null;
+}
+
 const COOKIE = "kiln_dashboard";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 
@@ -199,7 +210,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     try {
       const [escalations, requests, strip] = await Promise.all([
         call<EscalationView[]>(paths, "escalations.list", { all: true }),
-        call<{ id: number; project: string }[]>(paths, "requests.list", { all: true }),
+        call<RequestRow[]>(paths, "requests.list", { all: true }),
         stripFacts(),
       ]);
       return json({
@@ -207,10 +218,91 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         strip,
         ...needsYou(escalations, requests),
         decided: await recentlyDecided(escalations),
+        requests: await railRequests(requests, escalations),
       });
     } catch (err) {
       if (err instanceof DaemonNotRunning) {
-        return json({ running: false, count: 0, groups: [], stale: [], decided: [] });
+        return json({
+          running: false,
+          count: 0,
+          groups: [],
+          stale: [],
+          decided: [],
+          requests: [],
+        });
+      }
+      throw err;
+    }
+  }
+
+  // When a failed Request ended never changes, so it is asked for once.
+  const endedAt = new Map<number, string | null>();
+
+  /**
+   * The Requests rail: what is running or waiting, and what failed in the last 24 hours, are
+   * `recent`; the rest (finished, or failed longer ago) only show under "Show finished". A Request
+   * with an open Escalation is `waiting` on the user.
+   */
+  async function railRequests(requests: RequestRow[], escalations: EscalationView[]) {
+    const waiting = new Set(
+      escalations.filter((e) => e.status === "open" && e.requestId !== null).map((e) =>
+        e.requestId
+      ),
+    );
+    for (const r of requests) {
+      if (r.status === "failed" && !endedAt.has(r.id)) {
+        const report = await call<{ endedAt: string | null }>(paths, "requests.report", {
+          id: r.id,
+        });
+        endedAt.set(r.id, report.endedAt);
+      }
+    }
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return requests.map((r) => {
+      const ended = r.status === "failed" ? endedAt.get(r.id) ?? null : null;
+      const finished = r.status === "done" || r.status === "failed";
+      return {
+        id: r.id,
+        project: r.project,
+        status: r.status,
+        description: r.description,
+        playbook: r.playbook,
+        costUsd: r.costUsd,
+        budgetUsd: r.budgetUsd,
+        waiting: !finished && waiting.has(r.id),
+        // A failure with no recorded end cannot be shown to be old, so it stays visible.
+        recent: !finished ||
+          (r.status === "failed" && (ended === null || Date.parse(ended) >= dayAgo)),
+      };
+    });
+  }
+
+  /** One Request for its Overview: the status with its steps, and the events of its life. */
+  async function requestView(id: number): Promise<Response> {
+    try {
+      const request = await call(paths, "requests.status", { id });
+      const feed = await call<{ events: unknown[] }>(paths, "requests.events", { id, after: 0 });
+      return json({ running: true, request, events: feed.events });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return json({ running: false }, 503);
+      if (err instanceof DaemonError) {
+        return json({ running: true, error: err.message, code: err.code ?? null }, 404);
+      }
+      throw err;
+    }
+  }
+
+  /** Cancel a Request for the user. The daemon's refusal is passed on as it was worded. */
+  async function cancelRequest(id: number): Promise<Response> {
+    try {
+      await call(paths, "requests.cancel", { id, via: "dashboard" });
+      return json({ ok: true });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) {
+        return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
+      }
+      if (err instanceof DaemonError) {
+        return json({ ok: false, error: err.message, code: err.code ?? null }, 409);
       }
       throw err;
     }
@@ -368,6 +460,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     if (!SAFE_METHODS.has(req.method)) {
       const act = /^\/api\/escalations\/(\d+)\/decide$/.exec(url.pathname);
       if (act && req.method === "POST") return await decide(req, Number(act[1]));
+      const cancel = /^\/api\/requests\/(\d+)\/cancel$/.exec(url.pathname);
+      if (cancel && req.method === "POST") return await cancelRequest(Number(cancel[1]));
       if (req.method === "POST" && url.pathname === "/api/halt") {
         return await haltOrResume("kiln.halt");
       }
@@ -378,7 +472,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     // Every view has its own address; the page swaps its main area to match.
     if (
-      url.pathname === "/" || url.pathname === "/cost" || /^\/escalations\/\d+$/.test(url.pathname)
+      url.pathname === "/" || url.pathname === "/cost" ||
+      /^\/(escalations|requests)\/\d+$/.test(url.pathname)
     ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
@@ -390,6 +485,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       });
     }
     if (url.pathname === "/events") return events(req.headers.get("last-event-id"));
+    const detail = /^\/api\/requests\/(\d+)$/.exec(url.pathname);
+    if (detail) return await requestView(Number(detail[1]));
     if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");
