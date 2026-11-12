@@ -17,6 +17,12 @@ if (Deno.args[0] === "--version") {
   Deno.exit(0);
 }
 
+if (Deno.args[0] === "auth" && Deno.args[1] === "token") {
+  // The user's own login.
+  console.log("gho_ownlogin");
+  Deno.exit(0);
+}
+
 if (Deno.args[0] === "repo" && Deno.args[1] === "view") {
   // The Project's repository, as the forge names it.
   console.log('{"nameWithOwner":"talvor/kiln-fixture"}');

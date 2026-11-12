@@ -12,6 +12,7 @@ import { run } from "./checks.ts";
 import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
 import { createTokenMinter, projectSlug } from "./ghtoken.ts";
+import { createWorkerTokens } from "./workertoken.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createEscalations } from "./escalations.ts";
 import { createFaults } from "./faults.ts";
@@ -171,6 +172,10 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     configDir: paths.config,
     warn: (message, fields) => log.warn(message, fields),
   });
+  const ownTokens = createWorkerTokens({
+    configDir: paths.config,
+    warn: (message, fields) => log.warn(message, fields),
+  });
   /**
    * What a launch in a Worktree runs with: its ports and caches, and, when a GitHub App is
    * configured, a scoped short-lived token for the Project's repository so its `gh` works.
@@ -178,9 +183,19 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const worktreeEnv = async (wt: WorktreeRecord): Promise<Record<string, string>> => {
     const env = { ...infoOf(wt).env };
     const project = projectOfWorktree(wt);
-    const token = project
+    let token = project
       ? await tokens.tokenFor(() => projectSlug(project.clonePath, project.remoteUrl))
       : null;
+    // Only when no App has been set up, and only if the user asked for it in
+    // worker-gh-token.json: their own token. An App that is set up but could not give a token
+    // does not fall back to something broader.
+    if (project && !token && !(await tokens.configured())) {
+      const own = await ownTokens.tokenFor(project.name);
+      if (own) {
+        token = own.token;
+        store.appendEvent("worker.token", { project: project.name, source: own.source });
+      }
+    }
     if (token) Object.assign(env, { GH_TOKEN: token, GITHUB_TOKEN: token });
     return env;
   };

@@ -215,3 +215,15 @@ Deno.test("the repository comes from a GitHub remote", () => {
   assertEquals(repoSlug("https://github.com/talvor/kiln-fixture"), "talvor/kiln-fixture");
   assertEquals(repoSlug("/tmp/some/bare/remote"), null);
 });
+
+Deno.test("an App counts as set up as soon as github.json exists", async () => {
+  const none = createTokenMinter({ configDir: await configWith(undefined) });
+  assertEquals(await none.configured(), false);
+  const set = createTokenMinter({
+    configDir: await configWith({ app: { id: 1, privateKeyFile: "k.pem" } }),
+  });
+  assertEquals(await set.configured(), true);
+  // Even a broken file: it is not "not set up", so nothing broader is used in its place.
+  const broken = createTokenMinter({ configDir: await configWith({ app: {} }) });
+  assertEquals(await broken.configured(), true);
+});

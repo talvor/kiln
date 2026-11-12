@@ -196,6 +196,14 @@ export function createTokenMinter(opts: TokenMinterOptions) {
   }
 
   return {
+    /** Whether a GitHub App has been set up: a `github.json` exists, usable or not. */
+    async configured(): Promise<boolean> {
+      try {
+        return (await loadGithub(opts.configDir)) !== null;
+      } catch {
+        return true;
+      }
+    },
     /** `slug` may be a function: it is only called when an App is configured. */
     async tokenFor(slugOf: string | (() => Promise<string | null>)): Promise<string | null> {
       let config: GithubConfig | null;

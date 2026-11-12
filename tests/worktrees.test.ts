@@ -779,3 +779,71 @@ withWorld("a worker holding a GitHub token may reach GitHub from its sandbox", a
     Deno.env.delete("XDG_RUNTIME_DIR");
   }
 });
+
+withWorld(
+  "without a GitHub App a worker gets the user's own token, only if they asked for it",
+  async (world) => {
+    await register(world);
+    await startRequest(world);
+    const a = await startAssignment(world, 1);
+    const launchEnv = async () => {
+      await world.launcher.script([{ result: "ok" }]);
+      const r = await world.kiln("launch", "check token", "--cwd", a.Worktree);
+      assertEquals(r.code, 0, r.stderr);
+      return (await world.launcher.calls()).at(-1)!.env!;
+    };
+    const write = async (file: string, json: unknown) => {
+      await Deno.mkdir(world.dirs.config, { recursive: true });
+      await Deno.writeTextFile(join(world.dirs.config, file), JSON.stringify(json));
+    };
+
+    // Nothing configured: no token.
+    assertEquals((await launchEnv()).GH_TOKEN, undefined);
+
+    // No App, but the user asked for their own token for this Project: they get it.
+    await write("worker-gh-token.json", { source: "gh", projects: ["remote"] });
+    const own = await launchEnv();
+    assertEquals([own.GH_TOKEN, own.GITHUB_TOKEN], ["gho_ownlogin", "gho_ownlogin"]);
+
+    // Asked for, but for another Project only: not shared.
+    await write("worker-gh-token.json", { source: "gh", projects: ["somewhere-else"] });
+    assertEquals((await launchEnv()).GH_TOKEN, undefined);
+    await write("worker-gh-token.json", { source: "gh" });
+
+    // An App is set up: its scoped token wins, and the user's own is not used.
+    let installed = false;
+    const server = Deno.serve({ port: 0, onListen() {} }, (req) => {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith("/installation")) {
+        return installed ? Response.json({ id: 5 }) : new Response("{}", { status: 404 });
+      }
+      return Response.json(
+        { token: "ghs_scoped", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+        { status: 201 },
+      );
+    });
+    try {
+      const pem = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: "pkcs1", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      }).privateKey as string;
+      const keyFile = join(world.dirs.config, "app.pem");
+      await Deno.writeTextFile(keyFile, pem);
+      await write("github.json", {
+        app: { id: 31, privateKeyFile: keyFile },
+        apiUrl: `http://127.0.0.1:${server.addr.port}`,
+      });
+
+      // The App is set up but cannot give a token (not installed here): nothing broader is used.
+      assertEquals((await launchEnv()).GH_TOKEN, undefined);
+
+      // Once it can, the App's scoped token is used, not the user's own.
+      installed = true;
+      const app = await launchEnv();
+      assertEquals([app.GH_TOKEN, app.GITHUB_TOKEN], ["ghs_scoped", "ghs_scoped"]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+);

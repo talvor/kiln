@@ -62,6 +62,36 @@ A worker can read its own environment, so the token is visible to it: keep the p
 and do not grant `write` unless you want workers to be able to push or comment. For GitHub
 Enterprise, set `apiUrl`; the sandbox allowlist is still `github.com` for now.
 
+#### Fallback: your own token, when no App is set up
+
+If you have not set up a GitHub App (there is no `github.json`) you can instead share your own
+token, with `<config>/worker-gh-token.json`. It is **off unless this file exists**, and it is only a
+fallback: whenever `github.json` exists, the App's token is used and this file is ignored. If the
+App is set up but cannot give a token (for example it is not installed on that repository), the
+worker gets none; Kiln does not widen to your own token.
+
+```json
+{ "source": "gh", "projects": ["kiln"] }
+```
+
+```json
+{ "source": "env", "variable": "KILN_WORKER_GH_TOKEN" }
+```
+
+- `source: "gh"` uses the token `gh auth token` prints for your login (reused for a minute).
+- `source: "env"` uses the token in that environment variable of the daemon. Prefer this with a
+  **fine-grained personal access token** limited to the repositories and permissions workers need.
+- `projects` (optional) limits it to those Projects' workers; without it, every Project's.
+
+The token reaches a worker the same way as the App's (`GH_TOKEN` and `GITHUB_TOKEN`, and the sandbox
+may reach `github.com`). Each launch that gets your own token is recorded as a `worker.token` event
+(project and source, never the token). If the token cannot be had, Kiln logs a warning and the
+worker gets none. The file is read at each launch.
+
+This is the blunt option. A worker can read its own environment, and a `gh` source carries
+everything you can do on GitHub (write, delete, other repositories); a prompt-injected ticket could
+try to leak it. Set up the App instead whenever you can.
+
 ## Worker confinement
 
 Every agent Kiln wakes runs deny-by-default: it may use only the built-in tools its role lists
