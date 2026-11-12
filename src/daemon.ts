@@ -11,6 +11,8 @@ import { canConnect, closeQuietly, selfCommand } from "./client.ts";
 import { run } from "./checks.ts";
 import { launch } from "./launcher.ts";
 import { createConductor } from "./conductor.ts";
+import { createTokenMinter, projectSlug } from "./ghtoken.ts";
+import { createWorkerTokens } from "./workertoken.ts";
 import { isStepWorker, loadConfig } from "./playbooks.ts";
 import { createEscalations } from "./escalations.ts";
 import { createFaults } from "./faults.ts";
@@ -55,6 +57,7 @@ import {
 export async function sandboxFor(
   sandbox: Record<string, unknown> | undefined,
   wt: WorktreeRecord,
+  github = false,
 ): Promise<Record<string, unknown> | undefined> {
   if (!sandbox) return sandbox;
   const common = await run(
@@ -68,7 +71,20 @@ export async function sandboxFor(
     infoOf(wt).env.TMPDIR,
     ...(common.code === 0 ? [common.stdout.trim()] : []),
   ];
-  return { ...sandbox, filesystem: { ...fs, allowWrite: [...(fs.allowWrite ?? []), ...extra] } };
+  const network = (sandbox.network ?? {}) as { allowedDomains?: string[] };
+  return {
+    ...sandbox,
+    filesystem: { ...fs, allowWrite: [...(fs.allowWrite ?? []), ...extra] },
+    // A worker holding a GitHub token can reach GitHub with it.
+    ...(github
+      ? {
+        network: {
+          ...network,
+          allowedDomains: [...(network.allowedDomains ?? []), "api.github.com", "github.com"],
+        },
+      }
+      : {}),
+  };
 }
 
 export const VERSION: string = denoJson.version;
@@ -145,6 +161,44 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     }
   };
 
+  /** The Project whose Request or Assignment owns this Worktree, if it is still running. */
+  const projectOfWorktree = (wt: WorktreeRecord) => {
+    const request = store.listRequests("active").find((r) =>
+      r.worktreeId === wt.id || store.listAssignments(r.id).some((a) => a.worktreeId === wt.id)
+    );
+    return request && store.listProjects().find((p) => p.id === request.projectId);
+  };
+  const tokens = createTokenMinter({
+    configDir: paths.config,
+    warn: (message, fields) => log.warn(message, fields),
+  });
+  const ownTokens = createWorkerTokens({
+    configDir: paths.config,
+    warn: (message, fields) => log.warn(message, fields),
+  });
+  /**
+   * What a launch in a Worktree runs with: its ports and caches, and, when a GitHub App is
+   * configured, a scoped short-lived token for the Project's repository so its `gh` works.
+   */
+  const worktreeEnv = async (wt: WorktreeRecord): Promise<Record<string, string>> => {
+    const env = { ...infoOf(wt).env };
+    const project = projectOfWorktree(wt);
+    let token = project
+      ? await tokens.tokenFor(() => projectSlug(project.clonePath, project.remoteUrl))
+      : null;
+    // Only when no App has been set up, and only if the user asked for it in
+    // worker-gh-token.json: their own token. An App that is set up but could not give a token
+    // does not fall back to something broader.
+    if (project && !token && !(await tokens.configured())) {
+      const own = await ownTokens.tokenFor(project.name);
+      if (own) {
+        token = own.token;
+        store.appendEvent("worker.token", { project: project.name, source: own.source });
+      }
+    }
+    if (token) Object.assign(env, { GH_TOKEN: token, GITHUB_TOKEN: token });
+    return env;
+  };
   const router = createRouter({
     store,
     log,
@@ -169,10 +223,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       const wt = store.findLiveWorktree(resolve(req.cwd));
       // The runtime directory is cleared on logout and reboot; make the temp directory again.
       if (wt) await makeTmpdir(wt);
+      const env = wt ? await worktreeEnv(wt) : {};
       return launch({
         ...req,
-        env: { ...(wt ? infoOf(wt).env : {}), ...req.env },
-        sandbox: wt ? await sandboxFor(req.sandbox, wt) : req.sandbox,
+        env: { ...env, ...req.env },
+        sandbox: wt ? await sandboxFor(req.sandbox, wt, !!env.GH_TOKEN) : req.sandbox,
       });
     },
     roleTools: async (name) => (await loadConfig(paths.config)).roles.get(name)?.tools,
@@ -523,7 +578,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     "worktrees.environment": async (params) => {
       const wt = store.findLiveWorktree(resolve(String(params.path)));
       if (wt) await makeTmpdir(wt);
-      return wt ? infoOf(wt).env : {};
+      return wt ? await worktreeEnv(wt) : {};
     },
     "sessions.open": (params) => router.openSession(params as unknown as NewSession),
     "messages.send": async (params) => {
