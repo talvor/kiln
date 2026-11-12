@@ -111,6 +111,12 @@ withWorld("Recently decided uses decision order when timestamps tie", async (w) 
               ? escalations.slice(0, currentCount)
               : request.method === "requests.list"
               ? []
+              : request.method === "health.report"
+              ? {
+                haltedSince: null,
+                dailyCap: { capUsd: null, todayUsd: 0, reached: false },
+                stuck: [],
+              }
               : {
                 events: events.filter((event) =>
                   event.id > request.params.after && event.id <= currentCount
