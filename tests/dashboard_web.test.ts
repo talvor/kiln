@@ -628,7 +628,9 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     code: "down",
   }, { status: 503 }));
   await tick();
-  pending.at(-1)!.resolve(Response.json({ running: false, count: 0, groups: [], stale: [], decided: [] }));
+  pending.at(-1)!.resolve(
+    Response.json({ running: false, count: 0, groups: [], stale: [], decided: [] }),
+  );
   await tick();
   assertEquals(strip.textContent, "");
   await show(quiet);
