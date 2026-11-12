@@ -120,7 +120,7 @@
     if (act.confirm) {
       bar.append(
         button("Approve anyway", (event) => {
-          if (event.detail > 1 || Date.now() - act.confirmShownAt < 500) return;
+          if (repeated(event, act.confirmShownAt)) return;
           settle(item.id, { approved: true, confirm: true });
         }),
       );
@@ -176,12 +176,19 @@
     return node;
   }
 
+  const stateLabel = (r, waiting) =>
+    waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status;
+
+  // A double click, a held key, or a click right after the step appeared repeats the gesture that
+  // opened a confirm step: it cannot confirm.
+  const repeated = (event, shownAt) => event.detail > 1 || Date.now() - shownAt < 500;
+
   function requestRow(r) {
     const selected = selectedRequestId() === r.id;
     const node = el("button", "row request" + (selected ? " selected" : ""));
     node.type = "button";
     node.dataset.requestId = String(r.id);
-    const state = r.waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status;
+    const state = stateLabel(r, r.waiting);
     node.append(
       el("div", "meta", "Request " + r.id + " · " + r.project + " · " + state),
       el("div", "summary", r.description ?? r.playbook ?? "No description"),
@@ -352,8 +359,7 @@
         render();
       }),
       button("Yes, cancel it", (event) => {
-        // A double click or a held key repeats the click that opened this step: it cannot confirm.
-        if (event.detail > 1 || Date.now() - cancelAct.shownAt < 500) return;
+        if (repeated(event, cancelAct.shownAt)) return;
         cancelRequest(r.id);
       }, "danger"),
     );
@@ -435,7 +441,7 @@
         "p",
         "meta",
         r.project + " · " +
-          (waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status) +
+          stateLabel(r, waiting) +
           (r.playbook ? " · " + r.playbook : ""),
       ),
     );

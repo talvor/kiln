@@ -251,10 +251,15 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     );
     for (const r of requests) {
       if (r.status === "failed" && !endedAt.has(r.id)) {
-        const report = await call<{ endedAt: string | null }>(paths, "requests.report", {
-          id: r.id,
-        });
-        endedAt.set(r.id, report.endedAt);
+        try {
+          const report = await call<{ endedAt: string | null }>(paths, "requests.report", {
+            id: r.id,
+          });
+          // An end time not recorded yet may be later; only a known one is kept.
+          if (report.endedAt !== null) endedAt.set(r.id, report.endedAt);
+        } catch (err) {
+          if (!(err instanceof DaemonError)) throw err; // this Request's end is just unknown
+        }
       }
     }
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -302,7 +307,10 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
       }
       if (err instanceof DaemonError) {
-        return json({ ok: false, error: err.message, code: err.code ?? null }, 409);
+        return json(
+          { ok: false, error: err.message, code: err.code ?? null },
+          err.code === "not-found" ? 404 : 409,
+        );
       }
       throw err;
     }
