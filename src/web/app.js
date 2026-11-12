@@ -17,6 +17,8 @@
   // The Transcript tab's Messages, and which long ones the user opened.
   let transcript = { id: null, messages: null, error: null };
   const opened = new Set();
+  // The Report tab's summary of how the Request went.
+  let report = { id: null, data: null, error: null };
   const CUT = 600;
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
   let cancelAct = { ...blankCancel };
@@ -57,10 +59,17 @@
   };
 
   const selectedRequestId = () => {
-    const match = /^\/requests\/(\d+)(\/transcript)?$/.exec(location.pathname);
+    const match = /^\/requests\/(\d+)(\/(overview|transcript|report))?$/.exec(location.pathname);
     return match ? Number(match[1]) : null;
   };
-  const onTranscript = () => location.pathname.endsWith("/transcript");
+  const liveRequest = (r) => r.status === "planned" || r.status === "active";
+  /** The tab shown: the one in the address, else Overview while live and Report once finished. */
+  const tabOf = (id) => {
+    const named = /^\/requests\/\d+\/(overview|transcript|report)$/.exec(location.pathname);
+    if (named) return named[1];
+    const r = detail.id === id ? detail.data?.request : undefined;
+    return r && !liveRequest(r) ? "report" : "overview";
+  };
 
   function go(path) {
     if (path !== location.pathname) {
@@ -308,7 +317,27 @@
       };
     }
     render();
-    if (onTranscript()) await loadTranscript(id, current);
+    const tab = tabOf(id);
+    if (tab === "transcript") await loadTranscript(id, current);
+    else if (tab === "report") await loadReport(id, current);
+  }
+
+  async function loadReport(id, current) {
+    try {
+      const res = await fetch("/api/requests/" + id + "/report");
+      const out = await res.json().catch(() => ({ error: "Something went wrong." }));
+      if (!current()) return;
+      if (res.ok) report = { id, data: out.report, error: null };
+      else report = { id, data: null, error: out.error ?? "Something went wrong." };
+    } catch {
+      if (!current()) return;
+      report = {
+        id,
+        data: report.id === id ? report.data : null,
+        error: "The dashboard could not be reached.",
+      };
+    }
+    render();
   }
 
   async function loadTranscript(id, current) {
@@ -505,6 +534,99 @@
     main.append(list);
   }
 
+  const span = (from, to) => {
+    const ms = Date.parse(to) - Date.parse(from);
+    if (!(ms >= 0)) return "";
+    const minutes = Math.round(ms / 60000);
+    if (minutes < 1) return Math.max(1, Math.round(ms / 1000)) + " s";
+    if (minutes < 120) return minutes + " min";
+    return Math.round(minutes / 6) / 10 + " h";
+  };
+
+  function renderReport(id) {
+    if (report.id !== id || (report.data === null && report.error === null)) {
+      return main.append(el("p", "note", "Loading the report…"));
+    }
+    if (report.error) main.append(el("p", "refusal", report.error));
+    const r = report.data;
+    if (r === null) return;
+    const outcome = r.status === "done"
+      ? "Finished"
+      : r.status === "failed"
+      ? "Failed"
+      : r.status === "planned"
+      ? "Waiting to start"
+      : "Still running";
+    main.append(el("h3", "", "Outcome"), el("p", "", outcome));
+    if (r.failure) main.append(el("p", "refusal", "Failure: " + r.failure));
+    for (const l of r.limitsReached) {
+      main.append(
+        el("p", "meta", "Assignment " + l.id + " was stopped at its " + l.limit + " limit."),
+      );
+    }
+    main.append(el("h3", "", "Timings"));
+    const timing = el("p", "meta");
+    timing.textContent =
+      (r.startedAt ? "Started " + new Date(r.startedAt).toLocaleString() : "Not started") +
+      (r.endedAt
+        ? " · Ended " + new Date(r.endedAt).toLocaleString() +
+          (r.startedAt ? " · took " + span(r.startedAt, r.endedAt) : "")
+        : "");
+    main.append(timing, el("h3", "", "Cost"), budgetBar(r), el("h3", "", "Steps"));
+    if (r.steps.length === 0) main.append(el("p", "empty", "No steps yet."));
+    const steps = el("ol", "timeline");
+    for (const s of r.steps) {
+      const item = el("li", "step " + s.status);
+      item.append(
+        el(
+          "div",
+          "",
+          s.position + ". " + s.name + " · " + s.status +
+            (s.retries > 0 ? " · retried " + s.retries + "×" : ""),
+        ),
+      );
+      if (s.summary) item.append(el("pre", "detail", s.summary));
+      if (s.failure) item.append(el("div", "refusal", s.failure));
+      steps.append(item);
+    }
+    if (r.steps.length > 0) main.append(steps);
+    main.append(el("h3", "", "Escalations"));
+    if (r.escalations.length === 0) main.append(el("p", "empty", "None were raised."));
+    const list = el("ul", "feed");
+    for (const e of r.escalations) {
+      list.append(
+        el(
+          "li",
+          "",
+          "Escalation " + e.id + " · " + e.status + " · " + e.summary +
+            (e.reason ? " · Reason: " + e.reason : "") + " · Source " + (e.via ?? "unknown"),
+        ),
+      );
+    }
+    if (r.escalations.length > 0) main.append(list);
+    main.append(el("h3", "", "Branch, tickets and pull request"));
+    const links = el("ul", "feed");
+    const add = (label, value) => {
+      const item = el("li", "", label + ": ");
+      if (/^https?:\/\//.test(value)) {
+        const a = el("a", "", value);
+        a.href = value;
+        a.rel = "noopener noreferrer";
+        a.target = "_blank";
+        item.append(a);
+      } else item.append(el("span", "", value));
+      links.append(item);
+    };
+    if (r.branch) add("Branch", r.branch);
+    for (const url of [...new Set([r.ticketUrl, ...r.ticketUrls].filter(Boolean))]) {
+      add("Ticket", url);
+    }
+    if (r.prUrl) add("Pull request", r.prUrl);
+    if (links.children.length === 0) {
+      main.append(el("p", "empty", "No branch, ticket or pull request yet."));
+    } else main.append(links);
+  }
+
   function renderRequest(id) {
     const row = (view.requests ?? []).find((r) => r.id === id);
     if (detail.id !== id || (detail.data === null && detail.error === null)) {
@@ -514,7 +636,7 @@
       return main.append(el("p", "note", "Request " + id + ": " + detail.error));
     }
     const r = detail.data.request;
-    const live = r.status === "planned" || r.status === "active";
+    const live = liveRequest(r);
     const waiting = row?.waiting === true;
     main.append(
       el("h2", "", "Request " + r.id),
@@ -528,14 +650,15 @@
     );
     if (r.description) main.append(el("p", "", r.description));
     const tabs = el("div", "tabs");
-    const shown = onTranscript() ? "Transcript" : "Overview";
+    const shown = tabOf(id);
     for (
-      const [label, path] of [["Overview", "/requests/" + id], [
-        "Transcript",
-        "/requests/" + id + "/transcript",
-      ]]
+      const [label, path] of [
+        ["Overview", "/requests/" + id + (live ? "" : "/overview")],
+        ["Transcript", "/requests/" + id + "/transcript"],
+        ["Report", "/requests/" + id + "/report"],
+      ]
     ) {
-      const tab = el("a", "tab" + (label === shown ? " active" : ""), label);
+      const tab = el("a", "tab" + (label.toLowerCase() === shown ? " active" : ""), label);
       tab.href = path;
       tab.addEventListener("click", (event) => {
         event.preventDefault();
@@ -545,8 +668,9 @@
     }
     main.append(tabs);
     if (r.failure) main.append(el("p", "refusal", "Failed: " + r.failure));
-    if (onTranscript()) {
-      renderTranscript(id);
+    if (shown === "transcript" || shown === "report") {
+      if (shown === "transcript") renderTranscript(id);
+      else renderReport(id);
       if (live) main.append(cancelControls(r));
       return;
     }

@@ -307,6 +307,20 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
+  /** How a Request went, as the daemon reports it (outcome, timings, cost, steps, Escalations). */
+  async function reportView(id: number): Promise<Response> {
+    try {
+      const report = await call(paths, "requests.report", { id });
+      return json({ running: true, report });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return json({ running: false }, 503);
+      if (err instanceof DaemonError) {
+        return json({ running: true, error: err.message, code: err.code ?? null }, 404);
+      }
+      throw err;
+    }
+  }
+
   /** Cancel a Request for the user. The daemon's refusal is passed on as it was worded. */
   async function cancelRequest(id: number): Promise<Response> {
     try {
@@ -491,7 +505,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     // Every view has its own address; the page swaps its main area to match.
     if (
       url.pathname === "/" || url.pathname === "/cost" ||
-      /^\/(escalations\/\d+|requests\/\d+(\/transcript)?)$/.test(url.pathname)
+      /^\/(escalations\/\d+|requests\/\d+(\/(overview|transcript|report))?)$/.test(url.pathname)
     ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
@@ -505,6 +519,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     if (url.pathname === "/events") return events(req.headers.get("last-event-id"));
     const transcript = /^\/api\/requests\/(\d+)\/transcript$/.exec(url.pathname);
     if (transcript) return await transcriptView(Number(transcript[1]));
+    const report = /^\/api\/requests\/(\d+)\/report$/.exec(url.pathname);
+    if (report) return await reportView(Number(report[1]));
     const detail = /^\/api\/requests\/(\d+)$/.exec(url.pathname);
     if (detail) {
       const rawAfter = url.searchParams.get("after");

@@ -26,8 +26,8 @@ An Assignment runs under a **budget**: the defaults, or what its leader asked fo
 - **Inactivity** (`idleSeconds`): a worker with no sign of life (activity during a launch, or a
   launch that ran) for that long is stopped. Waiting for the next Nudge counts as inactive.
 
-Kiln checks the wall-clock and inactivity limits every half second, apart from message delivery,
-so a worker that hangs cannot hide from them.
+Kiln checks the wall-clock and inactivity limits every half second, apart from message delivery, so
+a worker that hangs cannot hide from them.
 
 Money across many Assignments (a budget per Request, a daily cap) is covered by the
 [budgets guide](budgets.md).
@@ -47,20 +47,20 @@ result names the limit and the leader's options:
 
 ## Caps and Planned queuing
 
-At most `concurrency.global` Assignments are active in all of Kiln and `concurrency.perProject`
-(or the Project's `maxActive`) in one Project. A new Assignment over a cap is `planned`: it has no
+At most `concurrency.global` Assignments are active in all of Kiln and `concurrency.perProject` (or
+the Project's `maxActive`) in one Project. A new Assignment over a cap is `planned`: it has no
 branch or worktree, its worker is not woken, and it starts, oldest first, as soon as a slot frees.
 
 ## File ownership
 
 An assignment may declare `owns`: the paths it will change, comma separated. A path owns everything
-beneath it. Within a Request, an Assignment whose paths overlap an earlier one that is still
-planned or active waits as `planned`. When it starts, its branch begins from the finished
-Assignment's branch, so the later change sits on top of the earlier one.
+beneath it. Within a Request, an Assignment whose paths overlap an earlier one that is still planned
+or active waits as `planned`. When it starts, its branch begins from the finished Assignment's
+branch, so the later change sits on top of the earlier one.
 
 ## Conflicts
 
-Work whose Assignments were not kept apart can still conflict when merged. A merge conflict does
-not fail the Step: the conflicting Assignment fails, and Kiln sends the leader a new assignment from
-the overseer to resolve it. It goes to a fresh worker whose worktree starts from the conflicting
-branch, and counts as one of the Step's two retries (see the [playbooks guide](playbooks.md)).
+Work whose Assignments were not kept apart can still conflict when merged. A merge conflict does not
+fail the Step: the conflicting Assignment fails, and Kiln sends the leader a new assignment from the
+overseer to resolve it. It goes to a fresh worker whose worktree starts from the conflicting branch,
+and counts as one of the Step's two retries (see the [playbooks guide](playbooks.md)).

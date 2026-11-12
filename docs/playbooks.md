@@ -1,7 +1,8 @@
 # Playbooks and the Request lifecycle
 
 A **Playbook** is the ordered list of department **Steps** Kiln follows for one type of Request.
-Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets`, `wayfind` and `implement-a-ticket`.
+Kiln ships `diagnose-a-bug`, `design-a-feature`, `plan-a-spec-into-tickets`, `wayfind` and
+`implement-a-ticket`.
 
 ```
 kiln request start <project> --playbook <name> --description <text> [--tracker-item <ref>] [--and-fix]
@@ -15,16 +16,16 @@ It is optional; when given, the leader is told about it and the published ticket
 
 ## The lifecycle
 
-A Request, each of its Steps and each Assignment share four states: `planned`, `active`, `done`
-and `failed`. Kiln plays the overseer and walks the Steps one at a time:
+A Request, each of its Steps and each Assignment share four states: `planned`, `active`, `done` and
+`failed`. Kiln plays the overseer and walks the Steps one at a time:
 
 1. **Step begins.** Kiln opens the sessions it needs (the overseer, the department's leader, and a
    worker named `<worker-role>-<step-id>`, for example `diagnostician-1`) and sends the leader an
    assignment from the overseer. The Step is `active`.
 2. **Delegation.** The leader sends an assignment to that worker. Kiln starts it as an
-   **Assignment**, with its own branch and worktree off the request branch (the assignment
-   Message's ID is the Assignment's ID), and wakes the worker there. The worker commits the Step's
-   artifact and reports a result; the Assignment becomes `done` or `failed`.
+   **Assignment**, with its own branch and worktree off the request branch (the assignment Message's
+   ID is the Assignment's ID), and wakes the worker there. The worker commits the Step's artifact
+   and reports a result; the Assignment becomes `done` or `failed`.
 3. **Verification.** The leader checks the work and sends its result for the Step to the overseer.
    `failed` fails the Step. On `done`, Kiln first checks that a worker reported done and committed
    the Step's artifact, then merges the Assignment into the request branch and pushes it. Anything
@@ -42,19 +43,23 @@ branch) writes `ticket.md`, and Kiln publishes it as the fix ticket.
 ## Roles and Playbooks are config files
 
 Kiln reads `roles/<name>.json` and `playbooks/<name>.json` in its config directory each time a
-Request starts. A file replaces the built-in role or Playbook of the same name; the file name is
-the name.
+Request starts. A file replaces the built-in role or Playbook of the same name; the file name is the
+name.
 
 ```json
 // roles/diagnostician.json
-{ "kind": "worker", "department": "engineering", "prompt": "You are a diagnostician. ...",
-  "tools": ["Read", "Glob", "Grep", "Write", "Bash"] }
+{
+  "kind": "worker",
+  "department": "engineering",
+  "prompt": "You are a diagnostician. ...",
+  "tools": ["Read", "Glob", "Grep", "Write", "Bash"]
+}
 ```
 
 `kind` is `overseer`, `leader` or `worker`; leaders and workers need a `department`. There must be
-one overseer and at most one leader per department. The `prompt` is added to the Nudge whenever
-Kiln wakes an agent playing the role. `tools` is optional and lists the built-in tools the role may
-use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
+one overseer and at most one leader per department. The `prompt` is added to the Nudge whenever Kiln
+wakes an agent playing the role. `tools` is optional and lists the built-in tools the role may use
+(`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
 [worker confinement](router.md#worker-confinement) for the defaults.
 
 ```json
@@ -73,8 +78,11 @@ use (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`); see
 ```
 
 Each Step names a department with a leader and a worker role in that department. `publish` is
-optional (`"ticket"`, `"draft-pr"`, `"qa-summary"` or `"close-ticket"`), and so are `after` (`"merge"`: the step waits for the Request's pull request to be merged), `gate` (`"spec-approval"` or `"qa-passed"`, see below) and `findings` (the earlier step QA findings go back to). A file that is not valid is refused when a Request starts, naming the file and the
-problem. A Request keeps the Steps it started with if the file changes later.
+optional (`"ticket"`, `"draft-pr"`, `"qa-summary"` or `"close-ticket"`), and so are `after`
+(`"merge"`: the step waits for the Request's pull request to be merged), `gate` (`"spec-approval"`
+or `"qa-passed"`, see below) and `findings` (the earlier step QA findings go back to). A file that
+is not valid is refused when a Request starts, naming the file and the problem. A Request keeps the
+Steps it started with if the file changes later.
 
 ## Verification and retries
 
@@ -86,9 +94,9 @@ the test run cannot tell, and is not held against it.
 
 A rejected Step goes back to its leader as a new assignment from the overseer, carrying the
 rejection feedback. The leader delegates it to a fresh worker (`<role>-<step>-retry-<n>`) whose
-worktree starts from the rejected branch, and reports on the Step again. Nothing rejected is
-merged. After two retries a third rejection fails the Step and the Request, with the last feedback,
-for the Overseer. `kiln request status` shows each try's Assignment and the Step's retries.
+worktree starts from the rejected branch, and reports on the Step again. Nothing rejected is merged.
+After two retries a third rejection fails the Step and the Request, with the last feedback, for the
+Overseer. `kiln request status` shows each try's Assignment and the Step's retries.
 
 ## Designing a feature
 
@@ -112,17 +120,19 @@ rejected, the step and the Request fail with the user's reason.
 item, or `spec.md` on the branch) and writes `tickets.json`:
 
 ```json
-{ "criteria": { "c1": "Users can export CSV" },
-  "tickets": [{ "key": "a", "title": "...", "body": "...", "covers": ["c1"], "blockedBy": [] }] }
+{
+  "criteria": { "c1": "Users can export CSV" },
+  "tickets": [{ "key": "a", "title": "...", "body": "...", "covers": ["c1"], "blockedBy": [] }]
+}
 ```
 
 The **Leader's checks** run when the leader reports the step done, as part of verification; a
-breakdown that fails any of them is rejected like any other work, with the problems as feedback:
-the file is valid, **every criterion** of the spec is covered by some ticket, and the tickets'
+breakdown that fails any of them is rejected like any other work, with the problems as feedback: the
+file is valid, **every criterion** of the spec is covered by some ticket, and the tickets'
 dependencies have **no cycle**. Once it is merged, Kiln opens the tickets in the tracker
-(`"publish": "tickets"`), the ones a ticket is blocked by first so it can list them under
-"Blocked by", and then checks **each ticket is in the tracker** (`gh issue view`); one that is not
-fails the Request. The URLs are recorded on the Request (`Ticket:` in `kiln request status`).
+(`"publish": "tickets"`), the ones a ticket is blocked by first so it can list them under "Blocked
+by", and then checks **each ticket is in the tracker** (`gh issue view`); one that is not fails the
+Request. The URLs are recorded on the Request (`Ticket:` in `kiln request status`).
 
 The **Overseer approves** the breakdown once that holds, with no Gate: the user is **told
 afterwards**, in the Overseer's news when they next open `kiln chat`.
@@ -150,53 +160,52 @@ QA, and, once the user has merged it, wraps the ticket up. Its steps:
    Request waits. `kiln approve` says the ticket is ready now and the step is checked again;
    `kiln reject --reason` fails the Request.
 2. **implement** (Implementer): builds the ticket test-first (the `tdd` skill) and writes
-   `pull-request.md` (the `pr` skill). Once verified and merged, Kiln opens a **draft** pull
-   request from the request branch (`"publish": "draft-pr"`); the tracker item is added as
-   `Closes <ref>`. The pull request is recorded on the Request (`Pull request:` in
-   `kiln request status`).
+   `pull-request.md` (the `pr` skill). Once verified and merged, Kiln opens a **draft** pull request
+   from the request branch (`"publish": "draft-pr"`); the tracker item is added as `Closes <ref>`.
+   The pull request is recorded on the Request (`Pull request:` in `kiln request status`).
 3. **review** (Reviewer) and 4. **gatekeep** (Gatekeeper): both check the work and write their
    verdicts. A leader that finds problems reports status `findings` with them in the summary. The
    findings go back to the step named by `findings` (implement) as a new Assignment, from the
    implementer's branch, for a fresh worker (`implementer-2-retry-1`); once it is merged the same
    pull request is updated, and the QA steps begin again with new workers (`reviewer-3-round-1`);
    their earlier verdict files are removed from the request branch first, so a round that writes
-   nothing fails verification.
-   Findings sent back do not count as retries, but after two rounds on the same QA step the
-   Request fails for the Overseer.
+   nothing fails verification. Findings sent back do not count as retries, but after two rounds on
+   the same QA step the Request fails for the Overseer.
 
-The user hears nothing until QA passes. Then Kiln comments a QA summary (the QA steps' verdicts)
-on the pull request (`"publish": "qa-summary"`) and the Overseer raises the **qa-passed** Gate
-(`"gate": "qa-passed"`) with the pull request's URL. `kiln reject --reason` sends the reason back
-to the implement step as a new Assignment, and QA runs again.
+The user hears nothing until QA passes. Then Kiln comments a QA summary (the QA steps' verdicts) on
+the pull request (`"publish": "qa-summary"`) and the Overseer raises the **qa-passed** Gate
+(`"gate": "qa-passed"`) with the pull request's URL. `kiln reject --reason` sends the reason back to
+the implement step as a new Assignment, and QA runs again.
 
 Kiln never merges. The user merges the pull request, and Kiln finds out on its own: every
 `KILN_PR_POLL_SECONDS` (default 60) it asks `gh pr view` for the state of each pull request that
 passed QA and is waiting, with no model involved.
 
-- **Merged** is the go-ahead: an open qa-passed Gate is moot (it shows as stale), and the 5th
-  step, **wrap-up** (Closer, `"after": "merge"`), begins. The Closer writes `wrap-up.md`, a short
-  note of what shipped; once it is verified and merged, Kiln posts it on the ticket and closes the
-  ticket (`"publish": "close-ticket"`, only when the Request has a tracker item). Then Kiln cleans
-  up: the Request's worktrees, its local branches and the request branch on the remote. The
-  Request is `done`. A part that cannot be removed is logged and left; the Request still ends `done`.
+- **Merged** is the go-ahead: an open qa-passed Gate is moot (it shows as stale), and the 5th step,
+  **wrap-up** (Closer, `"after": "merge"`), begins. The Closer writes `wrap-up.md`, a short note of
+  what shipped; once it is verified and merged, Kiln posts it on the ticket and closes the ticket
+  (`"publish": "close-ticket"`, only when the Request has a tracker item). Then Kiln cleans up: the
+  Request's worktrees, its local branches and the request branch on the remote. The Request is
+  `done`. A part that cannot be removed is logged and left; the Request still ends `done`.
 - **Closed without merging** blocks the Request on the user: a **blocked-on-user** Escalation
   carries the pull request's URL. Nothing is removed. `kiln approve` says the pull request is open
   again and Kiln looks at it afresh; `kiln reject --reason` fails the Request. The branches stay
   either way.
-- **`kiln approve` on the qa-passed Gate while the pull request is open** does not merge it, so
-  Kiln asks the user to confirm: it refuses until the command is repeated with `--confirm`.
-  Confirmed, the Gate is approved and Kiln keeps the branches and waits for the merge.
+- **`kiln approve` on the qa-passed Gate while the pull request is open** does not merge it, so Kiln
+  asks the user to confirm: it refuses until the command is repeated with `--confirm`. Confirmed,
+  the Gate is approved and Kiln keeps the branches and waits for the merge.
 
 ## Diagnosing and fixing
 
-`kiln request start <project> --playbook diagnose-a-bug --description "..." --and-fix` chains
-"and fix it" onto a diagnosis. Once the diagnosis Request is done and its fix ticket is published,
-Kiln starts a second Request on the same Project that follows `implement-a-ticket` with the
-published ticket as its tracker item (`kiln request status` on the diagnosis shows `Fix request:`).
-The fix Request is an ordinary one: it goes through QA and waits for the user to merge.
-`--and-fix` is refused for a Playbook that publishes no ticket. If the fix Request cannot be started
-the diagnosis stays done, the failure is logged, and no fix Request is recorded.
+`kiln request start <project> --playbook diagnose-a-bug --description "..." --and-fix` chains "and
+fix it" onto a diagnosis. Once the diagnosis Request is done and its fix ticket is published, Kiln
+starts a second Request on the same Project that follows `implement-a-ticket` with the published
+ticket as its tracker item (`kiln request status` on the diagnosis shows `Fix request:`). The fix
+Request is an ordinary one: it goes through QA and waits for the user to merge. `--and-fix` is
+refused for a Playbook that publishes no ticket. If the fix Request cannot be started the diagnosis
+stays done, the failure is logged, and no fix Request is recorded.
 
 ## Not covered here
 
-Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps are in the [limits guide](limits.md). A Step that fails stays failed.
+Escalations to the user are in the [escalation guide](escalations.md). Limits and concurrency caps
+are in the [limits guide](limits.md). A Step that fails stays failed.

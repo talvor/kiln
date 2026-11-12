@@ -20,8 +20,8 @@ must be set or every smoke test is ignored. `deno task test` does not discover t
 ## What it costs
 
 Launches use the `haiku` model with an SDK budget of $0.25 per launch. The suite makes two live
-launches; the second has a $0.0001 budget. The SDK stops when the budget is exceeded, but a completed
-API call can slightly exceed it. Actual charges depend on the calls made.
+launches; the second has a $0.0001 budget. The SDK stops when the budget is exceeded, but a
+completed API call can slightly exceed it. Actual charges depend on the calls made.
 
 ## The launcher
 

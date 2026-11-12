@@ -225,3 +225,37 @@ withWorld(
     assertEquals((await d.fetch("/requests/1/transcript", { cookie })).status, 200);
   },
 );
+
+withWorld("a Request's report shows its outcome, Escalations with Source and links", async (w) => {
+  await openTeam(w);
+  seed(w, (db) => {
+    const id = request(db, "done", "Ship it");
+    db.prepare(
+      "update requests set branch = 'kiln/ship', pr_url = 'https://example.test/pr/1' where id = ?",
+    ).run(id);
+    db.prepare(
+      `insert into escalations (raised_by, request_id, summary, created_at, status, reason)
+       values ('overseer', ?, 'Ship?', 'now', 'approved', 'fine')`,
+    ).run(id);
+    event(db, hoursAgo(3), "request.started", { id });
+    event(db, hoursAgo(2), "escalation.decided", { id: 1, request: id, via: "dashboard" });
+    event(db, hoursAgo(1), "request.finished", { id });
+  });
+  const d = await w.dashboard();
+  const cookie = await d.signIn();
+  const res = await d.fetch("/api/requests/1/report", { cookie });
+  assertEquals(res.status, 200);
+  const { report } = await res.json();
+  assertEquals(report.status, "done");
+  assertEquals(report.branch, "kiln/ship");
+  assertEquals(report.prUrl, "https://example.test/pr/1");
+  assertEquals(
+    report.escalations.map((e: { status: string; via: string }) => [e.status, e.via]),
+    [["approved", "dashboard"]],
+  );
+  assert(report.startedAt !== null);
+  assertEquals((await d.fetch("/api/requests/99/report", { cookie })).status, 404);
+  for (const tab of ["report", "overview"]) {
+    assertEquals((await d.fetch(`/requests/1/${tab}`, { cookie })).status, 200);
+  }
+});

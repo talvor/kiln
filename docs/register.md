@@ -4,8 +4,8 @@ See [Register a project](../README.md#register-a-project) for the command.
 
 A **path** is a local checkout; Kiln reads its `origin` remote. A **URL** is cloned directly. Either
 way Kiln makes its own clone of the remote under its data directory (`projects/<name>`); it never
-works in your checkout, and commits that were never pushed are not in Kiln's clone. The name
-comes from the remote's last path segment, without a `.git` suffix.
+works in your checkout, and commits that were never pushed are not in Kiln's clone. The name comes
+from the remote's last path segment, without a `.git` suffix.
 
 ## Steps
 
@@ -13,11 +13,11 @@ comes from the remote's last path segment, without a `.git` suffix.
 2. Check the project (blocks below), including a `git push --dry-run` to a throwaway branch name.
 3. An onboarding agent (the launcher, working in Kiln's clone) reads the available agent docs,
    manifests, and CI files and proposes `setup`, `test`, `lint` and `build` commands. Files linked
-   outside the clone, directories, and empty files are omitted from the agent's reading list.
-   The agent can only use read tools. Kiln shows the commands and asks `Use these commands?`.
-   Confirm after reviewing the proposal; with no answer on stdin the answer is no. The commands
-   cannot be edited during registration: decline and fix the project's agent docs, or register
-   once the proposal is right. To change stored commands later, see the
+   outside the clone, directories, and empty files are omitted from the agent's reading list. The
+   agent can only use read tools. Kiln shows the commands and asks `Use these commands?`. Confirm
+   after reviewing the proposal; with no answer on stdin the answer is no. The commands cannot be
+   edited during registration: decline and fix the project's agent docs, or register once the
+   proposal is right. To change stored commands later, see the
    [management guide](manage.md#re-check).
 4. Kiln runs any proposed `setup` and `test` commands, in that order, in the clone, and records the
    project.
@@ -38,9 +38,8 @@ Registration is **blocked**, and no new project is recorded, when:
 
 Registration **warns** and goes ahead when:
 
-- branch protection cannot be confirmed
-  (`gh api repos/{owner}/{repo}/branches/<branch>/protection`; a 404 is inconclusive and rulesets
-  are not consulted);
+- branch protection cannot be confirmed (`gh api repos/{owner}/{repo}/branches/<branch>/protection`;
+  a 404 is inconclusive and rulesets are not consulted);
 - there is no lint command, no build command or no test command.
 
 ## Test baseline
