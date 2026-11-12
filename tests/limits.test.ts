@@ -123,6 +123,8 @@ async function twoRequests(world: World, runs: LauncherRun[] = []) {
 withWorld(
   "a per-Project cap queues the next Assignment as planned until a slot frees",
   async (w) => {
+    const tickSeconds = 0.5;
+    w.env.KILN_TICK_SECONDS = String(tickSeconds);
     await setLimits(w, { concurrency: { perProject: 1 } });
     const { first, second } = await twoRequests(w, Array(6).fill({ result: "ok" }));
 
@@ -134,7 +136,7 @@ withWorld(
 
     // The queued Assignment's worker is not woken while it waits, the running one's is.
     await waitFor(() => workerWakeups(w), (n) => n >= 1);
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    await new Promise((resolve) => setTimeout(resolve, tickSeconds * 3_000));
     assertEquals(await workerWakeups(w), 1);
 
     // The first finishes; the freed slot starts the second, and its worker is woken.

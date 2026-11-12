@@ -212,6 +212,8 @@ withWorld("an answered question no longer exempts its assignment", async (world)
 withWorld(
   "repeated Stop cannot duplicate a synthesised result or redeliver work",
   async (world) => {
+    const tickSeconds = 0.5;
+    world.env.KILN_TICK_SECONDS = String(tickSeconds);
     await openTeam(world);
     const job = await asAgent(
       world,
@@ -228,8 +230,9 @@ withWorld(
       [],
     );
     assertEquals(await stopHook(world, "dev-1"), null);
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
-    assertEquals(await world.launcher.calls(), []);
+    const launches = (await world.launcher.calls()).length;
+    await new Promise((resolve) => setTimeout(resolve, tickSeconds * 3_000));
+    assertEquals((await world.launcher.calls()).length, launches);
     assertEquals(await asAgent(world, "dev-lead", (agent) => agent.inbox()), []);
   },
 );

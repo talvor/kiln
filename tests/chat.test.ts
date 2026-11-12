@@ -407,6 +407,8 @@ withWorld("the Overseer has read-only access to the registered projects", async 
 });
 
 withWorld("the Overseer's mail waits for the chat instead of being nudged", async (world) => {
+  const tickSeconds = 0.5;
+  world.env.KILN_TICK_SECONDS = String(tickSeconds);
   await openTeam(world);
   await world.launcher.script([
     { session: [{ wait: 6_000 }] }, // the chat, open for a while
@@ -429,7 +431,7 @@ withWorld("the Overseer's mail waits for the chat instead of being nudged", asyn
   );
 
   // While the user is chatting, the question waits: it is shown, not delivered by a nudge.
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
+  await new Promise((resolve) => setTimeout(resolve, tickSeconds * 3_000));
   assertEquals((await world.launcher.calls()).length, 1);
   const status = await world.kilnWithInput("{}", "hook", "chat", "status-line", "--chat", "1");
   assertStringIncludes(status.stdout, "1 unread");

@@ -339,6 +339,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
   const prSeconds = Number(Deno.env.get("KILN_PR_POLL_SECONDS"));
   const faultSeconds = Number(Deno.env.get("KILN_FAULT_CHECK_SECONDS"));
   const digestSeconds = Number(Deno.env.get("KILN_DIGEST_CHECK_SECONDS"));
+  const tickSeconds = Number(Deno.env.get("KILN_TICK_SECONDS"));
   let polling: Promise<void> | undefined;
   const startClocks = () => {
     clocks.push(
@@ -352,7 +353,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
             log.error("page pass failed", { err });
           }
         },
-        2_000,
+        (tickSeconds > 0 ? tickSeconds : 2) * 1000,
       ),
       setInterval(
         () => faults.check().catch((err) => log.error("fault check failed", { err })),

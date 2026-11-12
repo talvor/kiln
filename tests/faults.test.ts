@@ -83,6 +83,8 @@ withWorld("a deleted worktree is recreated, with one escalation that closes itse
 });
 
 withWorld("recovery waits until the Worktree TMPDIR can be created", async (w) => {
+  const faultSeconds = 0.5;
+  w.env.KILN_FAULT_CHECK_SECONDS = String(faultSeconds);
   await register(w);
   const worktree = await startRequest(w);
   const runtimeHome = dirname(lastTmpdir);
@@ -94,7 +96,7 @@ withWorld("recovery waits until the Worktree TMPDIR can be created", async (w) =
   try {
     await Deno.remove(worktree, { recursive: true });
     await waitFor(() => escalations(w), (list) => list.length === 1 && list[0].status === "open");
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await new Promise((resolve) => setTimeout(resolve, faultSeconds * 3_000));
     assertEquals(await exists(worktree), false);
     assertEquals((await escalations(w))[0].status, "open");
   } finally {
@@ -121,6 +123,8 @@ withWorld("a damaged clone is cloned again and the worktrees made again", async 
 withWorld(
   "a fault Kiln cannot put right keeps the project paused with one escalation",
   async (w) => {
+    const faultSeconds = 0.5;
+    w.env.KILN_FAULT_CHECK_SECONDS = String(faultSeconds);
     await register(w);
     await startRequest(w);
     const away = `${w.remote.path}.away`;
@@ -140,7 +144,7 @@ withWorld(
     assertStringIncludes(refused.stderr, "paused");
 
     // Several more looks raise nothing new.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await new Promise((resolve) => setTimeout(resolve, faultSeconds * 3_000));
     assertEquals((await escalations(w)).length, 1);
     assertEquals((await escalations(w))[0].status, "open");
 

@@ -2,10 +2,11 @@
 // they are used: the CLI, the agents' tool servers (the test plays the leader), the fake remote
 // and the fake launcher.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
-import { runKiln } from "./helpers.ts";
 import { asAgent } from "./router_helpers.ts";
+
+const MAIN = fromFileUrl(new URL("../src/main.ts", import.meta.url));
 
 async function register(world: World) {
   await Deno.writeTextFile(join(world.project.path, "AGENTS.md"), "# How to work here\n");
@@ -63,17 +64,29 @@ async function workedRequest(world: World) {
 withWorld("kiln watch follows a request live until it ends", async (w) => {
   await workedRequest(w);
 
-  const watching = runKiln(w.env, ["watch", "1"]);
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const watching = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", MAIN, "watch", "1"],
+    env: w.env,
+    clearEnv: true,
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  let stdout = "";
+  const reading = (async () => {
+    for await (const chunk of watching.stdout) stdout += new TextDecoder().decode(chunk);
+  })();
+  await waitFor(async () => stdout, (text) => text.includes("The request started"));
   const cancelled = await w.kiln("request", "cancel", "1");
   assertEquals(cancelled.code, 0, cancelled.stderr);
 
-  const live = await watching;
-  assertEquals(live.code, 1, live.stderr);
+  await reading;
+  const code = (await watching.status).code;
+  const stderr = await new Response(watching.stderr).text();
+  assertEquals(code, 1, stderr);
   for (
     const text of ["The request started", "engineering-leader", "was cancelled", "Request 1 failed"]
   ) {
-    assertStringIncludes(live.stdout, text);
+    assertStringIncludes(stdout, text);
   }
 
   // Watching a request that has already ended replays its life and returns at once.
