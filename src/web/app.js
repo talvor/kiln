@@ -177,8 +177,10 @@
     return node;
   }
 
-  const stateLabel = (r, waiting) =>
-    waiting ? "waiting on you" : r.status === "planned" ? "waiting" : r.status;
+  const stateLabel = (r, waiting) => {
+    if (waiting && (r.status === "planned" || r.status === "active")) return "waiting on you";
+    return r.status === "planned" ? "waiting" : r.status;
+  };
 
   // A double click, a held key, or a click right after the step appeared repeats the gesture that
   // opened a confirm step: it cannot confirm.

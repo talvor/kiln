@@ -826,7 +826,7 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
   await answer((p) => p.url.endsWith("/cancel"), Response.json({ ok: true }));
   await answer(
     (p) => p.url === "/api/needs-you",
-    snap({ requests: [requestRow(3, { status: "failed" })] }),
+    snap({ requests: [requestRow(3, { waiting: true })] }),
   );
   assertEquals(pending.some((p) => p.url === "/api/requests/3?after=101"), true);
   await answer(
@@ -838,6 +838,8 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
     }], "failed")),
   );
   assertEquals(main.textContent.includes("Failed: Cancelled by the user."), true);
+  assertEquals(main.children[1].textContent.includes("failed"), true);
+  assertEquals(main.children[1].textContent.includes("waiting on you"), false);
   assertEquals(main.querySelector("ul")?.children.length, 102);
   assertEquals(main.querySelector("ul")?.children[101].textContent.includes("Event 1"), true);
   assertEquals(main.querySelectorAll("button").length, 0); // nothing left to cancel

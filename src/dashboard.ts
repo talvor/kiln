@@ -7,14 +7,13 @@
 import { call, DaemonError, DaemonNotRunning } from "./client.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
-import type { RequestListing } from "./observe.ts";
+import { END_KINDS, type RequestListing } from "./observe.ts";
 import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
 
 const COOKIE = "kiln_dashboard";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
-const REQUEST_END_KINDS = new Set(["request.done", "request.cancelled", "step.failed"]);
 
 export interface Dashboard {
   /** The URL to print: it carries the token, which works once. */
@@ -252,7 +251,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         if (event.id > (knownTimes.get(id)?.id ?? 0)) {
           knownTimes.set(id, { id: event.id, ts: event.ts });
         }
-        if (REQUEST_END_KINDS.has(event.kind) && event.id > (failedEnds.get(id)?.id ?? 0)) {
+        if (END_KINDS.includes(event.kind) && event.id > (failedEnds.get(id)?.id ?? 0)) {
           failedEnds.set(id, { id: event.id, ts: event.ts });
         }
       }

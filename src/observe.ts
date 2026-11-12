@@ -114,7 +114,7 @@ export function requestIdOfEvent(store: Store, e: EventRecord): number | null {
   return null;
 }
 
-const END_KINDS = ["request.done", "request.cancelled", "step.failed"];
+export const END_KINDS = ["request.done", "request.cancelled", "step.failed"];
 
 /** The events of a Request after `after`, in words, and whether it has ended. */
 export function requestEvents(store: Store, requestId: number, after: number) {
