@@ -165,6 +165,11 @@ export function infoOf(wt: WorktreeRecord): WorktreeInfo {
       TMPDIR: tmpdirOf(wt),
       XDG_CACHE_HOME: join(support, "cache"),
       npm_config_cache: join(support, "cache", "npm"),
+      // A worker's commits are internal: the user's signing key is out of its sandbox's reach
+      // (~/.gnupg is unreadable), so a global `commit.gpgsign` would make every commit fail.
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "commit.gpgsign",
+      GIT_CONFIG_VALUE_0: "false",
     },
   };
 }

@@ -42,7 +42,7 @@ async function register(world: World) {
 function fields(stdout: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of stdout.split("\n")) {
-    const m = line.match(/^(Branch|Worktree|[A-Za-z_]+)[:=] ?(.*)$/);
+    const m = line.match(/^(Branch|Worktree|[A-Za-z_0-9]+)[:=] ?(.*)$/);
     if (m) out[m[1]] = m[2];
   }
   return out;
@@ -206,10 +206,17 @@ withWorld("every worktree has its own ports, temp directory and caches", async (
       "TMPDIR",
       "XDG_CACHE_HOME",
       "npm_config_cache",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
     ]
   ) {
     assertEquals(call.env?.[key], a[key], key);
   }
+  assertEquals(
+    [a.GIT_CONFIG_COUNT, a.GIT_CONFIG_KEY_0, a.GIT_CONFIG_VALUE_0],
+    ["1", "commit.gpgsign", "false"],
+  );
 
   // Finishing an Assignment gives its ports back for the next one.
   await work(world, a.Worktree, { "a.txt": "a\n" });
@@ -604,10 +611,17 @@ withWorld("a relative launch cwd uses its worktree environment", async (world) =
       "TMPDIR",
       "XDG_CACHE_HOME",
       "npm_config_cache",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
     ]
   ) {
     assertEquals(call.env?.[key], a[key], key);
   }
+  assertEquals(
+    [a.GIT_CONFIG_COUNT, a.GIT_CONFIG_KEY_0, a.GIT_CONFIG_VALUE_0],
+    ["1", "commit.gpgsign", "false"],
+  );
 });
 
 withWorld(

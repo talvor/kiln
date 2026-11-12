@@ -74,6 +74,9 @@ Deno.writeTextFileSync(
         "TMPDIR",
         "XDG_CACHE_HOME",
         "npm_config_cache",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
       ]
         .map((key) => [key, Deno.env.get(key)]),
     ),

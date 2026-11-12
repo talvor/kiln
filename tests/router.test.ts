@@ -204,6 +204,9 @@ withWorld("an answered question no longer exempts its assignment", async (world)
   const verdict = await stopHook(world, "dev-1");
   assertEquals(verdict?.decision, "block");
   assertStringIncludes(verdict!.reason, `assignment ${job.id}`);
+  // The reminder names the assignment and says how to hold it, for an agent that lost its context.
+  assertStringIncludes(verdict!.reason, `"${assignment.title}"`);
+  assertStringIncludes(verdict!.reason, "raise_question with assignmentId");
 });
 
 withWorld(
