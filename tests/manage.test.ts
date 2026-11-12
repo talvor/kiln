@@ -27,7 +27,7 @@ async function register(world: World, commands: Record<string, string | null> = 
 
 /** Seed a Request until Kiln has a public Request command. */
 function startRequest(world: World, status = "active"): void {
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare("insert into requests (project_id, status, created_at) values (1, ?, 'now')")
       .run(status);

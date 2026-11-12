@@ -297,19 +297,16 @@ withWorld("failed launches do not count toward dead letters", async (world) => {
 });
 
 withWorld("three automatic nudges dead-letter unread work and questions", async (world) => {
+  world.env.KILN_RENUDGE_SECONDS = "2"; // a nudge goes unanswered for 2 s, not 60 s
   await openTeam(world);
-  await world.launcher.script(Array.from({ length: 6 }, () => ({ result: "ok" })));
+  await world.launcher.script(Array.from({ length: 9 }, () => ({ result: "ok" }))); // 6 nudges, and a few early ones
   const readJob = await asAgent(
     world,
     "dev-lead",
     (agent) => agent.send("dev-1", "assignment", { ...assignment, title: "Read job" }),
   );
-  // The delivery clock may nudge the Read job before dev-1 reads it; that wake is not one of the three.
-  let earlyNudges = 0;
   await asAgent(world, "dev-1", async (agent) => {
     await agent.inbox();
-    // A nudge still in flight has started its launch but not yet recorded a delivery.
-    earlyNudges = (await world.launcher.prompts()).length;
     const asked = await agent.call("raise_question", {
       question: "Which file?",
       assignmentId: readJob.id,
@@ -321,16 +318,17 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     "dev-lead",
     (agent) => agent.send("dev-1", "assignment", assignment),
   );
-  await waitFor(
-    () => world.launcher.prompts(),
-    (items) => items.length >= 6 + earlyNudges,
-    130_000,
+  // The unread question and the unread assignment are both dead-lettered, before the leader reads
+  // its inbox.
+  const deadLettered = await waitFor(
+    () => eventsOf(world, "message.dead_lettered"),
+    (events) => events.some((e) => e.kind === "question") && events.some((e) => e.id === job.id),
+    30_000,
   );
-  await new Promise((resolve) => setTimeout(resolve, 65_000));
   const leader = await waitFor(
     () => asAgent(world, "dev-lead", (agent) => agent.inbox()),
     (messages) => messages.some((m) => m.kind === "result" && m.inReplyTo === job.id),
-    70_000,
+    30_000,
   );
   const [failure] = leader;
   assertEquals([failure.synthesised, failure.body.status, failure.inReplyTo], [
@@ -338,9 +336,17 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
     "failed",
     job.id,
   ]);
-  // One more early nudge may have been launched right after the count above was taken.
-  const nudges = (await world.launcher.prompts()).length;
-  assertEquals(nudges >= 6 + earlyNudges && nudges <= 7 + earlyNudges, true, `${nudges} nudges`);
+  // Each was nudged exactly three times before it was dead-lettered. (The Read job may also have
+  // been nudged before dev-1 read it; that wake is not one of the three.)
+  const nudged = await eventsOf(world, "message.nudged");
+  const questionId = deadLettered.find((e) => e.kind === "question")!.id;
+  for (const id of [job.id, questionId]) {
+    assertEquals(
+      nudged.filter((e) => (e.ids as unknown[]).includes(id)).length,
+      3,
+      `message ${id}`,
+    );
+  }
   assertEquals(await asAgent(world, "dev-1", (agent) => agent.inbox()), []);
   const verdict = await stopHook(world, "dev-1");
   assertEquals(verdict?.decision, "block");

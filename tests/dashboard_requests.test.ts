@@ -19,7 +19,7 @@ interface Row {
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
 
 function seed(world: World, fill: (db: DatabaseSync) => void) {
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare(
       `insert into projects (name, source, remote_url, clone_path, default_branch, head_commit,
@@ -95,7 +95,7 @@ withWorld("failed Requests without an end time use a known start or stay finishe
     [2, false],
     [1, true],
   ]);
-  const db = new DatabaseSync(join(w.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(w.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     event(db, hoursAgo(1), "request.cancelled", { id: 2 });
   } finally {
@@ -129,7 +129,8 @@ withWorld("a Request's Overview has its steps, assignments, budget and events", 
   const later = await (await d.fetch(`/api/requests/1?after=${view.events[0].id}`, { cookie }))
     .json();
   assertEquals(later.events.map((e: { kind: string }) => e.kind), ["step.done"]);
-  assertEquals(later.last, view.last);
+  // The daemon may append events of its own in between, so the cursor can only have moved on.
+  assert(later.last >= view.last);
   const empty = await (await d.fetch(`/api/requests/1?after=${view.last}`, { cookie })).json();
   assertEquals(empty.events, []);
   const badCursor = await d.fetch("/api/requests/1?after=oops", { cookie });

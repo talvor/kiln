@@ -228,7 +228,7 @@ withWorld("news already told is not repeated in the next session", async (world)
     stderr: "piped",
   }).spawn();
   await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
       .run();
@@ -257,7 +257,7 @@ withWorld("news after a crashed chat is told in the next session", async (world)
   await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
   chatting.kill("SIGKILL");
   await chatting.output();
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
       .run();

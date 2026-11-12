@@ -311,8 +311,8 @@ withWorld(
     assertEquals((await w.kiln("chat")).code, 0); // the user has attached before
     await start(w);
     await asAgent(w, "engineering-leader", (a) => a.inbox());
+    await w.launcher.script([{ result: "ok", costUsd: 0.85 }]); // before the worker can be woken
     await delegate(w, "diagnostician-1");
-    await w.launcher.script([{ result: "ok", costUsd: 0.85 }]);
     await waitFor(() => notifications(w), (n) => n.length >= 1);
 
     await w.launcher.script([{}]);

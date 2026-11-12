@@ -254,11 +254,18 @@ withWorld("work that conflicts at merge becomes a new Assignment", async (w) => 
 });
 
 /** Start a Request whose first Step has one Assignment, under `limits`. */
-async function oneAssignment(world: World, limits: unknown, body: Record<string, unknown> = {}) {
+async function oneAssignment(
+  world: World,
+  limits: unknown,
+  body: Record<string, unknown> = {},
+  runs?: LauncherRun[],
+) {
   await setLimits(world, limits);
   await register(world);
   await start(world);
   await leaderInbox(world);
+  // Scripted before the worker is delegated to, so no wake of it can come first.
+  if (runs) await world.launcher.script(runs);
   const job = await delegate(world, "diagnostician-1", body);
   return job;
 }
@@ -285,9 +292,13 @@ function assertLeaderOptions(result: Message, limit: string) {
 }
 
 withWorld("an Assignment that uses its turns is stopped and the leader gets options", async (w) => {
-  const job = await oneAssignment(w, { defaults: { turns: 5 } });
+  const job = await oneAssignment(
+    w,
+    { defaults: { turns: 5 } },
+    {},
+    Array(4).fill({ result: "ok", turns: 6 }),
+  );
   await commit(w, (await assignmentOf(w, job.id)).worktree!, { "notes.md": "half way\n" });
-  await w.launcher.script(Array(4).fill({ result: "ok", turns: 6 }));
 
   const stopped = await waitFor(() => assignmentOf(w, job.id), (a) => a.status === "failed");
   assertEquals([stopped.limitReached, stopped.turnsUsed], ["turns", 6]);
@@ -330,12 +341,16 @@ withWorld("the inactivity watch stops a worker that shows no sign of life", asyn
 });
 
 withWorld("the leader can continue after a limit, up to the Project ceiling", async (w) => {
-  const job = await oneAssignment(w, {
-    defaults: { turns: 5 },
-    projects: { remote: { ceiling: { turns: 8 } } },
-  });
+  const job = await oneAssignment(
+    w,
+    {
+      defaults: { turns: 5 },
+      projects: { remote: { ceiling: { turns: 8 } } },
+    },
+    {},
+    Array(4).fill({ result: "ok", turns: 6 }),
+  );
   await commit(w, (await assignmentOf(w, job.id)).worktree!, { "notes.md": "half way\n" });
-  await w.launcher.script(Array(4).fill({ result: "ok", turns: 6 }));
   await waitFor(() => assignmentOf(w, job.id), (a) => a.status === "failed");
   await limitReport(w, job);
 
