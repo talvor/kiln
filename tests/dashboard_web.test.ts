@@ -107,7 +107,7 @@ class Page {
   private elements = new Map<string, PageElement>();
 
   constructor() {
-    for (const id of ["rail", "main", "banner", "favicon"]) {
+    for (const id of ["rail", "main", "banner", "favicon", "strip"]) {
       this.elements.set(id, new PageElement(id, this));
     }
   }
@@ -502,4 +502,155 @@ withWorld("an old page reports a restart on another port after retries", async (
     page.getElementById("main").textContent,
     "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.",
   );
+});
+
+Deno.test("the header strip shows conditions and spend, and Halt and Resume ignore repeats", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{
+    url: string;
+    method?: string;
+    resolve: (r: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const fetch = (url: string, init?: { method?: string }) =>
+    new Promise<Response>((resolve, reject) =>
+      pending.push({ url, method: init?.method, resolve, reject })
+    );
+  let ageTimer = () => {};
+  let refreshTimer = () => {};
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    { pushState: (_s: null, _t: string, path: string) => location.pathname = path },
+    fetch,
+    EventSource,
+    () => {},
+    (callback: () => void) => ageTimer = callback,
+    (callback: () => void) => {
+      refreshTimer = callback;
+      return 1;
+    },
+    () => {},
+    { now: () => Date.now(), parse: Date.parse },
+  );
+  const strip = page.getElementById("strip");
+  const quiet = { haltedSince: null, capUsd: 5, todayUsd: 1.5, capReached: false, stuck: 0 };
+  const show = async (facts: unknown) => {
+    stream.emit("open");
+    pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: facts }));
+    await tick();
+  };
+
+  await show(quiet);
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.querySelector("a")?.href, "/cost");
+  assertEquals(page.activeElement, null);
+  strip.querySelector("a")!.focus();
+
+  const previousRequests = pending.length;
+  ageTimer();
+  assertEquals(page.activeElement, strip.querySelector("a"));
+  refreshTimer();
+  assertEquals(pending.length, previousRequests + 1);
+  assertEquals(pending.at(-1)!.url, "/api/needs-you");
+  pending.at(-1)!.resolve(Response.json({
+    ...snapshot(0),
+    strip: { ...quiet, todayUsd: 0, capUsd: 6 },
+  }));
+  await tick();
+  assertEquals(strip.textContent, "$0.00 of $6.00 todayHalt");
+  assertEquals(page.activeElement, strip.querySelector("a"));
+
+  await show({
+    ...quiet,
+    haltedSince: new Date().toISOString(),
+    capReached: true,
+    stuck: 2,
+  });
+  assertEquals(
+    strip.textContent,
+    "Halted just nowDaily cap reached2 Stuck agents$1.50 of $5.00 todayResume",
+  );
+  assertEquals(page.activeElement, strip.querySelector("a"));
+
+  await show({ ...quiet, capUsd: null });
+  assertEquals(page.activeElement, strip.querySelector("a"));
+  strip.querySelector("a")!.click();
+  assertEquals(location.pathname, "/cost");
+  const halt = strip.querySelector("button")!;
+  assertEquals(strip.textContent, "$1.50 todayHalt");
+  halt.click(2); // a held key or a double click
+  assertEquals(pending.filter((p) => p.url === "/api/halt").length, 0);
+  halt.click();
+  halt.click(); // the second click while the first is in flight
+  const posts = pending.filter((p) => p.url === "/api/halt");
+  assertEquals(posts.length, 1);
+  assertEquals(posts[0].method, "POST");
+  posts[0].resolve(Response.json({ ok: true }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({ ok: false, error: "Cannot halt", code: "blocked" }, {
+    status: 409,
+  }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent.includes("Cannot halt"), true);
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({
+    ok: false,
+    error: "Kiln is not running.",
+    code: "down",
+  }, { status: 503 }));
+  await tick();
+  pending.at(-1)!.resolve(
+    Response.json({ running: false, count: 0, groups: [], stale: [], decided: [] }),
+  );
+  await tick();
+  assertEquals(strip.textContent, "");
+  await show(quiet);
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.resolve(Response.json({
+    ok: false,
+    error: "Kiln is not running.",
+    code: "down",
+  }, { status: 503 }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+
+  strip.querySelector("button")!.click();
+  pending.at(-1)!.reject(new Error("offline"));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
 });
