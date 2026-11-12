@@ -6,8 +6,7 @@ kiln dashboard [--port <n>] [--no-open]
 
 The Dashboard is a browser window onto Kiln. It runs as its own foreground process, a client of
 the daemon's unix socket like the CLI (see `docs/adr/0001-dashboard-is-a-separate-client-process.md`);
-the daemon gains no network surface. It never starts the daemon: with Kiln not running the page
-still loads and says so.
+the daemon gains no network surface.
 
 The page is a split pane. The left rail holds **Needs you**: the open Escalations, grouped by
 Project, oldest first, each row showing its Gate kind (or `No gate`), Request, summary and age.

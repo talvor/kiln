@@ -309,7 +309,8 @@
   function failedRefresh(request) {
     if (request < latestRefresh || retryTimer !== null) return;
     if (failedRefreshes === retryDelays.length) {
-      problem = "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.";
+      problem =
+        "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.";
       view = { running: true, count: 0, groups: [], stale: [], decided: [] };
       stream.close();
       render();
