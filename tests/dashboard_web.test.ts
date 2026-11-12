@@ -654,3 +654,193 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   await tick();
   assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
 });
+
+const requestRow = (id: number, over: Record<string, unknown> = {}) => ({
+  id,
+  project: "Example",
+  status: "active",
+  description: `Request ${id} work`,
+  playbook: null,
+  costUsd: 1,
+  budgetUsd: 4,
+  waiting: false,
+  recent: true,
+  ...over,
+});
+const overview = (events: { id: number; ts: string; text: string }[], status = "active") => ({
+  running: true,
+  request: {
+    id: 3,
+    project: "Example",
+    status,
+    playbook: "build",
+    description: "Build it",
+    failure: status === "failed" ? "Cancelled by the user." : null,
+    costUsd: 1,
+    budgetUsd: 4,
+    steps: [{
+      position: 1,
+      name: "Implement",
+      department: "dev",
+      status: "active",
+      retries: 0,
+      failure: null,
+      assignments: [{
+        id: 9,
+        worker: "dev-1",
+        status: "active",
+        turnsUsed: 3,
+        spendUsd: 0.5,
+        limitReached: null,
+      }],
+    }],
+  },
+  events: events.map((e) => ({ ...e, kind: "x" })),
+  last: events.at(-1)?.id ?? 0,
+});
+
+Deno.test("the Requests rail filters, marks, and a Request opens its Overview and cancels safely", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{ url: string; method?: string; resolve: (response: Response) => void }> =
+    [];
+  const fetch = (url: string, init?: { method?: string }) =>
+    new Promise<Response>((resolve) => pending.push({ url, method: init?.method, resolve }));
+  let now = 1_000_000;
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  const history: string[] = [];
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    {
+      pushState: (_state: null, _title: string, path: string) => {
+        history.push(path);
+        location.pathname = path;
+      },
+    },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    (callback: () => void) => {
+      callback(); // the debounce: re-fetch now
+      return 1;
+    },
+    () => {},
+    class extends Date {
+      static override now() {
+        return now;
+      }
+    },
+  );
+  const answer = async (match: (p: { url: string }) => boolean, response: Response) => {
+    const found = pending.findLast(match)!;
+    pending.splice(pending.indexOf(found), 1);
+    found.resolve(response);
+    await tick();
+  };
+  const snap = (extra: Record<string, unknown>) => Response.json({ ...snapshot(0), ...extra });
+  stream!.emit("open");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    snap({
+      requests: [
+        requestRow(3, { waiting: true }),
+        requestRow(2, { status: "failed" }),
+        requestRow(1, { status: "done", recent: false }),
+      ],
+    }),
+  );
+  const rail = page.getElementById("rail");
+  const main = page.getElementById("main");
+  const rows = () => rail.querySelectorAll("button.row").map((b) => b.textContent);
+  assertEquals(rows().length, 2);
+  assertEquals(rows()[0].includes("waiting on you"), true);
+  assertEquals(rows()[1].includes("failed"), true);
+  const toggleButton = rail.children.find((c) => c.textContent === "Show finished")!;
+  toggleButton.click();
+  assertEquals(rows().length, 3);
+  assertEquals(rail.children.some((c) => c.textContent === "Hide finished"), true);
+
+  rail.querySelectorAll("button.row")[0].click();
+  assertEquals(history, ["/requests/3"]);
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  assertEquals(main.textContent.includes("Budget: $1.00 of $4.00 (25%)"), true);
+  assertEquals(main.textContent.includes("1. Implement · dev · active"), true);
+  assertEquals(main.textContent.includes("dev-1 · active · 3 turns"), true);
+  assertEquals(main.textContent.includes("Nothing has happened yet."), true);
+
+  // A new event arrives: the feed updates without a page load.
+  stream!.emit("changed");
+  await answer((p) => p.url === "/api/needs-you", snap({ requests: [requestRow(3)] }));
+  await answer(
+    (p) => p.url === "/api/requests/3",
+    Response.json(overview(Array.from({ length: 101 }, (_, i) => ({
+      id: i + 1,
+      ts: new Date(now).toISOString(),
+      text: "Event " + (i + 1),
+    })))),
+  );
+  const feed = main.querySelector("ul")!;
+  assertEquals(feed.children.length, 101);
+  assertEquals(feed.children[0].textContent.includes("Event 101"), true);
+  assertEquals(feed.children[100].textContent.includes("Event 1"), true);
+
+  // Cancel needs a confirm step, and a repeated gesture cannot take it.
+  const cancel = main.querySelector("button")!;
+  assertEquals(cancel.textContent, "Cancel Request");
+  cancel.click();
+  assertEquals(pending.some((p) => p.url.endsWith("/cancel")), false);
+  const buttons = main.querySelectorAll("button");
+  assertEquals(buttons.map((b) => b.textContent), ["Keep it running", "Yes, cancel it"]);
+  const yes = buttons[1];
+  yes.click(); // too soon after the step appeared
+  yes.click(2); // a double click
+  assertEquals(pending.some((p) => p.url.endsWith("/cancel")), false);
+  now += 500;
+  yes.click(2); // a held key
+  assertEquals(pending.some((p) => p.url.endsWith("/cancel")), false);
+  yes.click();
+  assertEquals(pending.filter((p) => p.url.endsWith("/cancel")).length, 1);
+  yes.click(); // in flight: ignored
+  assertEquals(pending.filter((p) => p.url.endsWith("/cancel")).length, 1);
+  assertEquals(pending.find((p) => p.url.endsWith("/cancel"))!.method, "POST");
+  await answer((p) => p.url.endsWith("/cancel"), Response.json({ ok: true }));
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    snap({ requests: [requestRow(3, { waiting: true })] }),
+  );
+  assertEquals(pending.some((p) => p.url === "/api/requests/3?after=101"), true);
+  await answer(
+    (p) => p.url === "/api/requests/3?after=101",
+    Response.json(overview([{
+      id: 102,
+      ts: new Date(now).toISOString(),
+      text: "Cancelled",
+    }], "failed")),
+  );
+  assertEquals(main.textContent.includes("Failed: Cancelled by the user."), true);
+  assertEquals(main.children[1].textContent.includes("failed"), true);
+  assertEquals(main.children[1].textContent.includes("waiting on you"), false);
+  assertEquals(main.querySelector("ul")?.children.length, 102);
+  assertEquals(main.querySelector("ul")?.children[101].textContent.includes("Event 1"), true);
+  assertEquals(main.querySelectorAll("button").length, 0); // nothing left to cancel
+});

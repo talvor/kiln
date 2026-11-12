@@ -19,8 +19,8 @@ The selected Escalation has **Approve** (one click) and **Reject** (it needs a r
 refusals are shown as worded, for instance when the Escalation was already decided or went stale.
 Approving a `qa-passed` Gate whose pull request is not merged is refused by the daemon; the page
 shows that and offers **Approve anyway**, which sends the confirmation. Decisions made here record
-Source `dashboard`. Below Needs you, the collapsed **Recently decided** list holds the last 20
-decisions, newest first, with their outcome, time, Source and any reason.
+Source `dashboard`. The collapsed **Recently decided** list holds the last 20 decisions, newest
+first, with their outcome, time, Source and any reason.
 
 The **header strip** shows what needs attention at a glance: **Halted** (with how long ago),
 **Daily cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap
@@ -30,8 +30,19 @@ agents; each is one click, with no confirmation, and records Source `dashboard`.
 click counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
 `health.report`, in the same snapshot as Needs you.
 
-Views have their own addresses (`/`, `/cost` and `/escalations/<id>`), so reload, back and forward
-work, and moving between them swaps the main area without reloading the page.
+Under Needs you, the **Requests** rail lists the Requests that are running or waiting, and those
+that failed in the last 24 hours. An unfinished one with an open Escalation is marked **waiting on
+you**. **Show finished** adds the Requests that finished or failed longer ago. A failure without an
+end event uses its last recorded event for the 24-hour check; without any timestamp it appears only
+under **Show finished**. Selecting one opens its **Overview** at `/requests/<id>`: the step timeline
+with each step's assignments, the Budget bar (cost against the Request's Budget) and a live event
+feed that updates as events arrive. A running or waiting Request has **Cancel**: it asks "Cancel
+Request N?" first; only the confirmation cancels. As with **Approve anyway**, a double click or a
+held key cannot confirm. The Request then shows as failed, and the cancel records Source
+`dashboard`. The Transcript and Report tabs come in a later change.
+
+Views have their own addresses (`/`, `/cost`, `/escalations/<id>` and `/requests/<id>`), so reload,
+back and forward work, and moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
 re-fetches its snapshot, debounced. It also re-fetches every 30 seconds so the strip picks up a new

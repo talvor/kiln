@@ -224,6 +224,73 @@
     .note {
       color: var(--muted);
     }
+    .toggle {
+      margin: 0.25rem;
+      padding: 0.1rem 0.6rem;
+      font-size: 0.85rem;
+    }
+    .btn.danger {
+      background: #8a1c24;
+      border-color: #8a1c24;
+      color: #fff;
+    }
+    .tabs {
+      display: flex;
+      gap: 1rem;
+      border-bottom: 1px solid var(--line);
+      margin: 0.75rem 0;
+    }
+    .tab {
+      padding: 0.25rem 0;
+      color: var(--muted);
+    }
+    .tab.active {
+      color: var(--fg);
+      border-bottom: 2px solid var(--fg);
+    }
+    .track {
+      height: 0.6rem;
+      max-width: 30rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .fill {
+      height: 100%;
+      background: #1e7e34;
+    }
+    .fill.over {
+      background: #8a1c24;
+    }
+    .timeline {
+      padding-left: 1.5rem;
+      margin: 0.25rem 0;
+    }
+    .step.failed {
+      color: #8a1c24;
+    }
+    .step.done {
+      color: var(--muted);
+    }
+    .assignment,
+    .meta {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .feed {
+      list-style: none;
+      padding: 0;
+      margin: 0.25rem 0;
+      font-size: 0.9rem;
+      max-height: 20rem;
+      overflow-y: auto;
+    }
+    .feed li {
+      padding: 0.15rem 0;
+      border-top: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
     </style>
   </head>
   <body>

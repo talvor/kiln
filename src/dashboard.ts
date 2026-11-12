@@ -7,6 +7,7 @@
 import { call, DaemonError, DaemonNotRunning } from "./client.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
+import { END_KINDS, type RequestListing } from "./observe.ts";
 import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
@@ -199,7 +200,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     try {
       const [escalations, requests, strip] = await Promise.all([
         call<EscalationView[]>(paths, "escalations.list", { all: true }),
-        call<{ id: number; project: string }[]>(paths, "requests.list", { all: true }),
+        call<RequestListing[]>(paths, "requests.list", { all: true }),
         stripFacts(),
       ]);
       return json({
@@ -207,10 +208,105 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         strip,
         ...needsYou(escalations, requests),
         decided: await recentlyDecided(escalations),
+        requests: await railRequests(requests, escalations),
       });
     } catch (err) {
       if (err instanceof DaemonNotRunning) {
-        return json({ running: false, count: 0, groups: [], stale: [], decided: [] });
+        return json({
+          running: false,
+          count: 0,
+          groups: [],
+          stale: [],
+          decided: [],
+          requests: [],
+        });
+      }
+      throw err;
+    }
+  }
+
+  let railEventCursor = 0;
+  const failedEnds = new Map<number, { id: number; ts: string }>();
+  const knownTimes = new Map<number, { id: number; ts: string }>();
+
+  /**
+   * The Requests rail: what is running or waiting, and what failed in the last 24 hours, are
+   * `recent`; the rest (finished, or failed longer ago) only show under "Show finished". A Request
+   * with an open Escalation is `waiting` on the user.
+   */
+  async function railRequests(requests: RequestListing[], escalations: EscalationView[]) {
+    const waiting = new Set(
+      escalations.filter((e) => e.status === "open" && e.requestId !== null).map((e) =>
+        e.requestId
+      ),
+    );
+    if (requests.some((r) => r.status === "failed" && !failedEnds.has(r.id))) {
+      const feed = await call<{
+        events: { id: number; ts: string; kind: string; requestId: number | null }[];
+        last: number;
+      }>(paths, "events.since", { after: railEventCursor });
+      for (const event of feed.events) {
+        const id = event.requestId;
+        if (id === null) continue;
+        if (event.id > (knownTimes.get(id)?.id ?? 0)) {
+          knownTimes.set(id, { id: event.id, ts: event.ts });
+        }
+        if (END_KINDS.includes(event.kind) && event.id > (failedEnds.get(id)?.id ?? 0)) {
+          failedEnds.set(id, { id: event.id, ts: event.ts });
+        }
+      }
+      railEventCursor = Math.max(railEventCursor, feed.last);
+    }
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return requests.map((r) => {
+      const finished = r.status === "done" || r.status === "failed";
+      return {
+        id: r.id,
+        project: r.project,
+        status: r.status,
+        description: r.description,
+        playbook: r.playbook,
+        waiting: !finished && waiting.has(r.id),
+        recent: !finished ||
+          (r.status === "failed" &&
+            Date.parse(failedEnds.get(r.id)?.ts ?? knownTimes.get(r.id)?.ts ?? "") >= dayAgo),
+      };
+    });
+  }
+
+  /** One Request for its Overview: the status with its steps, and the events of its life. */
+  async function requestView(id: number, after: number): Promise<Response> {
+    try {
+      const request = await call(paths, "requests.status", { id });
+      const feed = await call<{ events: unknown[]; last: number }>(
+        paths,
+        "requests.events",
+        { id, after },
+      );
+      return json({ running: true, request, events: feed.events, last: feed.last });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return json({ running: false }, 503);
+      if (err instanceof DaemonError) {
+        return json({ running: true, error: err.message, code: err.code ?? null }, 404);
+      }
+      throw err;
+    }
+  }
+
+  /** Cancel a Request for the user. The daemon's refusal is passed on as it was worded. */
+  async function cancelRequest(id: number): Promise<Response> {
+    try {
+      await call(paths, "requests.cancel", { id, via: "dashboard" });
+      return json({ ok: true });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) {
+        return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
+      }
+      if (err instanceof DaemonError) {
+        return json(
+          { ok: false, error: err.message, code: err.code ?? null },
+          err.code === "not-found" ? 404 : 409,
+        );
       }
       throw err;
     }
@@ -368,6 +464,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     if (!SAFE_METHODS.has(req.method)) {
       const act = /^\/api\/escalations\/(\d+)\/decide$/.exec(url.pathname);
       if (act && req.method === "POST") return await decide(req, Number(act[1]));
+      const cancel = /^\/api\/requests\/(\d+)\/cancel$/.exec(url.pathname);
+      if (cancel && req.method === "POST") return await cancelRequest(Number(cancel[1]));
       if (req.method === "POST" && url.pathname === "/api/halt") {
         return await haltOrResume("kiln.halt");
       }
@@ -378,7 +476,8 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     // Every view has its own address; the page swaps its main area to match.
     if (
-      url.pathname === "/" || url.pathname === "/cost" || /^\/escalations\/\d+$/.test(url.pathname)
+      url.pathname === "/" || url.pathname === "/cost" ||
+      /^\/(escalations|requests)\/\d+$/.test(url.pathname)
     ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
@@ -390,6 +489,15 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       });
     }
     if (url.pathname === "/events") return events(req.headers.get("last-event-id"));
+    const detail = /^\/api\/requests\/(\d+)$/.exec(url.pathname);
+    if (detail) {
+      const rawAfter = url.searchParams.get("after");
+      const after = rawAfter === null ? 0 : Number(rawAfter);
+      if (rawAfter !== null && (!/^\d+$/.test(rawAfter) || !Number.isSafeInteger(after))) {
+        return refuse(400, "Invalid event cursor.");
+      }
+      return await requestView(Number(detail[1]), after);
+    }
     if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");
