@@ -510,6 +510,8 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   const pending: Array<{ url: string; method?: string; resolve: (r: Response) => void }> = [];
   const fetch = (url: string, init?: { method?: string }) =>
     new Promise<Response>((resolve) => pending.push({ url, method: init?.method, resolve }));
+  let ageTimer = () => {};
+  let refreshTimer = () => {};
   let stream: EventSource;
   class EventSource extends PageEvents {
     constructor(url: string) {
@@ -536,8 +538,11 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     fetch,
     EventSource,
     () => {},
-    () => {},
-    () => 1,
+    (callback: () => void) => ageTimer = callback,
+    (callback: () => void) => {
+      refreshTimer = callback;
+      return 1;
+    },
     () => {},
     { now: () => Date.now(), parse: Date.parse },
   );
@@ -552,6 +557,18 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   await show(quiet);
   assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
   assertEquals(strip.querySelector("a")?.href, "/cost");
+
+  const previousRequests = pending.length;
+  ageTimer();
+  refreshTimer();
+  assertEquals(pending.length, previousRequests + 1);
+  assertEquals(pending.at(-1)!.url, "/api/needs-you");
+  pending.at(-1)!.resolve(Response.json({
+    ...snapshot(0),
+    strip: { ...quiet, todayUsd: 0, capUsd: 6 },
+  }));
+  await tick();
+  assertEquals(strip.textContent, "$0.00 of $6.00 todayHalt");
 
   await show({
     ...quiet,

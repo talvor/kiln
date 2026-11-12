@@ -432,7 +432,10 @@
     if (act.id !== selectedId()) act = { ...blankAct };
     render();
   });
-  setInterval(render, 30000); // ages move on
+  setInterval(() => {
+    render(); // ages move on
+    refreshSoon();
+  }, 30000);
 
   const stream = new EventSource("/events"); // one stream for this tab
   stream.addEventListener("changed", refreshSoon);
