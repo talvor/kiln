@@ -33,6 +33,35 @@ superior), and, for the overseer, `raise_escalation`, `read_escalations` (see
 [escalations](escalations.md)), `list_projects`, `list_playbooks`, `start_request` and
 `request_status` (see [the chat guide](chat.md)). Same-user local processes are trusted for now.
 
+### Optional: a scoped token so a worker's own `gh` works
+
+A worker's sandbox cannot see Kiln's GitHub credentials (`~/.config/gh` is unreadable), so a bare
+`gh` in its shell is unauthenticated. To fix that without handing over your own token, create a
+GitHub App, give it read-only repository permissions (Metadata, Issues, Pull requests, Contents,
+Actions), install it on the Projects' repositories, download its private key, and write
+`<config>/github.json`:
+
+```json
+{
+  "app": { "id": 123456, "privateKeyFile": "~/.config/kiln/github-app.pem" },
+  "permissions": { "issues": "read", "pull_requests": "read", "contents": "read" },
+  "apiUrl": "https://api.github.com"
+}
+```
+
+Only `app` is required; `permissions` defaults to the read-only set above. Before a worker is
+launched in a Request's or Assignment's Worktree, Kiln asks GitHub for an installation token
+limited to **that Project's repository** and those permissions, and gives it to the worker as
+`GH_TOKEN` and `GITHUB_TOKEN`. It lasts about an hour and is cached per repository until ten minutes
+remain, so a launch never outlives it. The sandbox's network allowlist gains `api.github.com` and
+`github.com` for that launch. Without the file, or if a token cannot be had (the App is not
+installed there, GitHub says no), the worker gets none and Kiln logs a warning. Your own
+credentials are never passed on. The file is read at each launch.
+
+A worker can read its own environment, so the token is visible to it: keep the permissions minimal,
+and do not grant `write` unless you want workers to be able to push or comment. For GitHub
+Enterprise, set `apiUrl`; the sandbox allowlist is still `github.com` for now.
+
 ## Worker confinement
 
 Every agent Kiln wakes runs deny-by-default: it may use only the built-in tools its role lists

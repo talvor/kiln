@@ -17,6 +17,12 @@ if (Deno.args[0] === "--version") {
   Deno.exit(0);
 }
 
+if (Deno.args[0] === "repo" && Deno.args[1] === "view") {
+  // The Project's repository, as the forge names it.
+  console.log('{"nameWithOwner":"talvor/kiln-fixture"}');
+  Deno.exit(0);
+}
+
 if (Deno.args[0] === "api") {
   const apiDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", "api");
   const apiFile = join(apiDir, "script.json");

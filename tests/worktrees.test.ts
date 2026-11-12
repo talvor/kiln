@@ -9,6 +9,8 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { basename, dirname, join, relative } from "@std/path";
+import { generateKeyPairSync } from "node:crypto";
+import { DEFAULT_PERMISSIONS } from "../src/ghtoken.ts";
 import { runKiln } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
 import {
@@ -692,4 +694,88 @@ withWorld("requests and assignments are refused when they cannot start", async (
   const paused = await world.kiln("request", "start", "remote");
   assertEquals(paused.code, 1);
   assertStringIncludes(paused.stderr, "paused");
+});
+
+withWorld(
+  "a worker's launch gets a scoped GitHub token when an App is configured",
+  async (world) => {
+    await register(world);
+    await startRequest(world);
+    const a = await startAssignment(world, 1);
+    const launchEnv = async () => {
+      await world.launcher.script([{ result: "ok" }]);
+      const r = await world.kiln("launch", "check token", "--cwd", a.Worktree);
+      assertEquals(r.code, 0, r.stderr);
+      return (await world.launcher.calls()).at(-1)!.env!;
+    };
+
+    // No github.json: no token.
+    assertEquals((await launchEnv()).GH_TOKEN, undefined);
+
+    // A fake GitHub that issues a token for the one repository.
+    const seen: { url: string; body?: unknown }[] = [];
+    const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+      const url = new URL(req.url);
+      seen.push({
+        url: url.pathname,
+        body: req.method === "POST" ? await req.json() : undefined,
+      });
+      return url.pathname.endsWith("/installation") ? Response.json({ id: 5 }) : Response.json(
+        { token: "ghs_scoped", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+        { status: 201 },
+      );
+    });
+    try {
+      const pem = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: "pkcs1", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      }).privateKey as string;
+      const keyFile = join(world.dirs.config, "app.pem");
+      await Deno.mkdir(world.dirs.config, { recursive: true });
+      await Deno.writeTextFile(keyFile, pem);
+      await Deno.writeTextFile(
+        join(world.dirs.config, "github.json"),
+        JSON.stringify({
+          app: { id: 31, privateKeyFile: keyFile },
+          apiUrl: `http://127.0.0.1:${server.addr.port}`,
+        }),
+      );
+      const env = await launchEnv();
+      assertEquals([env.GH_TOKEN, env.GITHUB_TOKEN], ["ghs_scoped", "ghs_scoped"]);
+      assertEquals(seen.map((s) => s.url), [
+        "/repos/talvor/kiln-fixture/installation",
+        "/app/installations/5/access_tokens",
+      ]);
+      assertEquals(seen[1].body, {
+        repositories: ["kiln-fixture"],
+        permissions: DEFAULT_PERMISSIONS,
+      });
+      // The token is for launches; nothing prints it.
+      const status = await world.kiln("request", "status", "1");
+      assert(!status.stdout.includes("ghs_scoped"));
+    } finally {
+      await server.shutdown();
+    }
+  },
+);
+
+withWorld("a worker holding a GitHub token may reach GitHub from its sandbox", async (world) => {
+  await register(world);
+  await startRequest(world);
+  const a = await startAssignment(world, 1);
+  const wt = record(Number(basename(dirname(a.TMPDIR)).split("-")[0]), a.Worktree);
+  Deno.env.set("XDG_RUNTIME_DIR", join(world.root, "xdg"));
+  try {
+    const base = { network: { allowedDomains: ["example.com"] } };
+    const without = await sandboxFor(base, wt);
+    assertEquals(without!.network, base.network);
+    const withToken = await sandboxFor(base, wt, true);
+    assertEquals(
+      (withToken!.network as { allowedDomains: string[] }).allowedDomains,
+      ["example.com", "api.github.com", "github.com"],
+    );
+  } finally {
+    Deno.env.delete("XDG_RUNTIME_DIR");
+  }
 });

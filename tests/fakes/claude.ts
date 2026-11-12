@@ -77,6 +77,8 @@ Deno.writeTextFileSync(
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_KEY_0",
         "GIT_CONFIG_VALUE_0",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
       ]
         .map((key) => [key, Deno.env.get(key)]),
     ),
