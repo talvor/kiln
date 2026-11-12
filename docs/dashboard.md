@@ -39,9 +39,14 @@ with each step's assignments, the Budget bar (cost against the Request's Budget)
 feed that updates as events arrive. A running or waiting Request has **Cancel**: it asks "Cancel
 Request N?" first; only the confirmation cancels. As with **Approve anyway**, a double click or a
 held key cannot confirm. The Request then shows as failed, and the cancel records Source
-`dashboard`. The Transcript and Report tabs come in a later change.
+`dashboard`.
 
-Views have their own addresses (`/`, `/cost`, `/escalations/<id>` and `/requests/<id>`), so reload,
+The **Transcript** tab (`/requests/<id>/transcript`) loads the Request's Messages, oldest first,
+and appends new ones live while the Request is active. Each shows sender → recipient and kind, with
+badges for Messages written by Kiln and for dead-lettered ones. Text is plain (never interpreted as
+HTML) and cut at about 600 characters with **Show more**. The Report tab comes in a later change.
+
+Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>` and `/requests/<id>/transcript`), so reload,
 back and forward work, and moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page

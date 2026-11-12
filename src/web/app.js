@@ -14,6 +14,11 @@
   // The selected Request's Overview, fetched on its own. `cancelling` is the Cancel confirm step.
   let detail = { id: null, data: null, error: null };
   const requestDetails = new Map();
+  // The Transcript tab's Messages per Request, and which long ones the user opened.
+  let transcript = { id: null, messages: null, error: null };
+  const transcripts = new Map();
+  const opened = new Set();
+  const CUT = 600;
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
   let cancelAct = { ...blankCancel };
   let problem = null;
@@ -53,9 +58,10 @@
   };
 
   const selectedRequestId = () => {
-    const match = /^\/requests\/(\d+)$/.exec(location.pathname);
+    const match = /^\/requests\/(\d+)(\/transcript)?$/.exec(location.pathname);
     return match ? Number(match[1]) : null;
   };
+  const onTranscript = () => location.pathname.endsWith("/transcript");
 
   function go(path) {
     if (path !== location.pathname) {
@@ -303,6 +309,36 @@
       };
     }
     render();
+    if (onTranscript()) await loadTranscript(id, current);
+  }
+
+  /** The Messages of the selected Request. A finished Request's do not change, so they load once. */
+  async function loadTranscript(id, current) {
+    const cached = transcripts.get(id);
+    const status = detail.data?.request.status;
+    if (cached && (status === "done" || status === "failed")) {
+      transcript = { id, messages: cached, error: null };
+      return render();
+    }
+    try {
+      const res = await fetch("/api/requests/" + id + "/transcript");
+      const out = await res.json().catch(() => ({ error: "Something went wrong." }));
+      if (!current()) return;
+      if (res.ok) {
+        transcripts.set(id, out.messages);
+        transcript = { id, messages: out.messages, error: null };
+      } else {
+        transcript = { id, messages: null, error: out.error ?? "Something went wrong." };
+      }
+    } catch {
+      if (!current()) return;
+      transcript = {
+        id,
+        messages: transcript.id === id ? transcript.messages : null,
+        error: "The dashboard could not be reached.",
+      };
+    }
+    render();
   }
 
   async function cancelRequest(id) {
@@ -432,6 +468,50 @@
     return list;
   }
 
+  /** A Message's body as plain text: one `key: value` line per field. */
+  function messageText(body) {
+    return Object.entries(body ?? {}).map(([key, value]) =>
+      key + ": " + (typeof value === "string" ? value : JSON.stringify(value))
+    ).join("\n");
+  }
+
+  function messageItem(requestId, m) {
+    const item = el("li", "msg");
+    const head = el("div", "meta", clock(m.at) + " · " + m.from + " → " + m.to + " · " + m.kind);
+    if (m.synthesised) head.append(el("span", "badge", "written by Kiln"));
+    if (m.deadLettered) head.append(el("span", "badge", "dead-lettered"));
+    item.append(head);
+    const text = messageText(m.body);
+    const key = requestId + ":" + m.id;
+    const long = text.length > CUT;
+    const open = opened.has(key);
+    item.append(el("pre", "detail", long && !open ? text.slice(0, CUT) + "…" : text));
+    if (long) {
+      const more = el("button", "btn", open ? "Show less" : "Show more");
+      more.type = "button";
+      more.addEventListener("click", () => {
+        if (opened.has(key)) opened.delete(key);
+        else opened.add(key);
+        render();
+      });
+      item.append(more);
+    }
+    return item;
+  }
+
+  function renderTranscript(id) {
+    if (transcript.id !== id || (transcript.messages === null && transcript.error === null)) {
+      return main.append(el("p", "note", "Loading the transcript…"));
+    }
+    if (transcript.messages === null) return main.append(el("p", "note", transcript.error));
+    if (transcript.messages.length === 0) {
+      return main.append(el("p", "empty", "No Messages were sent for this Request."));
+    }
+    const list = el("ul", "feed transcript");
+    for (const m of transcript.messages) list.append(messageItem(id, m));
+    main.append(list);
+  }
+
   function renderRequest(id) {
     const row = (view.requests ?? []).find((r) => r.id === id);
     if (detail.id !== id || (detail.data === null && detail.error === null)) {
@@ -455,9 +535,28 @@
     );
     if (r.description) main.append(el("p", "", r.description));
     const tabs = el("div", "tabs");
-    tabs.append(el("span", "tab active", "Overview"));
+    const shown = onTranscript() ? "Transcript" : "Overview";
+    for (
+      const [label, path] of [["Overview", "/requests/" + id], [
+        "Transcript",
+        "/requests/" + id + "/transcript",
+      ]]
+    ) {
+      const tab = el("a", "tab" + (label === shown ? " active" : ""), label);
+      tab.href = path;
+      tab.addEventListener("click", (event) => {
+        event.preventDefault();
+        go(path);
+      });
+      tabs.append(tab);
+    }
     main.append(tabs);
     if (r.failure) main.append(el("p", "refusal", "Failed: " + r.failure));
+    if (onTranscript()) {
+      renderTranscript(id);
+      if (live) main.append(cancelControls(r));
+      return;
+    }
     main.append(budgetBar(r), el("h3", "", "Steps"));
     if (r.steps.length === 0) main.append(el("p", "empty", "No steps yet."));
     else main.append(timeline(r));

@@ -59,6 +59,9 @@ class PageElement {
     const descendants = this.children.flatMap((
       child,
     ) => [child, ...child.querySelectorAll(selector)]);
+    if (selector === "li" || selector === "img") {
+      return descendants.filter((node) => node.tag === selector);
+    }
     return descendants.filter((node) =>
       node.tag === "button" &&
       (selector === "button" || node.className.split(" ").includes("row"))
@@ -843,4 +846,114 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
   assertEquals(main.querySelector("ul")?.children.length, 102);
   assertEquals(main.querySelector("ul")?.children[101].textContent.includes("Event 1"), true);
   assertEquals(main.querySelectorAll("button").length, 0); // nothing left to cancel
+});
+
+Deno.test("the Transcript tab loads Messages, appends live, flags and truncates them as plain text", async () => {
+  const page = new Page();
+  const location = { pathname: "/requests/3/transcript" };
+  const pending: Array<{ url: string; resolve: (response: Response) => void }> = [];
+  const fetch = (url: string) => new Promise<Response>((resolve) => pending.push({ url, resolve }));
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    {
+      pushState: (_s: null, _t: string, path: string) => {
+        location.pathname = path;
+      },
+    },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    (callback: () => void) => {
+      callback();
+      return 1;
+    },
+    () => {},
+    Date,
+  );
+  const answer = async (match: (p: { url: string }) => boolean, response: Response) => {
+    const found = pending.findLast(match)!;
+    pending.splice(pending.indexOf(found), 1);
+    found.resolve(response);
+    await tick();
+  };
+  const message = (id: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    at: new Date().toISOString(),
+    from: "overseer",
+    to: "dev-lead",
+    kind: "assignment",
+    synthesised: false,
+    inReplyTo: null,
+    body: { text: "short" },
+    deadLettered: false,
+    ...extra,
+  });
+  stream!.emit("open");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  const long = "x".repeat(700);
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({
+      messages: [
+        message(1, { body: { text: "<img src=x onerror=alert(1)>" } }),
+        message(2, { synthesised: true, deadLettered: true, from: "kiln", body: { text: long } }),
+      ],
+    }),
+  );
+  const main = page.getElementById("main");
+  const items = () => main.querySelectorAll("li");
+  assertEquals(items().length, 2);
+  assertEquals(items()[0].textContent.includes("overseer → dev-lead · assignment"), true);
+  assertEquals(items()[0].textContent.includes("<img src=x onerror=alert(1)>"), true);
+  assertEquals(items()[0].querySelectorAll("img").length, 0); // plain text, not markup
+  assertEquals(items()[0].textContent.includes("written by Kiln"), false);
+  assertEquals(items()[1].textContent.includes("written by Kiln"), true);
+  assertEquals(items()[1].textContent.includes("dead-lettered"), true);
+  assertEquals(items()[1].textContent.includes(long), false);
+  items()[1].querySelectorAll("button")[0].click();
+  assertEquals(items()[1].textContent.includes(long), true);
+  items()[1].querySelectorAll("button")[0].click();
+  assertEquals(items()[1].textContent.includes(long), false);
+
+  // A new Message arrives while the Request is active: it is appended.
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer(
+    (p) => p.url.startsWith("/api/requests/3") && !p.url.endsWith("transcript"),
+    Response.json(overview([])),
+  );
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({ messages: [message(1), message(2), message(3, { kind: "result" })] }),
+  );
+  assertEquals(items().length, 3);
+  assertEquals(items()[2].textContent.includes("result"), true);
 });
