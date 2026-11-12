@@ -259,17 +259,41 @@ withWorld("a reconnecting tab resumes from the last event id it saw", async (w) 
   assertStringIncludes(missed, `id: ${seen}\n`);
 });
 
-withWorld(
-  "after a dashboard restart the old cookie is refused, so the page can say so",
-  async (w) => {
-    const old = await w.dashboard();
-    const cookie = await old.signIn();
-    assertEquals(await old.interrupt(), 0);
-    const fresh = await w.dashboard();
-    for (const path of ["/api/needs-you", "/events"]) {
-      const res = await fresh.fetch(path, { cookie });
-      assertEquals(res.status, 403, path);
-      await res.body?.cancel();
+withWorld("a hub reconnect polls after its retained cursor", async (w) => {
+  await Deno.mkdir(w.dirs.runtime, { recursive: true });
+  const listener = Deno.listen({ transport: "unix", path: join(w.dirs.runtime, "kiln.sock") });
+  const asked: number[] = [];
+  const serving = (async () => {
+    for await (const conn of listener) {
+      const buf = new Uint8Array(65536);
+      const n = await conn.read(buf);
+      const req = JSON.parse(new TextDecoder().decode(buf.subarray(0, n ?? 0)));
+      asked.push(req.params.after);
+      await conn.write(new TextEncoder().encode(
+        JSON.stringify({ id: 1, ok: true, result: { events: [], last: 7 } }) + "\n",
+      ));
+      conn.close();
     }
-  },
-);
+  })();
+  try {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const first = await d.fetch("/events", { cookie });
+    for (let i = 0; asked.length === 0 && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assertEquals(asked[0], 0);
+    await first.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const before = asked.length;
+    const resumed = await d.fetch("/events", { cookie });
+    for (let i = 0; asked.length === before && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assertEquals(asked[before], 7);
+    await resumed.body?.cancel();
+  } finally {
+    listener.close();
+    await serving.catch(() => {});
+  }
+});

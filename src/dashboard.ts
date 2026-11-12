@@ -78,7 +78,6 @@ function createEventHub(paths: KilnPaths) {
   let listenerEpoch = 0;
 
   async function loop() {
-    cursor = null; // a feed that was stopped may be far behind: look for the cursor again
     let down = false;
     let backoff = 500;
     while (listeners.size > 0) {

@@ -41,8 +41,9 @@ never starts the daemon; run `kiln daemon start` yourself.
 Each change the stream announces carries the event id (`id:`), so a tab whose stream drops
 reconnects with `Last-Event-ID` and resumes from there: it is told at once only if something
 happened while it was away. A dashboard restart gives a new session cookie, so an old tab is
-refused; its page says "This dashboard was restarted, open the new URL" and you open the URL the
-new process printed.
+refused; after a few retries, its page says the dashboard was restarted or stopped and asks you
+to open the new URL printed by `kiln dashboard`. The same message appears if the old server is
+unreachable after a restart on another port.
 
 ## Starting it
 

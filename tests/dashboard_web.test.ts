@@ -1,5 +1,6 @@
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import appJs from "../src/web/app.js" with { type: "text" };
+import { withWorld } from "./world.ts";
 
 class PageElement {
   className = "";
@@ -119,13 +120,17 @@ class Page {
 }
 
 class PageEvents {
+  closed = false;
   private listeners = new Map<string, () => void>();
   constructor(_url: string) {}
   addEventListener(event: string, listener: () => void) {
     this.listeners.set(event, listener);
   }
   emit(event: string) {
-    this.listeners.get(event)?.();
+    if (!this.closed) this.listeners.get(event)?.();
+  }
+  close() {
+    this.closed = true;
   }
 }
 
@@ -426,20 +431,75 @@ Deno.test("dashboard script keeps labels, text, count, focus and newest snapshot
   timers.clear();
   pending[8].resolve(new Response(null, { status: 403 }));
   await tick();
-  assertEquals(main.textContent, "This dashboard was restarted, open the new URL.");
-
-  stream!.emit("open");
-  pending[9].resolve(Response.json(snapshot(5)));
-  await tick();
-  stream!.emit("open");
-  pending[10].resolve(Response.json(snapshot(1)));
-  await tick();
-  assertEquals(page.activeElement?.dataset.escalationId, "1");
-  stream!.emit("open");
-  pending[11].resolve(Response.json(snapshot(0)));
-  await tick();
-  assertEquals(page.activeElement, main.firstElementChild);
-  assertEquals(main.firstElementChild?.textContent, "Escalation 2 is not waiting on you.");
+  assertEquals(stream!.closed, false);
+  for (let i = 9; i <= 11; i++) {
+    const callbacks = [...timers.values()];
+    timers.clear();
+    for (const callback of callbacks) callback();
+    pending[i].resolve(new Response(null, { status: 403 }));
+    await tick();
+  }
+  assertEquals(stream!.closed, true);
+  assertEquals(rail.textContent, "");
+  assertEquals(page.getElementById("banner").style.display, "none");
+  assertEquals(
+    main.textContent,
+    "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.",
+  );
   ageTimer();
-  assertEquals(page.activeElement, main.firstElementChild);
+  assertEquals(rail.textContent, "");
+});
+
+withWorld("an old page reports a restart on another port after retries", async (w) => {
+  const old = await w.dashboard();
+  const cookie = await old.signIn();
+  const page = new Page();
+  let stream: PageEvents;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    appJs,
+  )(
+    page,
+    { pathname: "/" },
+    { pushState: () => {} },
+    (path: string) => old.fetch(path, { cookie }),
+    EventSource,
+    () => {},
+    () => 1,
+    setTimeout,
+    clearTimeout,
+  );
+  stream!.emit("open");
+  for (let i = 0; page.getElementById("banner").style.display !== "block" && i < 50; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assertEquals(page.getElementById("banner").style.display, "block");
+  const fresh = await w.dashboard();
+  assert(old.port !== fresh.port);
+  assertEquals(await old.interrupt(), 0);
+  stream!.emit("error");
+  for (let i = 0; !stream!.closed && i < 100; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assertEquals(stream!.closed, true);
+  assertEquals(page.getElementById("rail").textContent, "");
+  assertEquals(page.getElementById("banner").style.display, "none");
+  assertEquals(
+    page.getElementById("main").textContent,
+    "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.",
+  );
 });
