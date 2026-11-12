@@ -726,19 +726,19 @@
         return;
       }
     }
-    const nextLink = focusedLink && [...main.querySelectorAll("a")].find((link) =>
-      link.href === focusedLink.href
-    );
+    const nextLink = focusedLink &&
+      [...main.querySelectorAll("a")].find((link) => link.href === focusedLink.href);
     if (nextLink) {
       nextLink.focus({ preventScroll: true });
       return;
     }
     const buttons = [...main.querySelectorAll("button")];
-    const nextButton = focusedButton && buttons.find((button) =>
-      focusedButton.dataset.focusKey
-        ? button.dataset.focusKey === focusedButton.dataset.focusKey
-        : !button.dataset.focusKey && button.textContent === focusedButton.textContent
-    );
+    const nextButton = focusedButton &&
+      buttons.find((button) =>
+        focusedButton.dataset.focusKey
+          ? button.dataset.focusKey === focusedButton.dataset.focusKey
+          : !button.dataset.focusKey && button.textContent === focusedButton.textContent
+      );
     if (nextButton) {
       nextButton.focus({ preventScroll: true });
       return;
