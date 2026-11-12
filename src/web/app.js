@@ -457,7 +457,7 @@
     const feed = el("ul", "feed");
     const events = detail.data.events;
     if (events.length === 0) feed.append(el("li", "empty", "Nothing has happened yet."));
-    for (const e of events.slice(-100).reverse()) {
+    for (const e of events.toReversed()) {
       feed.append(el("li", "", clock(e.ts) + " · " + e.text));
     }
     main.append(feed);

@@ -7,20 +7,10 @@
 import { call, DaemonError, DaemonNotRunning } from "./client.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
+import type { RequestListing } from "./observe.ts";
 import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
-
-/** What `requests.list` says about a Request. */
-interface RequestRow {
-  id: number;
-  project: string;
-  status: string;
-  playbook: string | null;
-  description: string | null;
-  costUsd: number;
-  budgetUsd: number | null;
-}
 
 const COOKIE = "kiln_dashboard";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
@@ -210,7 +200,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     try {
       const [escalations, requests, strip] = await Promise.all([
         call<EscalationView[]>(paths, "escalations.list", { all: true }),
-        call<RequestRow[]>(paths, "requests.list", { all: true }),
+        call<RequestListing[]>(paths, "requests.list", { all: true }),
         stripFacts(),
       ]);
       return json({
@@ -236,27 +226,32 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   }
 
   // When a failed Request ended never changes, so it is asked for once.
-  const endedAt = new Map<number, string | null>();
+  const endedAt = new Map<number, string>();
 
   /**
    * The Requests rail: what is running or waiting, and what failed in the last 24 hours, are
    * `recent`; the rest (finished, or failed longer ago) only show under "Show finished". A Request
    * with an open Escalation is `waiting` on the user.
    */
-  async function railRequests(requests: RequestRow[], escalations: EscalationView[]) {
+  async function railRequests(requests: RequestListing[], escalations: EscalationView[]) {
     const waiting = new Set(
       escalations.filter((e) => e.status === "open" && e.requestId !== null).map((e) =>
         e.requestId
       ),
     );
+    const failedAt = new Map<number, string>(endedAt);
     for (const r of requests) {
       if (r.status === "failed" && !endedAt.has(r.id)) {
         try {
-          const report = await call<{ endedAt: string | null }>(paths, "requests.report", {
-            id: r.id,
-          });
+          const report = await call<{ endedAt: string | null; startedAt: string | null }>(
+            paths,
+            "requests.report",
+            { id: r.id },
+          );
           // An end time not recorded yet may be later; only a known one is kept.
           if (report.endedAt !== null) endedAt.set(r.id, report.endedAt);
+          const timestamp = report.endedAt ?? report.startedAt;
+          if (timestamp !== null) failedAt.set(r.id, timestamp);
         } catch (err) {
           if (!(err instanceof DaemonError)) throw err; // this Request's end is just unknown
         }
@@ -264,7 +259,6 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
     return requests.map((r) => {
-      const ended = r.status === "failed" ? endedAt.get(r.id) ?? null : null;
       const finished = r.status === "done" || r.status === "failed";
       return {
         id: r.id,
@@ -272,12 +266,9 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         status: r.status,
         description: r.description,
         playbook: r.playbook,
-        costUsd: r.costUsd,
-        budgetUsd: r.budgetUsd,
         waiting: !finished && waiting.has(r.id),
-        // A failure with no recorded end cannot be shown to be old, so it stays visible.
         recent: !finished ||
-          (r.status === "failed" && (ended === null || Date.parse(ended) >= dayAgo)),
+          (r.status === "failed" && Date.parse(failedAt.get(r.id) ?? "") >= dayAgo),
       };
     });
   }

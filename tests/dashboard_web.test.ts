@@ -792,9 +792,16 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
   await answer((p) => p.url === "/api/needs-you", snap({ requests: [requestRow(3)] }));
   await answer(
     (p) => p.url === "/api/requests/3",
-    Response.json(overview([{ id: 5, ts: new Date(now).toISOString(), text: "Step done" }])),
+    Response.json(overview(Array.from({ length: 101 }, (_, i) => ({
+      id: i + 1,
+      ts: new Date(now).toISOString(),
+      text: "Event " + (i + 1),
+    })))),
   );
-  assertEquals(main.textContent.includes("Step done"), true);
+  const feed = main.querySelector("ul")!;
+  assertEquals(feed.children.length, 101);
+  assertEquals(feed.children[0].textContent.includes("Event 101"), true);
+  assertEquals(feed.children[100].textContent.includes("Event 1"), true);
 
   // Cancel needs a confirm step, and a repeated gesture cannot take it.
   const cancel = main.querySelector("button")!;

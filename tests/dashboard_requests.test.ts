@@ -75,6 +75,21 @@ withWorld("the rail marks running, waiting and recently failed Requests", async 
   ]);
 });
 
+withWorld("failed Requests without an end time use a known start or stay finished", async (w) => {
+  await openTeam(w);
+  seed(w, (db) => {
+    const recent = request(db, "failed", "Started today");
+    event(db, hoursAgo(2), "request.started", { id: recent });
+    const old = request(db, "failed", "Started long ago");
+    event(db, hoursAgo(48), "request.started", { id: old });
+    request(db, "failed", "No timestamp");
+  });
+  const d = await w.dashboard();
+  const cookie = await d.signIn();
+  const rows = await rail(d, cookie);
+  assertEquals(rows.map((r) => [r.id, r.recent]), [[3, false], [2, false], [1, true]]);
+});
+
 withWorld("a Request's Overview has its steps, assignments, budget and events", async (w) => {
   await openTeam(w); // starts the daemon, which creates the store
   seed(w, (db) => {
