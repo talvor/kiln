@@ -4,8 +4,8 @@
 kiln dashboard [--port <n>] [--no-open]
 ```
 
-The Dashboard is a browser window onto Kiln. It runs as its own foreground process, a client of
-the daemon's unix socket like the CLI (see `docs/adr/0001-dashboard-is-a-separate-client-process.md`);
+The Dashboard is a browser window onto Kiln. It runs as its own foreground process, a client of the
+daemon's unix socket like the CLI (see `docs/adr/0001-dashboard-is-a-separate-client-process.md`);
 the daemon gains no network surface.
 
 The page is a split pane. The left rail holds **Needs you**: the open Escalations, grouped by
@@ -22,12 +22,12 @@ shows that and offers **Approve anyway**, which sends the confirmation. Decision
 Source `dashboard`. The collapsed **Recently decided** list holds the last 20 decisions, newest
 first, with their outcome, time, Source and any reason.
 
-The **header strip** shows what needs attention at a glance: **Halted** (with how long ago),
-**Daily cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap
-(or just today's spend when no cap is set), which links to `/cost`. The Cost view itself comes in a
-later change. **Halt** shows while Kiln is running and **Resume** while it is halted or has Stuck
-agents; each is one click, with no confirmation, and records Source `dashboard`. A held key or double
-click counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
+The **header strip** shows what needs attention at a glance: **Halted** (with how long ago), **Daily
+cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap (or just
+today's spend when no cap is set), which links to `/cost`. The Cost view itself comes in a later
+change. **Halt** shows while Kiln is running and **Resume** while it is halted or has Stuck agents;
+each is one click, with no confirmation, and records Source `dashboard`. A held key or double click
+counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
 `health.report`, in the same snapshot as Needs you.
 
 Under Needs you, the **Requests** rail lists the Requests that are running or waiting, and those
@@ -41,13 +41,20 @@ Request N?" first; only the confirmation cancels. As with **Approve anyway**, a 
 held key cannot confirm. The Request then shows as failed, and the cancel records Source
 `dashboard`.
 
-The **Transcript** tab (`/requests/<id>/transcript`) loads the Request's Messages, oldest first,
-and appends new ones live while the Request is active. Each shows sender → recipient and kind, with
+The **Transcript** tab (`/requests/<id>/transcript`) loads the Request's Messages, oldest first, and
+appends new ones live while the Request is active. Each shows sender → recipient and kind, with
 badges for Messages written by Kiln and for dead-lettered ones. Text is plain (never interpreted as
-HTML) and cut at about 600 characters with **Show more**. The Report tab comes in a later change.
+HTML) and cut at about 600 characters with **Show more**.
 
-Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>` and `/requests/<id>/transcript`), so reload,
-back and forward work, and moving between them swaps the main area without reloading the page.
+The **Report** tab (`/requests/<id>/report`) shows how the Request went, as `kiln report` does: the
+outcome, timings, cost against Budget, each step's report, the Escalations raised (with the Source
+of each decision) and the branch, tickets and pull request. A running or waiting Request opens on
+Overview; a finished or failed one opens on Report. The Overview tab has its own address
+(`/requests/<id>/overview`) once the Request has finished.
+
+Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>`,
+`/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back and forward work, and
+moving between them swaps the main area without reloading the page.
 
 One Server-Sent Events stream per tab tells the page that something happened in Kiln, and the page
 re-fetches its snapshot, debounced. It also re-fetches every 30 seconds so the strip picks up a new
@@ -65,8 +72,8 @@ never starts the daemon; run `kiln daemon start` yourself.
 Each change the stream announces carries the event id (`id:`), so a tab whose stream drops
 reconnects with `Last-Event-ID` and resumes from there: it is told at once only if something
 happened while it was away. A dashboard restart gives a new session cookie, so an old tab is
-refused; after a few retries, its page says the dashboard was restarted or stopped and asks you
-to open the new URL printed by `kiln dashboard`. The same message appears if the old server is
+refused; after a few retries, its page says the dashboard was restarted or stopped and asks you to
+open the new URL printed by `kiln dashboard`. The same message appears if the old server is
 unreachable after a restart on another port.
 
 ## Starting it
@@ -80,20 +87,19 @@ unreachable after a restart on another port.
 
 ## What protects it
 
-The Dashboard can approve spend, so anything else on the machine that can reach a
-loopback port must not be able to drive it.
+The Dashboard can approve spend, so anything else on the machine that can reach a loopback port must
+not be able to drive it.
 
 - The token exists only in the dashboard's memory. It is printed in the URL and never put in the
-  process's arguments, its environment or any file. The command that opens your browser is given
-  a different one-time launch link, which dies when either it or the token is used.
+  process's arguments, its environment or any file. The command that opens your browser is given a
+  different one-time launch link, which dies when either it or the token is used.
 - Opening the URL exchanges the token, once, for a session cookie (`HttpOnly`, `SameSite=Strict`)
-  and redirects to a clean URL. The token is then dead. An HTTP request without the cookie is refused,
-  and so is every request after a restart, since the cookie belongs to the old process.
+  and redirects to a clean URL. The token is then dead. An HTTP request without the cookie is
+  refused, and so is every request after a restart, since the cookie belongs to the old process.
 - `Host` is checked on every HTTP request and `Origin` on every one that changes something; a
   refused request never reaches the daemon.
 - GET requests have no side effects.
 
-The risk that remains: a process running as you can read the dashboard's memory. Keeping agents
-away (the policing hook refusing their shell commands aimed at the dashboard port) comes in a later
-change. Reaching the
-Dashboard from another device means tunnelling to the loopback port yourself.
+The risk that remains: a process running as you can read the dashboard's memory. Keeping agents away
+(the policing hook refusing their shell commands aimed at the dashboard port) comes in a later
+change. Reaching the Dashboard from another device means tunnelling to the loopback port yourself.

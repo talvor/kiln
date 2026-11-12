@@ -843,9 +843,116 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
   assertEquals(main.textContent.includes("Failed: Cancelled by the user."), true);
   assertEquals(main.children[1].textContent.includes("failed"), true);
   assertEquals(main.children[1].textContent.includes("waiting on you"), false);
-  assertEquals(main.querySelector("ul")?.children.length, 102);
-  assertEquals(main.querySelector("ul")?.children[101].textContent.includes("Event 1"), true);
+  // A failed Request opens on Report, without changing the address the user is on.
+  assertEquals(pending.some((p) => p.url === "/api/requests/3/report"), true);
   assertEquals(main.querySelectorAll("button").length, 0); // nothing left to cancel
+});
+
+Deno.test("the Report tab is the default for a finished Request and shows how it went as plain text", async () => {
+  const page = new Page();
+  const location = { pathname: "/requests/3" };
+  const pending: Array<{
+    url: string;
+    resolve: (response: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const fetch = (url: string) =>
+    new Promise<Response>((resolve, reject) => pending.push({ url, resolve, reject }));
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    {
+      pushState: (_s: null, _t: string, path: string) => {
+        location.pathname = path;
+      },
+    },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    (callback: () => void) => {
+      callback();
+      return 1;
+    },
+    () => {},
+    Date,
+  );
+  const answer = async (match: (p: { url: string }) => boolean, response: Response) => {
+    const found = pending.findLast(match)!;
+    pending.splice(pending.indexOf(found), 1);
+    found.resolve(response);
+    await tick();
+  };
+  stream!.emit("open");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3, { status: "done" })] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([], "done")));
+  await answer(
+    (p) => p.url === "/api/requests/3/report",
+    Response.json({
+      report: {
+        ...overview([], "done").request,
+        startedAt: "2026-01-01T10:00:00.000Z",
+        endedAt: "2026-01-01T10:30:00.000Z",
+        steps: [{
+          position: 1,
+          name: "Implement",
+          status: "done",
+          retries: 1,
+          failure: null,
+          summary: "<img src=x onerror=alert(1)>",
+        }],
+        escalations: [
+          { id: 4, summary: "Ship?", status: "approved", reason: "fine", via: "dashboard" },
+        ],
+        limitsReached: [],
+        branch: "kiln/ship",
+        ticketUrl: "https://example.test/t/1",
+        ticketUrls: ["https://example.test/t/1"],
+        prUrl: "https://example.test/pr/1",
+      },
+    }),
+  );
+  const main = page.getElementById("main");
+  const text = main.textContent;
+  for (
+    const part of [
+      "Finished",
+      "took 30 min",
+      "Budget: $1.00 of $4.00",
+      "Implement · done · retried 1×",
+      "<img src=x onerror=alert(1)>",
+      "Source dashboard",
+      "kiln/ship",
+      "https://example.test/pr/1",
+    ]
+  ) assertEquals(text.includes(part), true, part);
+  assertEquals(main.querySelectorAll("img").length, 0);
+  assertEquals(location.pathname, "/requests/3"); // the default tab keeps its address
+  const tabs = main.children.find((child) => child.className === "tabs")!.children;
+  assertEquals(tabs[2].className.includes("active"), true);
+  assertEquals(text.includes("Cancel Request"), false);
 });
 
 Deno.test("the Transcript tab loads Messages, appends live, flags and truncates them as plain text", async () => {

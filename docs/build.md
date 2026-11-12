@@ -16,10 +16,11 @@ guards tell you whether the new version still builds lean.
 
 ## Embedded assets
 
-The Dashboard's page (`src/web/`) is imported as text (`import x from "./web/index.html" with
-{ type: "text" }`), so it travels inside the bundle. Raw imports are unstable in Deno: `deno.json`
-turns on `unstable: ["raw-imports"]` for running, checking and testing, and the build passes
-`--unstable-raw-imports` to `deno bundle`.
+The Dashboard's page (`src/web/`) is imported as text
+(`import x from "./web/index.html" with
+{ type: "text" }`), so it travels inside the bundle. Raw
+imports are unstable in Deno: `deno.json` turns on `unstable: ["raw-imports"]` for running, checking
+and testing, and the build passes `--unstable-raw-imports` to `deno bundle`.
 
 ## Guards
 
@@ -29,5 +30,5 @@ turns on `unstable: ["raw-imports"]` for running, checking and testing, and the 
   package. This names the cause when the size guard trips for that reason, and catches a binary
   small enough to slip under the size limit.
 
-`deno run -A scripts/guard.ts <executable>` runs the guards on any executable for tests. The standalone
-command is test support, not supported user-facing behavior.
+`deno run -A scripts/guard.ts <executable>` runs the guards on any executable for tests. The
+standalone command is test support, not supported user-facing behavior.

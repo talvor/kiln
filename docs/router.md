@@ -12,26 +12,26 @@ kiln session open <address> --role overseer|leader|worker [--department <name>] 
 There is one overseer, one leader per department, and any number of workers per department. A
 Message may only take these routes; anything else is refused with the reason:
 
-| Kind | Goes | Reply |
-| --- | --- | --- |
-| `assignment` | down, to a direct report | None |
-| `answer` | down, to a direct report | `inReplyTo` the question |
-| `result` | up, to your direct superior | `inReplyTo` the assignment |
-| `question` | up, to your direct superior | Optional `assignmentId` of the assignment it concerns |
+| Kind         | Goes                        | Reply                                                 |
+| ------------ | --------------------------- | ----------------------------------------------------- |
+| `assignment` | down, to a direct report    | None                                                  |
+| `answer`     | down, to a direct report    | `inReplyTo` the question                              |
+| `result`     | up, to your direct superior | `inReplyTo` the assignment                            |
+| `question`   | up, to your direct superior | Optional `assignmentId` of the assignment it concerns |
 
-The [message schemas](../src/messages.ts) own the body fields. Required fields must be present,
-all supplied fields must be non-empty strings, and unknown fields are refused. A result or answer
-must reply to a Message the recipient sent you. Each assignment takes one result; each question
-takes one answer.
+The [message schemas](../src/messages.ts) own the body fields. Required fields must be present, all
+supplied fields must be non-empty strings, and unknown fields are refused. A result or answer must
+reply to a Message the recipient sent you. Each assignment takes one result; each question takes one
+answer.
 
 ## The agent's tools
 
-`kiln tool-server --address <address>` is an MCP server on stdio configured for one address.
-Kiln hands it to every agent it wakes. Tools: `read_inbox` (each unread
-Message is handed over once, then marked read), `send`, `raise_question` (asks your direct
-superior), and, for the overseer, `raise_escalation`, `read_escalations` (see
-[escalations](escalations.md)), `list_projects`, `list_playbooks`, `start_request` and
-`request_status` (see [the chat guide](chat.md)). Same-user local processes are trusted for now.
+`kiln tool-server --address <address>` is an MCP server on stdio configured for one address. Kiln
+hands it to every agent it wakes. Tools: `read_inbox` (each unread Message is handed over once, then
+marked read), `send`, `raise_question` (asks your direct superior), and, for the overseer,
+`raise_escalation`, `read_escalations` (see [escalations](escalations.md)), `list_projects`,
+`list_playbooks`, `start_request` and `request_status` (see [the chat guide](chat.md)). Same-user
+local processes are trusted for now.
 
 ### Optional: a scoped token so a worker's own `gh` works
 
@@ -50,13 +50,13 @@ Actions), install it on the Projects' repositories, download its private key, an
 ```
 
 Only `app` is required; `permissions` defaults to the read-only set above. Before a worker is
-launched in a Request's or Assignment's Worktree, Kiln asks GitHub for an installation token
-limited to **that Project's repository** and those permissions, and gives it to the worker as
-`GH_TOKEN` and `GITHUB_TOKEN`. It lasts about an hour and is cached per repository until ten minutes
-remain, so a launch never outlives it. The sandbox's network allowlist gains `api.github.com` and
-`github.com` for that launch. Without the file, or if a token cannot be had (the App is not
-installed there, GitHub says no), the worker gets none and Kiln logs a warning. Your own
-credentials are never passed on. The file is read at each launch.
+launched in a Request's or Assignment's Worktree, Kiln asks GitHub for an installation token limited
+to **that Project's repository** and those permissions, and gives it to the worker as `GH_TOKEN` and
+`GITHUB_TOKEN`. It lasts about an hour and is cached per repository until ten minutes remain, so a
+launch never outlives it. The sandbox's network allowlist gains `api.github.com` and `github.com`
+for that launch. Without the file, or if a token cannot be had (the App is not installed there,
+GitHub says no), the worker gets none and Kiln logs a warning. Your own credentials are never passed
+on. The file is read at each launch.
 
 A worker can read its own environment, so the token is visible to it: keep the permissions minimal,
 and do not grant `write` unless you want workers to be able to push or comment. For GitHub
@@ -96,12 +96,13 @@ try to leak it. Set up the App instead whenever you can.
 
 Every agent Kiln wakes runs deny-by-default: it may use only the built-in tools its role lists
 (`tools` in the role file; defaults are read-only for the overseer (and only on the registered
-projects), read-only for leaders, and read/write/shell for workers) plus Kiln's own tools. A command sandbox limits writes to the
-agent's Worktree. A policing hook checks every tool call against the same rules: file writes
-outside the Worktree, secrets (`.env`, keys, `.ssh`, `.aws`, ...) and destructive commands (`sudo`,
-`git push`, `reset --hard`, `rm -rf /`, piping a download into a shell, ...) are refused. A refusal
-is never prompted; Kiln raises it as a question to the agent's direct superior (repeats are
-suppressed while one is unanswered) and tells the agent the answer will arrive in its inbox.
+projects), read-only for leaders, and read/write/shell for workers) plus Kiln's own tools. A command
+sandbox limits writes to the agent's Worktree. A policing hook checks every tool call against the
+same rules: file writes outside the Worktree, secrets (`.env`, keys, `.ssh`, `.aws`, ...) and
+destructive commands (`sudo`, `git push`, `reset --hard`, `rm -rf /`, piping a download into a
+shell, ...) are refused. A refusal is never prompted; Kiln raises it as a question to the agent's
+direct superior (repeats are suppressed while one is unanswered) and tells the agent the answer will
+arrive in its inbox.
 
 ## Nudges, re-nudges and dead letters
 
@@ -110,10 +111,10 @@ of seconds to change the interval. A pass wakes each agent with due unread Messa
 Claude with a short prompt telling it to read its inbox. Each launch has a 30-second timeout. A
 failed or timed-out launch does not count as a delivery. An unread Message is nudged again 60
 seconds after the last successful Nudge by default; `KILN_RENUDGE_SECONDS` changes that wait, also
-in positive seconds. Unset, non-positive, or non-numeric values use the default. If the
-Message remains unread for that wait after the third delivery, the next pass dead-letters it: it is
-no longer delivered, and a dead-lettered **assignment** is answered with a synthesised failed
-result from the recipient to the sender.
+in positive seconds. Unset, non-positive, or non-numeric values use the default. If the Message
+remains unread for that wait after the third delivery, the next pass dead-letters it: it is no
+longer delivered, and a dead-lettered **assignment** is answered with a synthesised failed result
+from the recipient to the sender.
 
 ## Stop hook
 
@@ -121,11 +122,11 @@ Nudged agents run `kiln hook stop --address <address>` as a Claude Code Stop hoo
 stop when the agent has unread Messages, or an assignment it has neither reported on nor asked a
 live question about using `assignmentId`. When Claude retries after being blocked
 (`stop_hook_active`), the stop is allowed; an unreported assignment is then reported as a
-synthesised failed result. If Kiln cannot check the pending work, the hook blocks the stop until
-it can.
+synthesised failed result. If Kiln cannot check the pending work, the hook blocks the stop until it
+can.
 
 ## Not covered here
 
-A dead-lettered Message other than an assignment is only recorded; that is left to a later ticket.
-A nudge that delivers an answer resumes the asking agent's own Claude session, and how questions
-are passed up is in [question relay](questions.md).
+A dead-lettered Message other than an assignment is only recorded; that is left to a later ticket. A
+nudge that delivers an answer resumes the asking agent's own Claude session, and how questions are
+passed up is in [question relay](questions.md).

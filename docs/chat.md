@@ -6,14 +6,14 @@ kiln chat
 
 `kiln chat` opens an interactive Claude Code session as the **Overseer**, the one role you talk to.
 It runs the installed `claude` in `<data>/overseer`, an empty directory, with Kiln's tools, a Kiln
-status line and Kiln's hooks. Ctrl-C and everything else belong to Claude; leaving Claude leaves
-the chat.
+status line and Kiln's hooks. Ctrl-C and everything else belong to Claude; leaving Claude leaves the
+chat.
 
 ## What the Overseer has
 
-- **Kiln's tools**, over MCP: `list_projects`, `list_playbooks`, `start_request`,
-  `request_status`, `read_inbox`, `raise_escalation` and `read_escalations`. Only the Overseer may
-  use them; Claude's own other tools and servers are not offered.
+- **Kiln's tools**, over MCP: `list_projects`, `list_playbooks`, `start_request`, `request_status`,
+  `read_inbox`, `raise_escalation` and `read_escalations`. Only the Overseer may use them; Claude's
+  own other tools and servers are not offered.
 - **Read-only access** to the registered projects: `Read`, `Glob` and `Grep` on their clones and
   nothing else. It cannot write, run commands or read secrets, or read outside the projects; the
   policing hook refuses such calls. Work happens by starting a request.
@@ -30,9 +30,9 @@ question about the code is answered from the files; it is not a request.
 ## Speaking unprompted
 
 The Overseer speaks without being asked only for something that is yours to act on: a decision
-waiting for you, a request that finished or failed, or mail in its inbox that needs you.
-Otherwise it stays quiet. A fresh session opens silent unless there is such news, in which case the
-Overseer is asked to tell you, once.
+waiting for you, a request that finished or failed, or mail in its inbox that needs you. Otherwise
+it stays quiet. A fresh session opens silent unless there is such news, in which case the Overseer
+is asked to tell you, once.
 
 Mail for the Overseer is not delivered by a Nudge while you are in the chat (it would wake a second
 Overseer beside yours). It is shown in the status line, noted to the Overseer on your next prompt,
@@ -54,6 +54,6 @@ kiln help
 ## History and rollover
 
 What you and the Overseer say is kept in the store (append-only). When a session's context grows
-past 150,000 tokens (`KILN_CHAT_ROLLOVER_TOKENS` changes the limit), Kiln ends it after the turn
-and starts a fresh one, seeded with a **digest**: the projects, what is running, the news for you,
-and the last 20 turns of the conversation. Starting `kiln chat` later is seeded the same way.
+past 150,000 tokens (`KILN_CHAT_ROLLOVER_TOKENS` changes the limit), Kiln ends it after the turn and
+starts a fresh one, seeded with a **digest**: the projects, what is running, the news for you, and
+the last 20 turns of the conversation. Starting `kiln chat` later is seeded the same way.
