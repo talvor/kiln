@@ -105,12 +105,15 @@ suppressed while one is unanswered) and tells the agent the answer will arrive i
 
 ## Nudges, re-nudges and dead letters
 
-Kiln runs a delivery pass every two seconds. A pass wakes each agent with due unread Messages by
-launching Claude with a short prompt telling it to read its inbox. Each launch has a 30-second
-timeout. A failed or timed-out launch does not count as a delivery. An unread Message is nudged
-again 60 seconds after the last successful Nudge. If it remains unread 60 seconds after the third
-delivery, the next pass dead-letters it: it is no longer delivered, and a dead-lettered
-**assignment** is answered with a synthesised failed result from the recipient to the sender.
+Kiln runs a delivery pass every two seconds by default. Set `KILN_TICK_SECONDS` to a positive number
+of seconds to change the interval. A pass wakes each agent with due unread Messages by launching
+Claude with a short prompt telling it to read its inbox. Each launch has a 30-second timeout. A
+failed or timed-out launch does not count as a delivery. An unread Message is nudged again 60
+seconds after the last successful Nudge by default; `KILN_RENUDGE_SECONDS` changes that wait, also
+in positive seconds. Unset, non-positive, or non-numeric values use the default. If the
+Message remains unread for that wait after the third delivery, the next pass dead-letters it: it is
+no longer delivered, and a dead-lettered **assignment** is answered with a synthesised failed
+result from the recipient to the sender.
 
 ## Stop hook
 

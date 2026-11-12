@@ -8,6 +8,7 @@ import type { LauncherRun } from "./fakes/claude.ts";
 import { asAgent, type Message, waitFor } from "./router_helpers.ts";
 
 const COMMANDS = { setup: null, test: null, lint: null, build: null };
+const TICK_SECONDS = 0.5;
 
 async function register(world: World) {
   await Deno.writeTextFile(join(world.project.path, "AGENTS.md"), "# How to work here\n");
@@ -60,7 +61,7 @@ const workerWakeups = async (world: World) => (await workerPrompts(world)).lengt
 const launches = async (world: World) => (await world.launcher.calls()).length;
 
 /** A Request whose first Step's leader has delegated one Assignment to a diagnostician. */
-async function oneAssignment(world: World, limits: unknown = {}) {
+async function oneAssignment(world: World, runs: LauncherRun[], limits: unknown = {}) {
   await Deno.mkdir(world.dirs.config, { recursive: true });
   await Deno.writeTextFile(join(world.dirs.config, "limits.json"), JSON.stringify(limits));
   await register(world);
@@ -75,18 +76,18 @@ async function oneAssignment(world: World, limits: unknown = {}) {
   );
   assertEquals(started.code, 0, started.stderr);
   await asAgent(world, "engineering-leader", (a) => a.inbox());
-  return await asAgent(world, "engineering-leader", (a) =>
-    a.send("diagnostician-1", "assignment", {
-      title: "Diagnose",
-      instructions: "Find the cause",
-    }));
-}
-
-/** Script the runs the worker's launches will have, then wait for the first to begin. */
-async function scriptWorker(world: World, runs: LauncherRun[]) {
-  const before = await launches(world);
   await world.launcher.script(runs);
-  await waitFor(() => launches(world), (n) => n > before, 15_000);
+  const job = await asAgent(
+    world,
+    "engineering-leader",
+    (a) =>
+      a.send("diagnostician-1", "assignment", {
+        title: "Diagnose",
+        instructions: "Find the cause",
+      }),
+  );
+  await waitFor(() => workerWakeups(world), (n) => n >= 1, 15_000);
+  return job;
 }
 
 const inboxOf = (world: World, address: string): Promise<Message[]> =>
@@ -108,9 +109,9 @@ withWorld("startup runs its steps in order", async (w) => {
 });
 
 withWorld("work interrupted by a crash is resumed once, then fails the second time", async (w) => {
-  const job = await oneAssignment(w);
+  w.env.KILN_TICK_SECONDS = String(TICK_SECONDS);
+  const job = await oneAssignment(w, [{ hang: true }, { hang: true }]);
   // The worker is woken and hangs; the daemon dies under it.
-  await scriptWorker(w, [{ hang: true }, { hang: true }]);
   await crash(w);
 
   // The restart resumes the Assignment: the worker is woken again and told what happened.
@@ -132,15 +133,19 @@ withWorld("work interrupted by a crash is resumed once, then fails the second ti
   const report = (await inboxOf(w, "overseer")).find((m) => m.kind === "question")!;
   assertEquals([report.from, report.synthesised], ["engineering-leader", true]);
   assertStringIncludes(String(report.body.question), "diagnostician-1 is stuck");
-  await sleep(2_500);
+  await sleep(TICK_SECONDS * 3_000);
   assertEquals(await workerWakeups(w), 2, "the worker is not woken a third time");
 });
 
 withWorld(
   "a launcher that keeps failing is retried with backoff, then reported stuck",
   async (w) => {
-    const job = await oneAssignment(w, { infrastructure: { retries: 2, backoffSeconds: 1 } });
-    await scriptWorker(w, [{ crash: true }, { crash: true }, { crash: true }, { crash: true }]);
+    w.env.KILN_TICK_SECONDS = String(TICK_SECONDS);
+    const job = await oneAssignment(
+      w,
+      [{ crash: true }, { crash: true }, { crash: true }, { crash: true }],
+      { infrastructure: { retries: 2, backoffSeconds: 1 } },
+    );
 
     const failed = await waitFor(() => assignmentOf(w, job.id), (a) => a.status === "failed");
     assertEquals(failed.status, "failed");
@@ -151,7 +156,7 @@ withWorld(
     assertEquals(calls.length, 3);
     assert(calls[1] - calls[0] >= 1_000, `first backoff: ${calls[1] - calls[0]}ms`);
     assert(calls[2] - calls[1] >= 2_000, `second backoff: ${calls[2] - calls[1]}ms`);
-    await sleep(2_500);
+    await sleep(TICK_SECONDS * 3_000);
     assertEquals((await workerCalls()).length, 3, "one try and two retries, no more");
 
     const result = (await inboxOf(w, "engineering-leader")).find((m) =>
@@ -169,8 +174,8 @@ withWorld(
 withWorld(
   "halt stops agents and wakes nobody; resume carries on, and a crash does not undo it",
   async (w) => {
-    const job = await oneAssignment(w);
-    await scriptWorker(w, [{ hang: true }, { result: "ok" }]);
+    w.env.KILN_TICK_SECONDS = String(TICK_SECONDS);
+    const job = await oneAssignment(w, [{ hang: true }, { result: "ok" }]);
     const before = await launches(w);
 
     const halted = await w.kiln("halt");
@@ -191,14 +196,14 @@ withWorld(
     );
     assertEquals(refused.code, 1);
     assertStringIncludes(refused.stderr, "halted");
-    await sleep(2_500);
+    await sleep(TICK_SECONDS * 3_000);
     assertEquals(await launches(w), before);
 
     // The halt survives a crash: nothing is woken after the restart either.
     await crash(w);
     await w.kiln("daemon", "start");
     assertEquals((await daemonStatus(w)).haltedSince !== null, true);
-    await sleep(2_500);
+    await sleep(TICK_SECONDS * 3_000);
     assertEquals(await launches(w), before);
     assertEquals((await assignmentOf(w, job.id)).status, "active");
 
@@ -213,8 +218,8 @@ withWorld(
 );
 
 withWorld("cancel stops a request and keeps its branches and worktrees", async (w) => {
-  const job = await oneAssignment(w);
-  await scriptWorker(w, [{ hang: true }, { result: "ok" }]);
+  w.env.KILN_TICK_SECONDS = String(TICK_SECONDS);
+  const job = await oneAssignment(w, [{ hang: true }, { result: "ok" }]);
   const worktree = (await assignmentOf(w, job.id)).worktree!;
   await Deno.writeTextFile(join(worktree, "notes.md"), "half way\n");
   await w.git(worktree, "add", ".");
@@ -242,7 +247,7 @@ withWorld("cancel stops a request and keeps its branches and worktrees", async (
     "engineering-leader",
     (a) => a.send("diagnostician-1", "assignment", { title: "More", instructions: "More" }),
   );
-  await sleep(2_500);
+  await sleep(TICK_SECONDS * 3_000);
   assertEquals(await workerWakeups(w), 1);
 
   const again = await w.kiln("request", "cancel", "1");

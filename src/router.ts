@@ -31,7 +31,7 @@ export const TOOL_NAMES = [
   "request_status",
 ] as const;
 const LAUNCH_TIMEOUT_MS = 30_000;
-const RENUDGE_AFTER_MS = 60_000;
+const DEFAULT_RENUDGE_AFTER_MS = 60_000;
 
 /** A refusal the sender can act on. */
 export class RouterError extends Error {}
@@ -39,6 +39,8 @@ export class RouterError extends Error {}
 export interface RouterOptions {
   store: Store;
   log: Logger;
+  /** How long a Nudge may go unanswered before the next one; defaults to 60 seconds. */
+  renudgeAfterMs?: number;
   launch: (req: LaunchRequest) => Promise<LaunchResult>;
   /** What a configured role is told about its job when it is woken; undefined if unknown. */
   rolePrompt?: (roleName: string) => Promise<string | undefined>;
@@ -554,7 +556,8 @@ export function createRouter(opts: RouterOptions) {
       const now = Date.now();
       const due = store.listMessages({ waiting: true }).filter((m) =>
         !opts.hold?.(m) &&
-        (m.lastDeliveryAt === null || now - Date.parse(m.lastDeliveryAt) >= RENUDGE_AFTER_MS)
+        (m.lastDeliveryAt === null ||
+          now - Date.parse(m.lastDeliveryAt) >= (opts.renudgeAfterMs ?? DEFAULT_RENUDGE_AFTER_MS))
       );
       const byRecipient = new Map<string, MessageRecord[]>();
       for (const m of due) {

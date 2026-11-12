@@ -11,7 +11,7 @@
     "kiln": "deno run -A src/main.ts",
     "build": "deno run -A scripts/build.ts",
     "check": "deno check src tests scripts",
-    "test": "deno test -A",
+    "test": "deno test -A --parallel",
     "smoke": "KILN_SMOKE=1 deno test -A tests/smoke/claude_smoke.ts"
   },
   "unstable": ["raw-imports"],
