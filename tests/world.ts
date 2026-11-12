@@ -37,7 +37,15 @@ export interface DashboardProcess {
   /** One HTTP request, never following redirects; `host` and `origin` override the defaults. */
   fetch(
     path: string,
-    init?: { method?: string; cookie?: string; host?: string; origin?: string; body?: string },
+    init?: {
+      method?: string;
+      cookie?: string;
+      host?: string;
+      origin?: string;
+      body?: string;
+      /** What a reconnecting EventSource sends: the last event id it saw. */
+      lastEventId?: string;
+    },
   ): Promise<Response>;
   /** Spend the URL's token and return the session cookie ("name=value"). */
   signIn(): Promise<string>;
@@ -234,6 +242,7 @@ export async function makeWorld(): Promise<World> {
         const headers: Record<string, string> = {};
         if (init.cookie) headers.cookie = init.cookie;
         if (init.origin) headers.origin = init.origin;
+        if (init.lastEventId !== undefined) headers["last-event-id"] = init.lastEventId;
         // fetch() will not send a Host of our choosing, so that takes a hand-written request.
         if (init.host !== undefined) {
           return rawRequest(port, init.method ?? "GET", path, { ...headers, host: init.host });

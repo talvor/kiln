@@ -71,10 +71,14 @@ withWorld("with no daemon Needs you is empty and says Kiln is not running", asyn
 });
 
 /** Read an event stream until `done` accepts what has arrived. */
-async function readUntil(res: Response, done: (text: string) => boolean): Promise<string> {
+async function readUntil(
+  res: Response,
+  done: (text: string) => boolean,
+  limitMs = 15_000,
+): Promise<string> {
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let text = "";
-  const timer = setTimeout(() => reader.cancel(), 15_000);
+  const timer = setTimeout(() => reader.cancel(), limitMs);
   try {
     while (!done(text)) {
       const { value, done: ended } = await reader.read();
@@ -216,3 +220,56 @@ withWorld("events.since runs only while an event stream is connected", async (w)
     listener.close();
   }
 });
+
+withWorld(
+  "a down daemon is retried with backoff and the tab is told when it returns",
+  async (w) => {
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const stream = await d.fetch("/events", { cookie });
+    const reading = readUntil(stream, (t) => (t.match(/event: changed/g) ?? []).length >= 2);
+    await new Promise((r) => setTimeout(r, 1500)); // down, and retrying
+    const down: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
+    assertEquals(down.running, false);
+    assertEquals((await w.kiln("daemon", "status")).code, 3, "the dashboard did not start it");
+    assertEquals((await w.kiln("daemon", "start")).code, 0);
+    const text = await reading; // one change for going down, one for coming back
+    assertEquals((text.match(/event: changed/g) ?? []).length >= 2, true);
+    const up: NeedsYou = await (await d.fetch("/api/needs-you", { cookie })).json();
+    assertEquals(up.running, true);
+  },
+);
+
+withWorld("a reconnecting tab resumes from the last event id it saw", async (w) => {
+  await openTeam(w);
+  const d = await w.dashboard();
+  const cookie = await d.signIn();
+  const first = await d.fetch("/events", { cookie });
+  const reading = readUntil(first, () => false, 3000); // everything one Escalation sets off
+  await new Promise((r) => setTimeout(r, 1000));
+  assertEquals((await raise(w, { summary: "One" })).isError, false);
+  const seen = [...(await reading).matchAll(/\nid: (\d+)\n/g)].at(-1)![1];
+  // Nothing happened while the tab was away: it is not told anything changed.
+  const quiet = await d.fetch("/events", { cookie, lastEventId: seen });
+  const nothing = await readUntil(quiet, (t) => t.includes("event: changed"), 2000);
+  assertEquals(nothing.includes("event: changed"), false);
+  // Something happened while it was away: it is told at once.
+  const gone = await d.fetch("/events", { cookie, lastEventId: String(Number(seen) - 1) });
+  const missed = await readUntil(gone, (t) => t.includes("event: changed"));
+  assertStringIncludes(missed, `id: ${seen}\n`);
+});
+
+withWorld(
+  "after a dashboard restart the old cookie is refused, so the page can say so",
+  async (w) => {
+    const old = await w.dashboard();
+    const cookie = await old.signIn();
+    assertEquals(await old.interrupt(), 0);
+    const fresh = await w.dashboard();
+    for (const path of ["/api/needs-you", "/events"]) {
+      const res = await fresh.fetch(path, { cookie });
+      assertEquals(res.status, 403, path);
+      await res.body?.cancel();
+    }
+  },
+);

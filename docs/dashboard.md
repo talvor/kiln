@@ -31,6 +31,19 @@ re-fetches its snapshot, debounced. The dashboard long-polls for changes (`event
 while at least one tab is connected. A poll already in flight may finish after the last tab leaves;
 its result is discarded.
 
+## When Kiln is not running
+
+The dashboard keeps serving. The page shows a **Kiln is not running** banner, and the dashboard
+retries the daemon's socket with backoff (0.5 s, doubling to 10 s) for as long as a tab is open.
+When the daemon is back, every tab is told and does a full refresh of its snapshot. The dashboard
+never starts the daemon; run `kiln daemon start` yourself.
+
+Each change the stream announces carries the event id (`id:`), so a tab whose stream drops
+reconnects with `Last-Event-ID` and resumes from there: it is told at once only if something
+happened while it was away. A dashboard restart gives a new session cookie, so an old tab is
+refused; its page says "This dashboard was restarted, open the new URL" and you open the URL the
+new process printed.
+
 ## Starting it
 
 - The first line on standard output is the URL, with a per-launch token:
