@@ -1266,4 +1266,23 @@ Deno.test("the Cost view shows today against the cap, a table per Project and Re
       "$0.50 today that no Request claims",
     ]
   ) assertEquals(text.includes(part), true, part);
+  const main = page.getElementById("main");
+  assertEquals(main.children.some((child) => child.getAttribute("role") === "progressbar"), false);
+  const tables = main.children.filter((child) => child.tag === "table");
+  assertEquals(tables.length, 2);
+  assertEquals(tables[0].children[0].children.map((cell) => cell.textContent), ["Project", "Today"]);
+  assertEquals(tables[1].children[0].children.map((cell) => cell.textContent), [
+    "Request",
+    "Project",
+    "Today",
+    "Total",
+    "Budget",
+  ]);
+  assertEquals(tables[1].children[1].children.map((cell) => cell.textContent), [
+    "#7",
+    "Example",
+    "$3.00",
+    "$4.00",
+    "$4.00 of $8.00 (50%)",
+  ]);
 });

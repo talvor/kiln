@@ -737,18 +737,6 @@
             " daily cap" + (c.capReached ? " (cap reached)" : ""),
       ),
     );
-    if (c.capUsd !== null) {
-      const share = c.capUsd > 0 ? c.todayUsd / c.capUsd : 1;
-      const track = el("div", "track");
-      track.setAttribute("role", "progressbar");
-      track.setAttribute("aria-valuemin", "0");
-      track.setAttribute("aria-valuemax", String(c.capUsd));
-      track.setAttribute("aria-valuenow", String(c.todayUsd));
-      const fill = el("div", "fill" + (share >= 1 ? " over" : ""));
-      fill.style.width = Math.min(100, share * 100) + "%";
-      track.append(fill);
-      main.append(track);
-    }
     main.append(el("h3", "", "By Project (today)"));
     main.append(
       c.projects.length === 0
@@ -758,11 +746,10 @@
     main.append(el("h3", "", "By Request"));
     main.append(
       c.requests.length === 0 ? el("p", "note", "No Request has spent anything today.") : costTable(
-        ["Request", "Project", "Status", "Today", "Total", "Budget"],
+        ["Request", "Project", "Today", "Total", "Budget"],
         c.requests.map((r) => [
           "#" + r.id,
           r.project,
-          r.status,
           usd(r.usd),
           usd(r.totalUsd),
           r.budgetUsd === null
