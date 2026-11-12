@@ -527,9 +527,13 @@ export function createRouter(opts: RouterOptions) {
           );
         }
         if (unreported.length) {
+          const describe = (a: MessageRecord) =>
+            `assignment ${a.id} ("${String(a.body.title ?? "untitled")}", from ${a.from})`;
           reasons.push(
-            `You have not reported on assignment ${unreported.map((a) => a.id).join(", ")}. ` +
-              `Call send with a result (status done or failed), or raise_question with assignmentId if you are stuck.`,
+            `You have not reported on ${unreported.map(describe).join("; ")}. ` +
+              `Call send with a result (status done or failed) and inReplyTo set to that id. ` +
+              `If you are waiting on an answer or a decision, call raise_question with ` +
+              `assignmentId set to that id, so it is held rather than lost.`,
           );
         }
         if (reasons.length) return { block: true, reason: reasons.join(" ") };
