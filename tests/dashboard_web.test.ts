@@ -59,7 +59,7 @@ class PageElement {
     const descendants = this.children.flatMap((
       child,
     ) => [child, ...child.querySelectorAll(selector)]);
-    if (selector === "li" || selector === "img") {
+    if (selector === "li" || selector === "img" || selector === "a") {
       return descendants.filter((node) => node.tag === selector);
     }
     return descendants.filter((node) =>
@@ -851,8 +851,13 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
 Deno.test("the Transcript tab loads Messages, appends live, flags and truncates them as plain text", async () => {
   const page = new Page();
   const location = { pathname: "/requests/3/transcript" };
-  const pending: Array<{ url: string; resolve: (response: Response) => void }> = [];
-  const fetch = (url: string) => new Promise<Response>((resolve) => pending.push({ url, resolve }));
+  const pending: Array<{
+    url: string;
+    resolve: (response: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const fetch = (url: string) =>
+    new Promise<Response>((resolve, reject) => pending.push({ url, resolve, reject }));
   let stream: EventSource;
   class EventSource extends PageEvents {
     constructor(url: string) {
@@ -956,6 +961,64 @@ Deno.test("the Transcript tab loads Messages, appends live, flags and truncates 
   );
   assertEquals(items().length, 3);
   assertEquals(items()[2].textContent.includes("result"), true);
+
+  const transcriptTab = main.children.find((child) => child.className === "tabs")!.children[1];
+  transcriptTab.focus();
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({ messages: [message(1), message(2), message(3)] }),
+  );
+  assertEquals(
+    page.activeElement,
+    main.children.find((child) => child.className === "tabs")!.children[1],
+  );
+
+  main.querySelectorAll("button").find((button) => button.textContent === "Cancel Request")!.focus();
+  const fourth = message(4, { body: { text: long } });
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({ messages: [message(1), message(2), message(3), fourth] }),
+  );
+  assertEquals(page.activeElement?.textContent, "Cancel Request");
+  const fourthMore = items()[3].querySelector("button")!;
+  fourthMore.focus();
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({ messages: [message(1), message(2), message(3), fourth] }),
+  );
+  assertEquals(page.activeElement, items()[3].querySelector("button"));
+
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  const failed = pending.find((p) => p.url === "/api/requests/3/transcript")!;
+  pending.splice(pending.indexOf(failed), 1);
+  failed.reject(new Error("offline"));
+  await tick();
+  assertEquals(items().length, 4);
+  assertEquals(main.textContent.includes("The dashboard could not be reached."), true);
+  assertEquals(page.activeElement, items()[3].querySelector("button"));
 
   main.children.find((child) => child.className === "tabs")!.children[0].click();
   assertEquals(location.pathname, "/requests/3");

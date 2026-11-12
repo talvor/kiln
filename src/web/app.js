@@ -480,6 +480,7 @@
     if (long) {
       const more = el("button", "btn", open ? "Show less" : "Show more");
       more.type = "button";
+      more.dataset.focusKey = key;
       more.addEventListener("click", () => {
         if (opened.has(key)) opened.delete(key);
         else opened.add(key);
@@ -494,7 +495,8 @@
     if (transcript.id !== id || (transcript.messages === null && transcript.error === null)) {
       return main.append(el("p", "note", "Loading the transcript…"));
     }
-    if (transcript.messages === null) return main.append(el("p", "note", transcript.error));
+    if (transcript.error) main.append(el("p", "refusal", transcript.error));
+    if (transcript.messages === null) return;
     if (transcript.messages.length === 0) {
       return main.append(el("p", "empty", "No Messages were sent for this Request."));
     }
@@ -700,8 +702,12 @@
       return;
     }
     const mainFocused = main.contains(document.activeElement);
-    const mainButtons = [...main.querySelectorAll("button")];
-    const focusedButton = mainButtons.indexOf(document.activeElement);
+    const focusedButton = [...main.querySelectorAll("button")].find((button) =>
+      button === document.activeElement
+    );
+    const focusedLink = [...main.querySelectorAll("a")].find((link) =>
+      link === document.activeElement
+    );
     const reason = main.querySelector("textarea");
     const typing = reason !== null && reason === document.activeElement;
     const selection = typing
@@ -720,12 +726,29 @@
         return;
       }
     }
-    const nextButton = [...main.querySelectorAll("button")][focusedButton];
-    const approvalChanged = mainButtons[focusedButton]?.textContent === "Approve" &&
-      nextButton?.textContent === "Approve anyway";
-    if (focusedButton >= 0 && nextButton && !approvalChanged) {
+    const nextLink = focusedLink && [...main.querySelectorAll("a")].find((link) =>
+      link.href === focusedLink.href
+    );
+    if (nextLink) {
+      nextLink.focus({ preventScroll: true });
+      return;
+    }
+    const buttons = [...main.querySelectorAll("button")];
+    const nextButton = focusedButton && buttons.find((button) =>
+      focusedButton.dataset.focusKey
+        ? button.dataset.focusKey === focusedButton.dataset.focusKey
+        : !button.dataset.focusKey && button.textContent === focusedButton.textContent
+    );
+    if (nextButton) {
       nextButton.focus({ preventScroll: true });
       return;
+    }
+    if (focusedButton?.textContent === "Cancel Request") {
+      const safeChoice = buttons.find((button) => button.textContent === "Keep it running");
+      if (safeChoice) {
+        safeChoice.focus({ preventScroll: true });
+        return;
+      }
     }
     if (focusMain || mainFocused) {
       const target = main.firstElementChild;
