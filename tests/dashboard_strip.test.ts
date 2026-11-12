@@ -56,3 +56,14 @@ withWorld(
     assertEquals((await strip(d, cookie)).haltedSince, null);
   },
 );
+
+withWorld("/api/cost passes on the daemon's cost report and needs the session", async (w) => {
+  await openTeam(w);
+  const d = await w.dashboard();
+  assertEquals((await d.fetch("/api/cost")).status, 403);
+  const cookie = await d.signIn();
+  const out = await (await d.fetch("/api/cost", { cookie })).json();
+  assertEquals(out.running, true);
+  assertEquals(out.cost, (await rawCall(w, "cost.report", {})).result);
+  assertEquals((await d.fetch("/cost", { cookie })).status, 200);
+});

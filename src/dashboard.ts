@@ -321,6 +321,19 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
+  /** What has been spent today, as the daemon's cost report gives it. */
+  async function costView(): Promise<Response> {
+    try {
+      return json({ running: true, cost: await call(paths, "cost.report") });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return json({ running: false }, 503);
+      if (err instanceof DaemonError) {
+        return json({ running: true, error: err.message, code: err.code ?? null }, 500);
+      }
+      throw err;
+    }
+  }
+
   /** Cancel a Request for the user. The daemon's refusal is passed on as it was worded. */
   async function cancelRequest(id: number): Promise<Response> {
     try {
@@ -530,6 +543,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       }
       return await requestView(Number(detail[1]), after);
     }
+    if (url.pathname === "/api/cost") return await costView();
     if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");
