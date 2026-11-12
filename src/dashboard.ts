@@ -198,12 +198,14 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
   /** The Needs you list, as the page draws it. */
   async function needsYouView(): Promise<Response> {
     try {
-      const [escalations, requests] = await Promise.all([
+      const [escalations, requests, strip] = await Promise.all([
         call<EscalationView[]>(paths, "escalations.list", { all: true }),
         call<{ id: number; project: string }[]>(paths, "requests.list", { all: true }),
+        stripFacts(),
       ]);
       return json({
         running: true,
+        strip,
         ...needsYou(escalations, requests),
         decided: await recentlyDecided(escalations),
       });
@@ -297,6 +299,38 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
+  /** The header strip's facts: Halt, the daily cap and the Stuck agents, from `health.report`. */
+  async function stripFacts() {
+    const h = await call<{
+      haltedSince: string | null;
+      dailyCap: { capUsd: number | null; todayUsd: number; reached: boolean };
+      stuck: unknown[];
+    }>(paths, "health.report");
+    return {
+      haltedSince: h.haltedSince,
+      capUsd: h.dailyCap.capUsd,
+      todayUsd: h.dailyCap.todayUsd,
+      capReached: h.dailyCap.reached,
+      stuck: h.stuck.length,
+    };
+  }
+
+  /** Halt or Resume for the user, in one click. Both are safe to repeat: the daemon says if nothing changed. */
+  async function haltOrResume(method: "kiln.halt" | "kiln.resume"): Promise<Response> {
+    try {
+      await call(paths, method, { via: "dashboard" });
+      return json({ ok: true });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) {
+        return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
+      }
+      if (err instanceof DaemonError) {
+        return json({ ok: false, error: err.message, code: err.code ?? null }, 409);
+      }
+      throw err;
+    }
+  }
+
   const redirectHome = (setCookie?: string) =>
     new Response(null, {
       status: 303,
@@ -336,10 +370,18 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     if (!SAFE_METHODS.has(req.method)) {
       const act = /^\/api\/escalations\/(\d+)\/decide$/.exec(url.pathname);
       if (act && req.method === "POST") return await decide(req, Number(act[1]));
+      if (req.method === "POST" && url.pathname === "/api/halt") {
+        return await haltOrResume("kiln.halt");
+      }
+      if (req.method === "POST" && url.pathname === "/api/resume") {
+        return await haltOrResume("kiln.resume");
+      }
       return refuse(405, "No such action.");
     }
     // Every view has its own address; the page swaps its main area to match.
-    if (url.pathname === "/" || /^\/escalations\/\d+$/.test(url.pathname)) {
+    if (
+      url.pathname === "/" || url.pathname === "/cost" || /^\/escalations\/\d+$/.test(url.pathname)
+    ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
       });

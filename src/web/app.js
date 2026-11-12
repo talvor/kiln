@@ -6,6 +6,9 @@
   const main = document.getElementById("main");
   const banner = document.getElementById("banner");
   const favicon = document.getElementById("favicon");
+  const stripBox = document.getElementById("strip");
+  let stripBusy = false; // Halt or Resume is in flight: one at a time
+  let stripRefusal = null;
   let view = { running: true, count: 0, groups: [], stale: [], decided: [] };
   let problem = null;
   // What the user is doing to the selected Escalation: a refusal to show, a reason being typed,
@@ -214,6 +217,9 @@
   function renderMain() {
     main.replaceChildren();
     const id = selectedId();
+    if (location.pathname === "/cost") {
+      return main.append(el("p", "note", "The Cost view is not built yet."));
+    }
     if (id === null) return main.append(el("p", "note", "Pick an Escalation to see its detail."));
     const all = [...view.groups.flatMap((g) => g.items), ...view.stale];
     const item = all.find((i) => i.id === id);
@@ -246,6 +252,77 @@
     }
   }
 
+  const usd = (n) => "$" + n.toFixed(2);
+
+  async function haltOrResume(path) {
+    if (stripBusy) return;
+    stripBusy = true;
+    stripRefusal = null;
+    renderStrip();
+    try {
+      const res = await fetch(path, { method: "POST" });
+      const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
+      if (!out.ok) stripRefusal = out.error;
+    } catch {
+      stripRefusal = "The dashboard could not be reached.";
+    }
+    await refresh();
+    stripBusy = false;
+    renderStrip();
+  }
+
+  function renderStrip() {
+    const hadFocus = stripBox.contains(document.activeElement);
+    const focusedLabel = hadFocus ? document.activeElement.textContent : null;
+    stripBox.replaceChildren();
+    const strip = view.strip;
+    if (!view.running || !strip) return;
+    if (strip.haltedSince !== null) {
+      stripBox.append(el("span", "cond", "Halted " + when(strip.haltedSince)));
+    }
+    if (strip.capReached) stripBox.append(el("span", "cond", "Daily cap reached"));
+    if (strip.stuck > 0) {
+      stripBox.append(
+        el("span", "cond", strip.stuck + " Stuck agent" + (strip.stuck === 1 ? "" : "s")),
+      );
+    }
+    const cost = el(
+      "a",
+      "",
+      strip.capUsd === null
+        ? usd(strip.todayUsd) + " today"
+        : usd(strip.todayUsd) + " of " + usd(strip.capUsd) + " today",
+    );
+    cost.href = "/cost";
+    cost.addEventListener("click", (event) => {
+      event.preventDefault();
+      go("/cost");
+    });
+    stripBox.append(cost);
+    if (stripRefusal) stripBox.append(el("span", "cond", stripRefusal));
+    const button = (label, path) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.setAttribute("aria-disabled", String(stripBusy));
+      // A held key or a double click repeats the click: only the first one counts.
+      b.addEventListener("click", (event) => {
+        if (event.detail > 1) return;
+        haltOrResume(path);
+      });
+      return b;
+    };
+    if (strip.haltedSince === null) stripBox.append(button("Halt", "/api/halt"));
+    if (strip.haltedSince !== null || strip.stuck > 0) {
+      stripBox.append(button("Resume", "/api/resume"));
+    }
+    if (focusedLabel) {
+      const same = [...stripBox.querySelectorAll("button")].find((b) =>
+        b.textContent === focusedLabel
+      );
+      if (same) same.focus({ preventScroll: true });
+    }
+  }
+
   function renderTitle() {
     const n = view.count;
     document.title = n > 0 ? "(" + n + ") Kiln" : "Kiln";
@@ -264,6 +341,7 @@
       banner.style.display = "none";
       renderTitle();
       rail.replaceChildren();
+      stripBox.replaceChildren();
       main.replaceChildren(el("p", "note", problem));
       return;
     }
@@ -277,6 +355,7 @@
       : null;
     banner.style.display = view.running ? "none" : "block";
     renderTitle();
+    renderStrip();
     const focusMain = renderRail();
     renderMain();
     if (typing) {

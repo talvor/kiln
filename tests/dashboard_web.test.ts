@@ -107,7 +107,7 @@ class Page {
   private elements = new Map<string, PageElement>();
 
   constructor() {
-    for (const id of ["rail", "main", "banner", "favicon"]) {
+    for (const id of ["rail", "main", "banner", "favicon", "strip"]) {
       this.elements.set(id, new PageElement(id, this));
     }
   }
@@ -502,4 +502,81 @@ withWorld("an old page reports a restart on another port after retries", async (
     page.getElementById("main").textContent,
     "This dashboard was restarted or stopped. Open the new URL printed by kiln dashboard.",
   );
+});
+
+Deno.test("the header strip shows conditions and spend, and Halt and Resume ignore repeats", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{ url: string; method?: string; resolve: (r: Response) => void }> = [];
+  const fetch = (url: string, init?: { method?: string }) =>
+    new Promise<Response>((resolve) => pending.push({ url, method: init?.method, resolve }));
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    { pushState: (_s: null, _t: string, path: string) => location.pathname = path },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    () => 1,
+    () => {},
+    { now: () => Date.now(), parse: Date.parse },
+  );
+  const strip = page.getElementById("strip");
+  const quiet = { haltedSince: null, capUsd: 5, todayUsd: 1.5, capReached: false, stuck: 0 };
+  const show = async (facts: unknown) => {
+    stream.emit("open");
+    pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: facts }));
+    await tick();
+  };
+
+  await show(quiet);
+  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.querySelector("a")?.href, "/cost");
+
+  await show({
+    ...quiet,
+    haltedSince: new Date().toISOString(),
+    capReached: true,
+    stuck: 2,
+  });
+  assertEquals(
+    strip.textContent,
+    "Halted just nowDaily cap reached2 Stuck agents$1.50 of $5.00 todayResume",
+  );
+
+  await show({ ...quiet, capUsd: null });
+  const halt = strip.querySelector("button")!;
+  assertEquals(strip.textContent, "$1.50 todayHalt");
+  halt.click(2); // a held key or a double click
+  assertEquals(pending.filter((p) => p.url === "/api/halt").length, 0);
+  halt.click();
+  halt.click(); // the second click while the first is in flight
+  const posts = pending.filter((p) => p.url === "/api/halt");
+  assertEquals(posts.length, 1);
+  assertEquals(posts[0].method, "POST");
+  posts[0].resolve(Response.json({ ok: true }));
+  await tick();
+  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  await tick();
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
 });
