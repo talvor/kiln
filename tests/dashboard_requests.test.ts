@@ -178,3 +178,49 @@ withWorld("Cancel fails the Request, records Source dashboard and is refused twi
     ["dashboard"],
   );
 });
+
+withWorld(
+  "a Request's transcript lists its Messages with Kiln-written and dead-lettered flags",
+  async (w) => {
+    await openTeam(w);
+    seed(w, (db) => {
+      const id = request(db, "active", "Talk");
+      const message = (kind: string, body: string, synthesised: number) =>
+        Number(
+          db.prepare(
+            `insert into messages (sender, recipient, kind, body, synthesised, sent_at)
+           values ('overseer', 'dev-lead', ?, ?, ?, 'now')`,
+          ).run(kind, body, synthesised).lastInsertRowid,
+        );
+      const first = message("assignment", JSON.stringify({ text: "<b>Do it</b>" }), 0);
+      const second = message("result", JSON.stringify({ text: "Never read" }), 1);
+      const status = db.prepare(
+        "insert into message_status (message_id, dead_lettered_at) values (?, ?)",
+      );
+      status.run(first, null);
+      status.run(second, "now");
+      event(db, hoursAgo(1), "message.sent", { request: id, message: first });
+      event(db, hoursAgo(1), "message.sent", { request: id, message: second });
+    });
+    const d = await w.dashboard();
+    const cookie = await d.signIn();
+    const res = await d.fetch("/api/requests/1/transcript", { cookie });
+    assertEquals(res.status, 200);
+    const out = await res.json();
+    assertEquals(
+      out.messages.map((
+        m: { from: string; to: string; kind: string; synthesised: boolean; deadLettered: boolean },
+      ) => [m.from, m.to, m.kind, m.synthesised, m.deadLettered]),
+      [["overseer", "dev-lead", "assignment", false, false], [
+        "overseer",
+        "dev-lead",
+        "result",
+        true,
+        true,
+      ]],
+    );
+    assertEquals(out.messages[0].body.text, "<b>Do it</b>");
+    assertEquals((await d.fetch("/api/requests/99/transcript", { cookie })).status, 404);
+    assertEquals((await d.fetch("/requests/1/transcript", { cookie })).status, 200);
+  },
+);
