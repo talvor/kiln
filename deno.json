@@ -18,6 +18,7 @@
   "compilerOptions": {
     "strict": true
   },
+  "exclude": [".claude/"],
   "fmt": {
     "lineWidth": 100,
     "include": [
