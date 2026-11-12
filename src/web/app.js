@@ -14,9 +14,8 @@
   // The selected Request's Overview, fetched on its own. `cancelling` is the Cancel confirm step.
   let detail = { id: null, data: null, error: null };
   const requestDetails = new Map();
-  // The Transcript tab's Messages per Request, and which long ones the user opened.
+  // The Transcript tab's Messages, and which long ones the user opened.
   let transcript = { id: null, messages: null, error: null };
-  const transcripts = new Map();
   const opened = new Set();
   const CUT = 600;
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
@@ -312,20 +311,12 @@
     if (onTranscript()) await loadTranscript(id, current);
   }
 
-  /** The Messages of the selected Request. A finished Request's do not change, so they load once. */
   async function loadTranscript(id, current) {
-    const cached = transcripts.get(id);
-    const status = detail.data?.request.status;
-    if (cached && (status === "done" || status === "failed")) {
-      transcript = { id, messages: cached, error: null };
-      return render();
-    }
     try {
       const res = await fetch("/api/requests/" + id + "/transcript");
       const out = await res.json().catch(() => ({ error: "Something went wrong." }));
       if (!current()) return;
       if (res.ok) {
-        transcripts.set(id, out.messages);
         transcript = { id, messages: out.messages, error: null };
       } else {
         transcript = { id, messages: null, error: out.error ?? "Something went wrong." };

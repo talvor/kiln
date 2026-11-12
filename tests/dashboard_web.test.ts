@@ -956,4 +956,38 @@ Deno.test("the Transcript tab loads Messages, appends live, flags and truncates 
   );
   assertEquals(items().length, 3);
   assertEquals(items()[2].textContent.includes("result"), true);
+
+  main.children.find((child) => child.className === "tabs")!.children[0].click();
+  assertEquals(location.pathname, "/requests/3");
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3)] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([])));
+  assertEquals(pending.some((p) => p.url === "/api/requests/3/transcript"), false);
+  stream!.emit("changed");
+  await answer(
+    (p) => p.url === "/api/needs-you",
+    Response.json({ ...snapshot(0), requests: [requestRow(3, { status: "done" })] }),
+  );
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([], "done")));
+  assertEquals(pending.some((p) => p.url === "/api/requests/3/transcript"), false);
+
+  main.children.find((child) => child.className === "tabs")!.children[1].click();
+  assertEquals(location.pathname, "/requests/3/transcript");
+  await answer((p) => p.url === "/api/requests/3", Response.json(overview([], "done")));
+  assertEquals(pending.some((p) => p.url === "/api/requests/3/transcript"), true);
+  await answer(
+    (p) => p.url === "/api/requests/3/transcript",
+    Response.json({
+      messages: [message(1), message(2), message(3), message(4, {
+        kind: "answer",
+        body: { text: "arrived during Overview" },
+      })],
+    }),
+  );
+  assertEquals(items().length, 4);
+  assertEquals(items()[3].textContent.includes("arrived during Overview"), true);
 });
