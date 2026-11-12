@@ -14,6 +14,7 @@ import indexHtml from "./web/index.html" with { type: "text" };
 
 const COOKIE = "kiln_dashboard";
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
+const REQUEST_END_KINDS = new Set(["request.done", "request.cancelled", "step.failed"]);
 
 export interface Dashboard {
   /** The URL to print: it carries the token, which works once. */
@@ -225,8 +226,9 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
-  // When a failed Request ended never changes, so it is asked for once.
-  const endedAt = new Map<number, string>();
+  let railEventCursor = 0;
+  const failedEnds = new Map<number, { id: number; ts: string }>();
+  const knownTimes = new Map<number, { id: number; ts: string }>();
 
   /**
    * The Requests rail: what is running or waiting, and what failed in the last 24 hours, are
@@ -239,23 +241,22 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         e.requestId
       ),
     );
-    const failedAt = new Map<number, string>(endedAt);
-    for (const r of requests) {
-      if (r.status === "failed" && !endedAt.has(r.id)) {
-        try {
-          const report = await call<{ endedAt: string | null; startedAt: string | null }>(
-            paths,
-            "requests.report",
-            { id: r.id },
-          );
-          // An end time not recorded yet may be later; only a known one is kept.
-          if (report.endedAt !== null) endedAt.set(r.id, report.endedAt);
-          const timestamp = report.endedAt ?? report.startedAt;
-          if (timestamp !== null) failedAt.set(r.id, timestamp);
-        } catch (err) {
-          if (!(err instanceof DaemonError)) throw err; // this Request's end is just unknown
+    if (requests.some((r) => r.status === "failed" && !failedEnds.has(r.id))) {
+      const feed = await call<{
+        events: { id: number; ts: string; kind: string; requestId: number | null }[];
+        last: number;
+      }>(paths, "events.since", { after: railEventCursor });
+      for (const event of feed.events) {
+        const id = event.requestId;
+        if (id === null) continue;
+        if (event.id > (knownTimes.get(id)?.id ?? 0)) {
+          knownTimes.set(id, { id: event.id, ts: event.ts });
+        }
+        if (REQUEST_END_KINDS.has(event.kind) && event.id > (failedEnds.get(id)?.id ?? 0)) {
+          failedEnds.set(id, { id: event.id, ts: event.ts });
         }
       }
+      railEventCursor = Math.max(railEventCursor, feed.last);
     }
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
     return requests.map((r) => {
@@ -268,17 +269,22 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
         playbook: r.playbook,
         waiting: !finished && waiting.has(r.id),
         recent: !finished ||
-          (r.status === "failed" && Date.parse(failedAt.get(r.id) ?? "") >= dayAgo),
+          (r.status === "failed" &&
+            Date.parse(failedEnds.get(r.id)?.ts ?? knownTimes.get(r.id)?.ts ?? "") >= dayAgo),
       };
     });
   }
 
   /** One Request for its Overview: the status with its steps, and the events of its life. */
-  async function requestView(id: number): Promise<Response> {
+  async function requestView(id: number, after: number): Promise<Response> {
     try {
       const request = await call(paths, "requests.status", { id });
-      const feed = await call<{ events: unknown[] }>(paths, "requests.events", { id, after: 0 });
-      return json({ running: true, request, events: feed.events });
+      const feed = await call<{ events: unknown[]; last: number }>(
+        paths,
+        "requests.events",
+        { id, after },
+      );
+      return json({ running: true, request, events: feed.events, last: feed.last });
     } catch (err) {
       if (err instanceof DaemonNotRunning) return json({ running: false }, 503);
       if (err instanceof DaemonError) {
@@ -485,7 +491,14 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     if (url.pathname === "/events") return events(req.headers.get("last-event-id"));
     const detail = /^\/api\/requests\/(\d+)$/.exec(url.pathname);
-    if (detail) return await requestView(Number(detail[1]));
+    if (detail) {
+      const rawAfter = url.searchParams.get("after");
+      const after = rawAfter === null ? 0 : Number(rawAfter);
+      if (rawAfter !== null && (!/^\d+$/.test(rawAfter) || !Number.isSafeInteger(after))) {
+        return refuse(400, "Invalid event cursor.");
+      }
+      return await requestView(Number(detail[1]), after);
+    }
     if (url.pathname === "/api/needs-you") return await needsYouView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");

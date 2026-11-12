@@ -696,6 +696,7 @@ const overview = (events: { id: number; ts: string; text: string }[], status = "
     }],
   },
   events: events.map((e) => ({ ...e, kind: "x" })),
+  last: events.at(-1)?.id ?? 0,
 });
 
 Deno.test("the Requests rail filters, marks, and a Request opens its Overview and cancels safely", async () => {
@@ -827,10 +828,17 @@ Deno.test("the Requests rail filters, marks, and a Request opens its Overview an
     (p) => p.url === "/api/needs-you",
     snap({ requests: [requestRow(3, { status: "failed" })] }),
   );
+  assertEquals(pending.some((p) => p.url === "/api/requests/3?after=101"), true);
   await answer(
-    (p) => p.url === "/api/requests/3",
-    Response.json(overview([], "failed")),
+    (p) => p.url === "/api/requests/3?after=101",
+    Response.json(overview([{
+      id: 102,
+      ts: new Date(now).toISOString(),
+      text: "Cancelled",
+    }], "failed")),
   );
   assertEquals(main.textContent.includes("Failed: Cancelled by the user."), true);
+  assertEquals(main.querySelector("ul")?.children.length, 102);
+  assertEquals(main.querySelector("ul")?.children[101].textContent.includes("Event 1"), true);
   assertEquals(main.querySelectorAll("button").length, 0); // nothing left to cancel
 });

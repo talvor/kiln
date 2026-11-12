@@ -13,6 +13,7 @@
   let showFinished = false; // the rail's "Show finished" toggle
   // The selected Request's Overview, fetched on its own. `cancelling` is the Cancel confirm step.
   let detail = { id: null, data: null, error: null };
+  const requestDetails = new Map();
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
   let cancelAct = { ...blankCancel };
   let problem = null;
@@ -273,19 +274,24 @@
   }
 
   let detailSeq = 0;
-  /** Fetch the selected Request's Overview. Events are hints: this is the whole picture again. */
   async function loadDetail() {
+    const mine = ++detailSeq;
     const id = selectedRequestId();
     if (id === null) return;
-    const mine = ++detailSeq;
     const current = () => mine === detailSeq && selectedRequestId() === id;
+    const cached = requestDetails.get(id);
+    const after = cached?.last ?? 0;
     try {
-      const res = await fetch("/api/requests/" + id);
+      const res = await fetch("/api/requests/" + id + (after ? "?after=" + after : ""));
       const out = await res.json().catch(() => ({ error: "Something went wrong." }));
       if (!current()) return;
-      detail = res.ok
-        ? { id, data: out, error: null }
-        : { id, data: null, error: out.error ?? "Something went wrong." };
+      if (res.ok) {
+        const data = { ...out, events: [...(cached?.events ?? []), ...out.events] };
+        requestDetails.set(id, data);
+        detail = { id, data, error: null };
+      } else {
+        detail = { id, data: null, error: out.error ?? "Something went wrong." };
+      }
     } catch {
       if (!current()) return;
       detail = {

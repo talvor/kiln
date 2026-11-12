@@ -82,12 +82,25 @@ withWorld("failed Requests without an end time use a known start or stay finishe
     event(db, hoursAgo(2), "request.started", { id: recent });
     const old = request(db, "failed", "Started long ago");
     event(db, hoursAgo(48), "request.started", { id: old });
+    const last = request(db, "failed", "Recent event");
+    event(db, hoursAgo(1), "message.sent", { request: last });
     request(db, "failed", "No timestamp");
   });
   const d = await w.dashboard();
   const cookie = await d.signIn();
   const rows = await rail(d, cookie);
-  assertEquals(rows.map((r) => [r.id, r.recent]), [[3, false], [2, false], [1, true]]);
+  assertEquals(rows.map((r) => [r.id, r.recent]), [
+    [4, false], [3, true], [2, false], [1, true],
+  ]);
+  const db = new DatabaseSync(join(w.dirs.data, "kiln.db"));
+  try {
+    event(db, hoursAgo(1), "request.cancelled", { id: 2 });
+  } finally {
+    db.close();
+  }
+  assertEquals((await rail(d, cookie)).map((r) => [r.id, r.recent]), [
+    [4, false], [3, true], [2, true], [1, true],
+  ]);
 });
 
 withWorld("a Request's Overview has its steps, assignments, budget and events", async (w) => {
@@ -97,6 +110,7 @@ withWorld("a Request's Overview has its steps, assignments, budget and events", 
     db.prepare("insert into steps (request_id, position, spec, status) values (?, 1, ?, 'active')")
       .run(id, JSON.stringify({ name: "Implement", department: "dev" }));
     event(db, hoursAgo(1), "request.started", { id });
+    event(db, hoursAgo(0.5), "step.done", { request: id, step: 1 });
   });
   const d = await w.dashboard();
   const cookie = await d.signIn();
@@ -106,6 +120,15 @@ withWorld("a Request's Overview has its steps, assignments, budget and events", 
   assertEquals(view.request.steps.map((s: { name: string }) => s.name), ["Implement"]);
   assertEquals(typeof view.request.costUsd, "number");
   assert(view.events.some((e: { kind: string }) => e.kind === "request.started"));
+  const later = await (await d.fetch(`/api/requests/1?after=${view.events[0].id}`, { cookie }))
+    .json();
+  assertEquals(later.events.map((e: { kind: string }) => e.kind), ["step.done"]);
+  assertEquals(later.last, view.last);
+  const empty = await (await d.fetch(`/api/requests/1?after=${view.last}`, { cookie })).json();
+  assertEquals(empty.events, []);
+  const badCursor = await d.fetch("/api/requests/1?after=oops", { cookie });
+  assertEquals(badCursor.status, 400);
+  await badCursor.body?.cancel();
   // The page itself is served at the Request's own address.
   const page = await d.fetch("/requests/1", { cookie });
   assertEquals(page.status, 200);
