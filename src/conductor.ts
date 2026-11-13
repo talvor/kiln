@@ -800,10 +800,10 @@ export function createConductor(opts: ConductorOptions) {
         throw new StepFailed("QA passed, but Kiln has no pull request to report it on.");
       }
       try {
-        await commentOnPr(project.clonePath, request.prUrl, await qaSummary(request));
-        store.appendEvent("pr.commented", { request: request.id, url: request.prUrl });
         await markPrReady(project.clonePath, request.prUrl);
         store.appendEvent("pr.ready", { request: request.id, url: request.prUrl });
+        await commentOnPr(project.clonePath, request.prUrl, await qaSummary(request));
+        store.appendEvent("pr.commented", { request: request.id, url: request.prUrl });
       } catch (err) {
         if (err instanceof PublishFailed) throw new StepFailed(err.message);
         throw err;
