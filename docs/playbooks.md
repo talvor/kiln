@@ -80,9 +80,9 @@ wakes an agent playing the role. `tools` is optional and lists the built-in tool
 Each Step names a department with a leader and a worker role in that department. `publish` is
 optional (`"ticket"`, `"draft-pr"`, `"qa-summary"` or `"close-ticket"`), and so are `after`
 (`"merge"`: the step waits for the Request's pull request to be merged), `gate` (`"spec-approval"`,
-see below) and `findings` (the earlier step QA findings go back to). A file that
-is not valid is refused when a Request starts, naming the file and the problem. A Request keeps the
-Steps it started with if the file changes later.
+see below) and `findings` (the earlier step QA findings go back to). A file that is not valid is
+refused when a Request starts, naming the file and the problem. A Request keeps the Steps it started
+with if the file changes later.
 
 ## Verification and retries
 
@@ -161,9 +161,9 @@ QA, and, once the user has merged it, wraps the ticket up. Its steps:
    `kiln reject --reason` fails the Request.
 2. **implement** (Implementer): builds the ticket test-first (the `tdd` skill) and writes
    `pull-request.md` (the `pr` skill). Once verified and merged, Kiln opens a **draft** pull request
-   from the request branch (`"publish": "draft-pr"`), which stays a draft until QA passes; the tracker
-   item is added as `Closes <ref>`.
-   The pull request is recorded on the Request (`Pull request:` in `kiln request status`).
+   from the request branch (`"publish": "draft-pr"`), which stays a draft until QA passes; the
+   tracker item is added as `Closes <ref>`. The pull request is recorded on the Request
+   (`Pull request:` in `kiln request status`).
 3. **review** (Reviewer) and 4. **gatekeep** (Gatekeeper): both check the work and write their
    verdicts. A leader that finds problems reports status `findings` with them in the summary. The
    findings go back to the step named by `findings` (implement) as a new Assignment, from the
@@ -183,12 +183,12 @@ Kiln never merges. The user merges the pull request, and Kiln finds out on its o
 `KILN_PR_POLL_SECONDS` (default 60) it asks `gh pr view` for the state of each pull request that
 passed QA (the gatekeep step is done) and is waiting, with no model involved.
 
-- **Merged** is the go-ahead: the 5th step,
-  **wrap-up** (Closer, `"after": "merge"`), begins. The Closer writes `wrap-up.md`, a short note of
-  what shipped; once it is verified and merged, Kiln posts it on the ticket and closes the ticket
-  (`"publish": "close-ticket"`, only when the Request has a tracker item). Then Kiln cleans up: the
-  Request's worktrees, its local branches and the request branch on the remote. The Request is
-  `done`. A part that cannot be removed is logged and left; the Request still ends `done`.
+- **Merged** is the go-ahead: the 5th step, **wrap-up** (Closer, `"after": "merge"`), begins. The
+  Closer writes `wrap-up.md`, a short note of what shipped; once it is verified and merged, Kiln
+  posts it on the ticket and closes the ticket (`"publish": "close-ticket"`, only when the Request
+  has a tracker item). Then Kiln cleans up: the Request's worktrees, its local branches and the
+  request branch on the remote. The Request is `done`. A part that cannot be removed is logged and
+  left; the Request still ends `done`.
 - **Closed without merging** blocks the Request on the user: a **blocked-on-user** Escalation
   carries the pull request's URL. Nothing is removed. `kiln approve` says the pull request is open
   again and Kiln looks at it afresh; `kiln reject --reason` fails the Request. The branches stay

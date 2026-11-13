@@ -588,8 +588,6 @@ export function createConductor(opts: ConductorOptions) {
     if (!step.spec.gate) return true;
     const gate = gateOf(step, step.spec.gate);
     if (!gate) {
-      let summary: string;
-      let detail: string;
       const wt = store.getWorktree(request.worktreeId!);
       const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
       const parts: string[] = [];
@@ -597,8 +595,8 @@ export function createConductor(opts: ConductorOptions) {
         const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
         if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
       }
-      summary = `Approve the spec for request ${request.id}?`;
-      detail = `${request.description}\n\n${parts.join("\n\n")}`;
+      const summary = `Approve the spec for request ${request.id}?`;
+      const detail = `${request.description}\n\n${parts.join("\n\n")}`;
       const raised = store.addEscalation({
         raisedBy: overseerSeat().address,
         requestId: request.id,

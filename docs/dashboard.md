@@ -17,8 +17,8 @@ is read as Markdown or HTML). The tab title shows the open count, e.g. `(2) Kiln
 
 The selected Escalation has **Approve** (one click) and **Reject** (it needs a reason). The daemon's
 refusals are shown as worded, for instance when the Escalation was already decided or went stale.
-Decisions made here record Source `dashboard`. The collapsed **Recently decided** list holds the last 20 decisions, newest
-first, with their outcome, time, Source and any reason.
+Decisions made here record Source `dashboard`. The collapsed **Recently decided** list holds the
+last 20 decisions, newest first, with their outcome, time, Source and any reason.
 
 The **header strip** shows what needs attention at a glance: **Halted** (with how long ago), **Daily
 cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap (or just
@@ -114,10 +114,10 @@ not be able to drive it.
 The risk that remains: a process running as you can read the dashboard's memory. Agents are kept
 away by the policing hook, which refuses a shell command (`Bash`) aimed at the port of a running
 Dashboard: one that names the port and either a loopback address (`localhost`, `127.x.x.x`, `::1`,
-`0.0.0.0`, `/dev/tcp/...`) or a network client (`curl`, `nc`, `python`, ...). The port is not secret;
-each Dashboard records it as a file named for the port in the `dashboards` folder of the daemon's
-runtime directory while it runs, and removes it when it stops. The refusal is raised like any other:
-a question to the agent's direct superior.
+`0.0.0.0`, `/dev/tcp/...`) or a network client (`curl`, `nc`, `python`, ...). The port is not
+secret; each Dashboard records it as a file named for the port in the `dashboards` folder of the
+daemon's runtime directory while it runs, and removes it when it stops. The refusal is raised like
+any other: a question to the agent's direct superior.
 
 That is a guard against an agent wandering onto the Dashboard, not a boundary. It is a pattern match
 on the command text, so a determined same-user process gets past it (a port built up at run time, a
