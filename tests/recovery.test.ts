@@ -65,6 +65,7 @@ async function oneAssignment(world: World, runs: LauncherRun[], limits: unknown 
   await Deno.mkdir(world.dirs.config, { recursive: true });
   await Deno.writeTextFile(join(world.dirs.config, "limits.json"), JSON.stringify(limits));
   await register(world);
+  await world.launcher.script([{ result: "ready" }]);
   const started = await world.kiln(
     "request",
     "start",
@@ -75,6 +76,11 @@ async function oneAssignment(world: World, runs: LauncherRun[], limits: unknown 
     "Logins fail after midnight",
   );
   assertEquals(started.code, 0, started.stderr);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (prompts) => prompts.some((prompt) => prompt.includes("You are the engineering leader")),
+    15_000,
+  );
   await asAgent(world, "engineering-leader", (a) => a.inbox());
   await world.launcher.script(runs);
   const job = await asAgent(

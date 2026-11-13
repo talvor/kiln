@@ -59,6 +59,7 @@ async function statusOf(world: World, id = 1): Promise<Status> {
 }
 
 async function start(world: World, description = "Logins fail after midnight") {
+  await world.launcher.script([{ result: "ready" }]);
   const r = await world.kiln(
     "request",
     "start",
@@ -69,6 +70,10 @@ async function start(world: World, description = "Logins fail after midnight") {
     description,
   );
   assertEquals(r.code, 0, r.stderr);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (prompts) => prompts.some((prompt) => prompt.includes("You are the engineering leader")),
+  );
 }
 
 const delegate = (world: World, worker: string, body: Record<string, unknown> = {}) =>
@@ -103,8 +108,8 @@ async function oneAssignment(
   await register(world);
   await start(world);
   await asAgent(world, "engineering-leader", (a) => a.inbox());
-  const job = await delegate(world, "diagnostician-1");
   await world.launcher.script(runs);
+  const job = await delegate(world, "diagnostician-1");
   return job;
 }
 
@@ -347,8 +352,8 @@ withWorld("a notification command that fails does not stop the work", async (w) 
   await register(w);
   await start(w);
   await asAgent(w, "engineering-leader", (a) => a.inbox());
-  await delegate(w, "diagnostician-1");
   await w.launcher.script([{ result: "ok", costUsd: 1.5 }]);
+  await delegate(w, "diagnostician-1");
   // The Request is blocked all the same.
   await waitFor(() => escalations(w), (text) => text.includes("blocked on you"));
 });

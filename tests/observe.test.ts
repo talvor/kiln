@@ -34,6 +34,7 @@ async function waitFor<T>(read: () => Promise<T>, ready: (v: T) => boolean, time
 /** A Request whose leader has delegated to a worker, which has been woken and has reported. */
 async function workedRequest(world: World) {
   await register(world);
+  await world.launcher.script([{ result: "ready" }]);
   const started = await world.kiln(
     "request",
     "start",
@@ -44,6 +45,10 @@ async function workedRequest(world: World) {
     "Logins fail after midnight",
   );
   assertEquals(started.code, 0, started.stderr);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (prompts) => prompts.some((prompt) => prompt.includes("You are the engineering leader")),
+  );
   await asAgent(world, "engineering-leader", (a) => a.inbox());
   await world.launcher.script([{
     result: "Found it: the session expires at midnight",
