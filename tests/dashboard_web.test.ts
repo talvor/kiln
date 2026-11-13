@@ -1270,7 +1270,10 @@ Deno.test("the Cost view shows today against the cap, a table per Project and Re
   assertEquals(main.children.some((child) => child.getAttribute("role") === "progressbar"), false);
   const tables = main.children.filter((child) => child.tag === "table");
   assertEquals(tables.length, 2);
-  assertEquals(tables[0].children[0].children.map((cell) => cell.textContent), ["Project", "Today"]);
+  assertEquals(tables[0].children[0].children.map((cell) => cell.textContent), [
+    "Project",
+    "Today",
+  ]);
   assertEquals(tables[1].children[0].children.map((cell) => cell.textContent), [
     "Request",
     "Project",
