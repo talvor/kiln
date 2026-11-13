@@ -98,7 +98,7 @@ leader to the overseer). Any other path is refused. _Avoid_: channel, permission
 dead-lettered assignment is reported back to its sender as a failed result written by Kiln. _Avoid_:
 lost message, expired message
 
-**Merge watch**: How Kiln follows a pull request that has passed QA, with no model involved: on a
+**Merge watch**: How Kiln follows a pull request that has passed QA and been marked ready for review, with no model involved: on a
 clock it asks the forge for the pull request's state. Kiln never merges. Merged is the user's
 go-ahead: the wrap-up step begins and, once the ticket is closed, Kiln cleans up the Request's
 worktrees and branches. Closed without merging blocks the Request on the user, and nothing is

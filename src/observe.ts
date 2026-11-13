@@ -196,6 +196,8 @@ export function describeEvent(e: EventRecord): string {
       return `Pull request opened: ${s("url")}`;
     case "pr.commented":
       return `Kiln commented on the pull request ${s("url")}.`;
+    case "pr.ready":
+      return `The pull request ${s("url")} was marked ready for review.`;
     case "pr.state":
       return `The pull request is ${s("state")}.`;
     case "escalation.raised":

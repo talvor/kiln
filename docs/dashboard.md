@@ -17,9 +17,7 @@ is read as Markdown or HTML). The tab title shows the open count, e.g. `(2) Kiln
 
 The selected Escalation has **Approve** (one click) and **Reject** (it needs a reason). The daemon's
 refusals are shown as worded, for instance when the Escalation was already decided or went stale.
-Approving a `qa-passed` Gate whose pull request is not merged is refused by the daemon; the page
-shows that and offers **Approve anyway**, which sends the confirmation. Decisions made here record
-Source `dashboard`. The collapsed **Recently decided** list holds the last 20 decisions, newest
+Decisions made here record Source `dashboard`. The collapsed **Recently decided** list holds the last 20 decisions, newest
 first, with their outcome, time, Source and any reason.
 
 The **header strip** shows what needs attention at a glance: **Halted** (with how long ago), **Daily

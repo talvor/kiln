@@ -23,7 +23,7 @@ const esc = (over: Partial<EscalationView>): EscalationView => ({
 
 Deno.test("groups open Escalations by Project, oldest first, and counts only the open ones", () => {
   const list = [
-    esc({ id: 1, requestId: 10, createdAt: "2026-01-02T00:00:00Z", gate: "qa-passed" }),
+    esc({ id: 1, requestId: 10, createdAt: "2026-01-02T00:00:00Z", gate: "blocked-on-user" }),
     esc({ id: 2, requestId: 20, createdAt: "2026-01-01T00:00:00Z" }),
     esc({ id: 3, requestId: 10, createdAt: "2026-01-01T12:00:00Z" }),
     esc({ id: 4, requestId: 10, createdAt: "2026-01-01T00:00:00Z", status: "stale" }),
@@ -36,7 +36,7 @@ Deno.test("groups open Escalations by Project, oldest first, and counts only the
     view.groups.map((g) => [g.project, g.items.map((i) => i.id)]),
     [["beta", [2]], ["alpha", [3, 1]]], // the group holding the oldest Escalation comes first
   );
-  assertEquals(view.groups[1].items[1].gate, "qa-passed");
+  assertEquals(view.groups[1].items[1].gate, "blocked-on-user");
   assertEquals(view.groups[1].items[1].requestId, 10);
   assertEquals(view.stale.map((i) => i.id), [4]);
   assertEquals(view.stale[0].project, "alpha");

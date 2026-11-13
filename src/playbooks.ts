@@ -12,7 +12,7 @@ import type { Role, StepSpec } from "./store.ts";
 
 const NAME = /^[a-z][a-z0-9-]*$/;
 const PUBLISH = ["ticket", "tickets", "draft-pr", "qa-summary", "close-ticket"];
-const GATES = ["spec-approval", "qa-passed"];
+const GATES = ["spec-approval"];
 
 export interface RoleConfig {
   name: string;
