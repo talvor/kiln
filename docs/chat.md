@@ -35,8 +35,11 @@ it stays quiet. A fresh session opens silent unless there is such news, in which
 is asked to tell you, once.
 
 Mail for the Overseer is not delivered by a Nudge while you are in the chat (it would wake a second
-Overseer beside yours). It is shown in the status line, noted to the Overseer on your next prompt,
-and the Overseer may not end a turn with it unread. When you leave, Nudges resume.
+Overseer beside yours). When the chat is idle, incoming mail or a finished request starts a fresh
+session with a digest, so the Overseer can tell you without waiting for a prompt. During a turn,
+unread mail is shown in the status line, noted to the Overseer on your next prompt, and the
+Overseer may not end the turn with it unread. Kiln does not wake the chat while work is halted or
+the daily cap is reached. When you leave, Nudges resume.
 
 ## Commands that need no model
 

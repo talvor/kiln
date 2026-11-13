@@ -450,8 +450,9 @@ withWorld("the Overseer's mail waits for the chat instead of being nudged", asyn
 });
 
 /** Open `kiln chat` against a first session that idles, as an idle user's chat does. */
-async function idleChat(world: World, openFor = 30_000) {
+async function idleChat(world: World, openFor = 30_000, beforeStart?: () => Promise<void>) {
   await openTeam(world);
+  await beforeStart?.();
   await world.launcher.script([
     { session: [{ wait: openFor }] }, // the chat, idle
     { session: [] }, // its replacement, which ends at once
@@ -486,6 +487,41 @@ withWorld("mail for an idle chat is surfaced without a user prompt", async (worl
   assertEquals(calls.length, 2);
 });
 
+withWorld("a result for an idle Overseer chat is surfaced without a user prompt", async (world) => {
+  let assignmentId = 0;
+  const chatting = await idleChat(world, 30_000, async () => {
+    assertEquals((await world.kiln("halt")).code, 0);
+    const assignment = await asAgent(
+      world,
+      "overseer",
+      (agent) => agent.send("dev-lead", "assignment", {
+        title: "Diagnose the stall",
+        instructions: "Report the cause",
+      }),
+    );
+    assignmentId = assignment.id;
+    await asAgent(world, "dev-lead", (agent) => agent.inbox());
+    assertEquals((await world.kiln("resume")).code, 0);
+  });
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) =>
+      agent.send(
+        "overseer",
+        "result",
+        { status: "done", summary: "Found the cause" },
+        assignmentId,
+      ),
+  );
+
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
+  const messages = await asAgent(world, "overseer", (agent) => agent.inbox());
+  assertEquals(messages.map((m) => [m.kind, m.inReplyTo]), [["result", assignmentId]]);
+});
+
 withWorld("unread mail still wakes a replacement chat after its turn", async (world) => {
   await openTeam(world);
   await world.launcher.script([
@@ -511,7 +547,7 @@ withWorld("unread mail still wakes a replacement chat after its turn", async (wo
 
   assertStringIncludes((await hook(world, "stop", {}, 2)).reason, "unread message");
   assertEquals(await hook(world, "stop", { stop_hook_active: true }, 2), null);
-  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 3, 10_000);
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 3, 15_000);
   assertStringIncludes((await claudeArg(world, 2, "--append-system-prompt"))!, "unread message");
   assertEquals((await asAgent(world, "overseer", (agent) => agent.inbox())).length, 1);
   assertEquals(await hook(world, "stop", {}, 3), null);
@@ -581,6 +617,7 @@ for (const hold of ["halt", "daily cap"] as const) {
     } else {
       const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
       try {
+        db.exec("PRAGMA busy_timeout = 5000");
         db.prepare("insert into spend (at, address, request_id, usd) values (?, ?, ?, ?)")
           .run(new Date().toISOString(), "overseer", null, 1);
         db.prepare("insert into events (ts, kind, data) values (?, ?, ?)")

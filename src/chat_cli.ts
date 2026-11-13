@@ -1,7 +1,8 @@
 // `kiln chat`: the user's side of the Overseer chat. It runs the installed `claude` interactively,
 // as the Overseer, with Kiln's tools, status line and hooks; and it replaces the session with a
-// fresh one, seeded with a digest, when the daemon says its context has grown too large. The hooks
-// Claude runs (`kiln hook chat ...`) live here too: they only relay to the daemon.
+// fresh one, seeded with a digest, when the daemon says its context has grown too large or news
+// arrived for an idle chat. The hooks Claude runs (`kiln hook chat ...`) live here too: they only
+// relay to the daemon.
 import { call, ensureDaemon, selfCommand } from "./client.ts";
 import { confine } from "./confinement.ts";
 import { findClaude } from "./launcher.ts";

@@ -122,9 +122,7 @@ export function createRouter(opts: RouterOptions) {
     );
 
   function openHint(from: string, to: string): string {
-    const open = openAssignments(from).filter((a) =>
-      a.from === to && a.deadLetteredAt === null
-    );
+    const open = openAssignments(from).filter((a) => a.from === to && a.deadLetteredAt === null);
     if (!open.length) return "";
     return open.length === 1
       ? `; the open assignment ${to} sent you is ${open[0].id}: reply to assignment ${open[0].id}`

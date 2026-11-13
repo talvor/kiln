@@ -1,9 +1,9 @@
 // The Overseer's chat: what the daemon keeps for `kiln chat`. The user talks to the Overseer in an
 // interactive Claude Code session; this module is the other side of that session's hooks and
 // status line. It records the conversation in the store, builds the digest that seeds each fresh
-// session, decides when a session's context has grown too large and should roll over, holds the
-// Overseer's mail while the user is in the chat, and answers the user's model-free commands
-// without a model.
+// session, decides when its context has grown too large or idle news calls for a fresh session,
+// holds the Overseer's mail while the user is in the chat, and answers the user's model-free
+// commands without a model.
 import type { Escalations, EscalationView } from "./escalations.ts";
 import type { Config } from "./playbooks.ts";
 import { overseerRole } from "./playbooks.ts";
