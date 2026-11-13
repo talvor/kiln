@@ -172,6 +172,23 @@ export function createRouter(opts: RouterOptions) {
     return result;
   };
 
+  /**
+   * A Step that follows the merge, stopped on without a result, goes back into its leader's inbox
+   * to be woken again, up to MAX_INTERRUPTIONS times in all. True when it was handed back.
+   */
+  function retryAfterMerge(assignment: MessageRecord): boolean {
+    if (assignment.interruptions + 1 >= MAX_INTERRUPTIONS) return false;
+    const step = store.stepOfMessage(assignment.id);
+    if (step?.spec.after !== "merge") return false;
+    store.requeueMessage(assignment.id, true);
+    store.appendEvent("assignment.resumed", { id: assignment.id, to: assignment.to });
+    log.warn("woke a leader again after it stopped on a post-merge step", {
+      assignment: assignment.id,
+      step: step.id,
+    });
+    return true;
+  }
+
   async function toolsOf(session: SessionRecord): Promise<string[]> {
     const configured = session.roleName
       ? await opts.roleTools?.(session.roleName).catch(() => undefined)
@@ -343,7 +360,13 @@ export function createRouter(opts: RouterOptions) {
       reportStuck(session, reason);
       for (const m of openAssignments(session.address)) {
         if (m.deadLetteredAt === null && !opts.hold?.(m)) {
-          synthesiseFailure(m, `Kiln could not wake ${session.address}: ${reason}.`);
+          synthesiseFailure(
+            m,
+            `Kiln could not wake ${session.address}: ${reason}. ` +
+              (session.claudeSessionId
+                ? "The agent had been launched before, but this wake did not complete."
+                : "The agent was never launched."),
+          );
         }
       }
       return;
@@ -584,7 +607,16 @@ export function createRouter(opts: RouterOptions) {
         if (reasons.length) return { block: true, reason: reasons.join(" ") };
       }
       for (const a of unreported) {
-        synthesiseFailure(a, "The agent stopped without reporting a result.");
+        // Stopping at all means Claude was launched; what failed is that it reported nothing.
+        // After the merge the work is already done and only the wrap-up is left, so the step is
+        // handed back to the leader once instead of failing the whole request.
+        if (retryAfterMerge(a)) continue;
+        synthesiseFailure(
+          a,
+          `The agent was launched but stopped without reporting a result${
+            a.interruptions ? ` (it had already been woken again ${a.interruptions} time(s))` : ""
+          }.`,
+        );
       }
       return { block: false };
     },

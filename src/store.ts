@@ -825,6 +825,8 @@ export interface Store {
   lastEventId(): number;
   /** The Steps of a Request, in Playbook order. */
   listSteps(requestId: number): StepRecord[];
+  /** The Step that the assignment Message `messageId` handed to its leader, if it was one. */
+  stepOfMessage(messageId: number): StepRecord | undefined;
   /** Begin a Step: it is active, handed to its leader in `messageId`, and delegated to `worker`. */
   beginStep(id: number, messageId: number, worker: string): void;
   /** Hand a rejected Step back to its leader in `messageId`, to be delegated to a fresh `worker`. */
@@ -1322,6 +1324,10 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       listSteps: (requestId) =>
         db.prepare("select * from steps where request_id = ? order by position").all(requestId)
           .map(toStep),
+      stepOfMessage: (messageId) => {
+        const row = db.prepare("select * from steps where message_id = ?").get(messageId);
+        return row ? toStep(row) : undefined;
+      },
       beginStep: (id, messageId, worker) => {
         db.prepare("update steps set status = 'active', message_id = ?, worker = ? where id = ?")
           .run(messageId, worker, id);

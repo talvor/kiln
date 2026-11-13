@@ -4,7 +4,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { withWorld, type World } from "./world.ts";
-import { asAgent, waitFor } from "./router_helpers.ts";
+import { asAgent, stopHook, waitFor } from "./router_helpers.ts";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
 
@@ -546,4 +546,55 @@ withWorld("a pull request the user reopens is watched again until it merges", as
   await wrapUp(world);
   await waitFor(() => statusOf(world), (s) => s.status === "done");
   assertEquals((await world.tracker.closed()).length, 1);
+});
+
+/** The leader reads the wrap-up step, then stops without reporting, as the Stop hook sees it. */
+async function leaderStopsOnWrapUp(world: World) {
+  const wrap = await nextForLeader(world);
+  assertEquals((await stopHook(world, "engineering-leader"))?.decision, "block");
+  assertEquals(await stopHook(world, "engineering-leader", true), null);
+  return wrap;
+}
+
+withWorld(
+  "a leader that stops on the wrap-up step is woken again, not failed, so the merged work is wrapped up",
+  async (world) => {
+    await startTicket(world);
+    await passQa(world);
+    await world.prStatus.script([MERGED]);
+    const wrap = await leaderStopsOnWrapUp(world);
+    assertEquals((await statusOf(world)).steps.at(-1)!.status, "active");
+
+    // The step is back in the leader's inbox, and doing it this time finishes the request.
+    const again = await nextForLeader(world);
+    assertEquals(again.id, wrap.id);
+    await deliver(world, {
+      worker: "closer-5",
+      stepMessage: wrap.id,
+      files: { "wrap-up.md": SHIPPED },
+    });
+    await waitFor(() => statusOf(world), (s) => s.status === "done");
+  },
+);
+
+withWorld(
+  "a wrap-up step whose leader stops twice fails and says the agent did launch",
+  async (world) => {
+    await startTicket(world);
+    await passQa(world);
+    await world.prStatus.script([MERGED]);
+    await leaderStopsOnWrapUp(world);
+    await leaderStopsOnWrapUp(world);
+    const status = await waitFor(() => statusOf(world), (s) => s.status === "failed");
+    assertStringIncludes(status.failure ?? "", "was launched but stopped without reporting");
+  },
+);
+
+withWorld("a leader that stops on an earlier step is not retried", async (world) => {
+  await startTicket(world);
+  await implement(world);
+  assertEquals((await stopHook(world, "engineering-leader"))?.decision, "block");
+  assertEquals(await stopHook(world, "engineering-leader", true), null);
+  const status = await waitFor(() => statusOf(world), (s) => s.status === "failed");
+  assertStringIncludes(status.failure ?? "", "was launched but stopped without reporting");
 });
