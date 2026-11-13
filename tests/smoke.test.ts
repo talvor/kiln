@@ -6,6 +6,7 @@ import { withWorld } from "./world.ts";
 
 const CONFIG = fromFileUrl(new URL("../deno.json", import.meta.url));
 const SMOKE = fromFileUrl(new URL("./smoke/claude_smoke.ts", import.meta.url));
+const DASHBOARD_SMOKE = fromFileUrl(new URL("./smoke/dashboard_smoke.ts", import.meta.url));
 
 withWorld(
   "the smoke suite is ignored without the opt-in and makes no Claude call",
@@ -42,3 +43,22 @@ withWorld("the normal test run does not discover the smoke suite", async (world)
   assertEquals((run.stdout + run.stderr).includes("smoke: "), false);
   assertEquals(await world.launcher.calls(), []);
 });
+
+withWorld(
+  "the Dashboard browser smoke is ignored without the opt-in and starts no browser",
+  async (world) => {
+    const env = { ...world.env };
+    delete env.KILN_SMOKE;
+    const run = await world.exec(
+      world.project.path,
+      Deno.execPath(),
+      "test",
+      "-A",
+      "--config",
+      CONFIG,
+      DASHBOARD_SMOKE,
+    );
+    assertEquals(run.code, 0, run.stderr);
+    assertStringIncludes(run.stdout + run.stderr, "1 ignored");
+  },
+);
