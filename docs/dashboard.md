@@ -55,8 +55,8 @@ Overview; a finished or failed one opens on Report. The Overview tab has its own
 The **Cost view** (`/cost`, opened from the spend chip) shows today's spend against the daily cap
 (or today's spend alone when no cap is set), a table per Project (today) and per Request (today,
 total, and total against its Budget), and the unclaimed spend no Request claims, such as the
-Overseer's. It comes from `cost.report` and
-refreshes with the rest of the page. Only Requests that spent something today are listed.
+Overseer's. It comes from `cost.report` and refreshes with the rest of the page. Only Requests that
+spent something today are listed.
 
 The strip's conditions (**Halted**, **Daily cap reached**, **Stuck agents**) and its persistent
 **Health** link open the Health view at `/health`. It shows the daemon's version, pid and uptime,
