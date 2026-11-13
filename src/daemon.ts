@@ -295,6 +295,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     escalations,
     loadConfig: () => loadConfig(paths.config),
     chatDir: paths.chat,
+    held: holding,
     decide: (params) => decideEscalation(params),
     spendLine: () => budgets.spendLine(),
     told: () => budgets.told(),

@@ -561,6 +561,56 @@ withWorld("a finished request is announced to an idle chat", async (world) => {
   assertStringIncludes((await world.launcher.calls())[1].args[0], "has just opened the chat");
 });
 
+for (const hold of ["halt", "daily cap"] as const) {
+  withWorld(`an idle chat waits through ${hold} before waking`, async (world) => {
+    if (hold === "daily cap") {
+      await Deno.mkdir(world.dirs.config, { recursive: true });
+      await Deno.writeTextFile(
+        join(world.dirs.config, "limits.json"),
+        JSON.stringify({ budgets: { dailyUsd: 1 } }),
+      );
+    }
+    const chatting = await idleChat(world);
+    if (hold === "halt") {
+      assertEquals((await world.kiln("halt")).code, 0);
+      await asAgent(
+        world,
+        "dev-lead",
+        (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+      );
+    } else {
+      const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+      try {
+        db.prepare("insert into spend (at, address, request_id, usd) values (?, ?, ?, ?)")
+          .run(new Date().toISOString(), "overseer", null, 1);
+        db.prepare("insert into events (ts, kind, data) values (?, ?, ?)")
+          .run(new Date().toISOString(), "request.done", '{"id":7}');
+      } finally {
+        db.close();
+      }
+      const cost = JSON.parse((await world.kiln("cost", "--json")).stdout);
+      assertEquals(cost.capReached, true);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assertEquals((await world.launcher.calls()).length, 1);
+
+    if (hold === "halt") {
+      assertEquals((await world.kiln("resume")).code, 0);
+    } else {
+      await Deno.writeTextFile(
+        join(world.dirs.config, "limits.json"),
+        JSON.stringify({ budgets: { dailyUsd: 10 } }),
+      );
+    }
+    await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+    await chatting.output();
+    assertStringIncludes(
+      (await claudeArg(world, 1, "--append-system-prompt"))!,
+      hold === "halt" ? "unread message" : "Request 7 finished.",
+    );
+  });
+}
+
 withWorld("mail waits for the end of the turn when the Overseer is mid-turn", async (world) => {
   const chatting = await idleChat(world, 10_000);
   await hook(world, "prompt", { prompt: "hello" });

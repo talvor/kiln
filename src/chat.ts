@@ -83,6 +83,7 @@ export interface ChatOptions {
   decide: (params: { id: number; approved: boolean; reason?: string }) => unknown;
   /** Halt or resume Kiln, as the commands do; says what happened. */
   control: { halt: () => string; resume: () => string };
+  held: () => boolean;
   /** What has been spent today, in a sentence; undefined when nothing has. */
   spendLine?: () => string | undefined;
   /** The user has been given the news (so the daily digest need not repeat it). */
@@ -304,6 +305,7 @@ export function createChat(opts: ChatOptions) {
     heartbeat(chatId: number): { rollover: boolean; wake: boolean } {
       store.touchChat(chatId);
       const chat = store.getChat(chatId);
+      if (opts.held()) return { rollover: false, wake: false };
       if (chat.rolloverRequestedAt !== null) return { rollover: true, wake: false };
       const wake = chat.endedAt === null && newsWaiting(chat);
       if (wake) {
