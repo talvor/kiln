@@ -560,7 +560,7 @@ withWorld("unread mail still wakes a replacement chat after its turn", async (wo
 withWorld("mail sent during a daemon restart wakes the attached chat", async (world) => {
   const chatting = await idleChat(world);
   assertEquals((await world.kiln("daemon", "stop")).code, 0);
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     const sent = db.prepare(
       "insert into messages (sender, recipient, kind, body, sent_at) values (?, ?, ?, ?, ?)",
@@ -581,7 +581,7 @@ withWorld("mail sent during a daemon restart wakes the attached chat", async (wo
 
 withWorld("a finished request is announced to an idle chat", async (world) => {
   const chatting = await idleChat(world);
-  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
       .run();
