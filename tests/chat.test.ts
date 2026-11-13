@@ -494,10 +494,11 @@ withWorld("a result for an idle Overseer chat is surfaced without a user prompt"
     const assignment = await asAgent(
       world,
       "overseer",
-      (agent) => agent.send("dev-lead", "assignment", {
-        title: "Diagnose the stall",
-        instructions: "Report the cause",
-      }),
+      (agent) =>
+        agent.send("dev-lead", "assignment", {
+          title: "Diagnose the stall",
+          instructions: "Report the cause",
+        }),
     );
     assignmentId = assignment.id;
     await asAgent(world, "dev-lead", (agent) => agent.inbox());
