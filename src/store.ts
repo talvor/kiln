@@ -858,6 +858,8 @@ export interface Store {
   addWorktree(wt: { path: string; branch: string }): WorktreeRecord;
   getWorktree(id: number): WorktreeRecord;
   findLiveWorktree(path: string): WorktreeRecord | undefined;
+  /** The Worktree most recently made at `path`, whether or not it has been released. */
+  findWorktree(path: string): WorktreeRecord | undefined;
   /** Give back a Worktree's ports. */
   releaseWorktree(id: number): void;
   /** Record the branch and Worktree a Request or Assignment works on. */
@@ -1432,6 +1434,11 @@ export async function openStore(opts: StoreOptions): Promise<Store> {
       getWorktree: (id) => toWorktree(db.prepare("select * from worktrees where id = ?").get(id)!),
       findLiveWorktree: (path) => {
         const row = db.prepare("select * from worktrees where path = ? and released_at is null")
+          .get(path);
+        return row ? toWorktree(row) : undefined;
+      },
+      findWorktree: (path) => {
+        const row = db.prepare("select * from worktrees where path = ? order by id desc limit 1")
           .get(path);
         return row ? toWorktree(row) : undefined;
       },

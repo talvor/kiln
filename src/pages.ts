@@ -233,6 +233,8 @@ ${controls}
      */
     sync(opts: { rewrite?: boolean } = {}) {
       for (const e of store.listEscalations({ openOnly: true })) {
+        // One whose Request has ended cannot be decided: it gets no page.
+        if (viewOf(store, e).status !== "open") continue;
         if (store.getEscalationPage(e.id)) {
           if (opts.rewrite) write(e.id);
           continue;

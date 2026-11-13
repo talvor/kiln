@@ -64,6 +64,53 @@ export class ClaudeNotInstalled extends Error {
   }
 }
 
+/**
+ * A launch that failed, with what is known about why. The Claude Agent SDK words every failure to
+ * spawn the binary as a libc mismatch, whatever its cause; this says what was actually found.
+ */
+export class LaunchError extends Error {}
+
+/** Whether `cwd` is missing: Claude cannot be started in a directory that does not exist. */
+export function workdirMissing(cwd: string): boolean {
+  try {
+    return !Deno.statSync(cwd).isDirectory;
+  } catch {
+    return true;
+  }
+}
+
+/** How much of the child's stderr a failure keeps. */
+const STDERR_KEEP = 2000;
+
+const missingWorkdir = (cwd: string, cause?: unknown) =>
+  new LaunchError(
+    `cannot start Claude: its working directory ${cwd} does not exist` +
+      ` (the launcher's "failed to launch" text for this is misleading)`,
+    { cause },
+  );
+
+/** What an error says, whatever was thrown. */
+export const errorText = (err: unknown): string => err instanceof Error ? err.message : String(err);
+
+/**
+ * The error to report for a launch that failed. The SDK blames the binary's libc when spawning it
+ * fails with ENOENT, but Node reports a missing working directory the same way, so a directory
+ * that is gone is named first. Otherwise the SDK's message is kept, with the spawn error's code
+ * and what the child wrote to stderr added to it.
+ */
+export function explainLaunchError(err: unknown, cwd: string, stderr: string): Error {
+  if (workdirMissing(cwd)) return missingWorkdir(cwd, err);
+  const base = errorText(err);
+  const code = (err as { code?: unknown } | null)?.code;
+  const tail = stderr.trim().slice(-STDERR_KEEP);
+  const parts = [base];
+  if (typeof code === "string" || typeof code === "number") parts.push(`code: ${code}`);
+  if (tail && !base.includes(tail)) parts.push(`stderr: ${tail}`);
+  return new LaunchError(parts.length > 1 ? `${parts[0]} (${parts.slice(1).join("; ")})` : base, {
+    cause: err,
+  });
+}
+
 /** Find the installed `claude` executable on PATH. */
 export function findClaude(): string {
   for (const dir of (Deno.env.get("PATH") ?? "").split(delimiter).filter(Boolean)) {
@@ -81,6 +128,8 @@ export function findClaude(): string {
 /** Launch Claude on a request with the installed `claude` and wait for it to finish. */
 export async function launch(req: LaunchRequest): Promise<LaunchResult> {
   const maxBudgetUsd = Math.min(req.maxBudgetUsd ?? MAX_LAUNCH_USD, MAX_LAUNCH_USD);
+  if (workdirMissing(req.cwd)) throw missingWorkdir(req.cwd);
+  let stderr = "";
   const run = query({
     prompt: req.prompt,
     options: {
@@ -101,6 +150,9 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
       allowedTools: req.allowedTools,
       settings: req.settings,
       abortController: req.abortController,
+      stderr: (data) => {
+        stderr = (stderr + data).slice(-STDERR_KEEP * 2);
+      },
     },
   });
   try {
@@ -118,8 +170,10 @@ export async function launch(req: LaunchRequest): Promise<LaunchResult> {
         ? { ...base, ok: !msg.is_error, text: msg.result, outcome: msg.subtype }
         : { ...base, ok: false, text: msg.errors.join("; ") || msg.subtype, outcome: msg.subtype };
     }
+  } catch (err) {
+    throw explainLaunchError(err, req.cwd, stderr);
   } finally {
     run.close();
   }
-  throw new Error("claude exited without producing a result");
+  throw explainLaunchError(new Error("claude exited without producing a result"), req.cwd, stderr);
 }

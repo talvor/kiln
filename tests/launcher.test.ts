@@ -4,6 +4,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runKiln } from "./helpers.ts";
 import { join, relative } from "@std/path";
 import { withWorld } from "./world.ts";
+import { explainLaunchError, LaunchError, workdirMissing } from "../src/launcher.ts";
 
 withWorld("kiln launch runs Claude in the Project and reports the answer", async (world) => {
   await world.launcher.script([{
@@ -100,3 +101,45 @@ withWorld("kiln launch skips a non-executable PATH match", async (world) => {
   assertEquals(out.code, 0, out.stderr);
   assertEquals((await world.launcher.calls()).length, 1);
 });
+
+withWorld("kiln launch names a working directory that does not exist", async (world) => {
+  const out = await world.kiln("launch", "hi", "--cwd", join(world.root, "gone"));
+  assertEquals(out.code, 1, out.stderr);
+  assertStringIncludes(out.stderr, "working directory");
+  assertStringIncludes(out.stderr, "does not exist");
+  assertEquals(await world.launcher.calls(), []);
+});
+
+Deno.test("a launch failure in a missing directory is not blamed on the binary's libc", () => {
+  const sdk = new ReferenceError("Claude Code native binary exists but failed to launch (libc)");
+  const err = explainLaunchError(sdk, "/nonexistent/worktree", "");
+  assert(err instanceof LaunchError);
+  assertStringIncludes(err.message, "/nonexistent/worktree does not exist");
+  assert(workdirMissing("/nonexistent/worktree"));
+  assertEquals(err.cause, sdk);
+});
+
+Deno.test("a launch failure keeps the spawn error's code and the child's stderr", () => {
+  const sdk = Object.assign(new Error("Claude Code process exited"), { code: "EACCES" });
+  const err = explainLaunchError(sdk, Deno.cwd(), "boom: no such library\n");
+  assertEquals(
+    err.message,
+    "Claude Code process exited (code: EACCES; stderr: boom: no such library)",
+  );
+  assertEquals(explainLaunchError(new Error("plain"), Deno.cwd(), "").message, "plain");
+});
+
+withWorld(
+  "a launch that dies reports the exit code and what Claude wrote to stderr",
+  async (world) => {
+    await world.launcher.script([{
+      crash: true,
+      exit: 7,
+      stderr: "error while loading libfoo.so\n",
+    }]);
+    const out = await world.kiln("launch", "hi", "--cwd", world.project.path);
+    assertEquals(out.code, 1);
+    assertStringIncludes(out.stderr, "exited with code 7");
+    assertStringIncludes(out.stderr, "error while loading libfoo.so");
+  },
+);

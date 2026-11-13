@@ -3,7 +3,7 @@
 // when nobody picks one up Kiln Nudges the recipient, then gives up and dead-letters it.
 import { DEFAULT_LIMITS } from "./limits.ts";
 import type { Logger } from "./log.ts";
-import type { LaunchRequest, LaunchResult } from "./launcher.ts";
+import { errorText, type LaunchRequest, type LaunchResult, workdirMissing } from "./launcher.ts";
 import { confine, DEFAULT_TOOLS, judgeCall } from "./confinement.ts";
 import { KINDS, refuseRoute, superiorOf, validateBody } from "./messages.ts";
 import {
@@ -73,6 +73,13 @@ export interface RouterOptions {
 
 /** Why a launch ended without the agent having done its part. */
 type Outcome = "ok" | "failed" | "unstarted" | "stopped";
+/** How much of the launcher's complaint is kept to explain a failed launch. */
+const WHY_KEEP = 500;
+/** An Outcome, and what the launcher said went wrong when it did not complete. */
+interface Launched {
+  outcome: Outcome;
+  why?: string;
+}
 
 /** A launch that never gets going is retried at most this far apart, however many times it fails. */
 const MAX_BACKOFF_SECONDS = 3600;
@@ -286,7 +293,7 @@ export function createRouter(opts: RouterOptions) {
   }
 
   /** Tell the Overseer an agent is stuck, as a question from the agent's leader. */
-  function reportStuck(session: SessionRecord, why: string): void {
+  function reportStuck(session: SessionRecord, why: string, assignmentId?: number): void {
     const sessions = store.listSessions();
     const overseer = sessions.find((s) => s.role === "overseer");
     const sender = session.role === "leader"
@@ -295,10 +302,24 @@ export function createRouter(opts: RouterOptions) {
     store.appendEvent("agent.stuck", { address: session.address, why });
     log.warn("agent is stuck", { address: session.address, why });
     if (!overseer || !sender || session.role === "overseer") return;
+    const tracked = (id: number): boolean => {
+      try {
+        store.getAssignment(id);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const concerns = [
+      ...(assignmentId === undefined ? [] : [assignmentId]),
+      ...openAssignments(session.address).filter((a) => a.deadLetteredAt === null).map((a) => a.id),
+      ...openAssignments(sender.address).filter((a) => a.deadLetteredAt === null).map((a) => a.id),
+    ].find(tracked);
     append({
       from: sender.address,
       to: overseer.address,
       kind: "question",
+      assignmentId: concerns,
       body: {
         question: `${session.address} is stuck: ${why}. Kiln has stopped waking it; ` +
           `\`kiln resume\` tries again.`,
@@ -319,12 +340,12 @@ export function createRouter(opts: RouterOptions) {
     if (failures > policy.retries) {
       store.recordLaunchFailure(session.address, { stuck: true });
       const reason = `${failures} launches in a row failed (${why})`;
+      reportStuck(session, reason);
       for (const m of openAssignments(session.address)) {
         if (m.deadLetteredAt === null && !opts.hold?.(m)) {
           synthesiseFailure(m, `Kiln could not wake ${session.address}: ${reason}.`);
         }
       }
-      reportStuck(session, reason);
       return;
     }
     const seconds = Math.min(
@@ -338,6 +359,7 @@ export function createRouter(opts: RouterOptions) {
       address: session.address,
       failures,
       retryInSeconds: seconds,
+      why,
     });
   }
 
@@ -390,8 +412,8 @@ export function createRouter(opts: RouterOptions) {
           if (m.deadLetteredAt !== null || opts.hold?.(m)) continue;
           if (m.interruptions + 1 >= MAX_INTERRUPTIONS) {
             const why = `assignment ${m.id} ("${m.body.title}") was interrupted twice`;
+            reportStuck(session, why, m.id);
             synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
-            reportStuck(session, why);
             outcome.failed++;
           } else {
             store.requeueMessage(m.id, true);
@@ -604,29 +626,71 @@ export function createRouter(opts: RouterOptions) {
         // Still being woken: the next pass delivers what has arrived since, in the same session.
         if (!current.length || inFlight.has(address)) return;
         const session = sessionAt(address);
+        // Checked first: a worker with no worktree is never woken, however it stands otherwise.
+        if (orphaned(session)) return giveUpOn(session, current);
         // Waiting out a backoff, or given up on until the user resumes Kiln.
         if (session.stuckAt !== null) return;
         if (session.retryAt !== null && Date.parse(session.retryAt) > Date.now()) return;
-        const outcome = await nudge(session, current);
+        const { outcome, why } = await nudge(session, current);
         if (outcome === "ok") {
           store.recordLaunchSuccess(address);
           store.recordDelivery(current.map((m) => m.id));
           store.appendEvent("message.nudged", { to: address, ids: current.map((m) => m.id) });
         } else if (outcome !== "stopped") {
-          await launchFailed(sessionAt(address), "the launcher did not complete");
+          await launchFailed(sessionAt(address), why ?? "the launcher did not complete");
         }
       }));
     },
   };
 
-  async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<Outcome> {
+  /**
+   * A worker whose worktree is gone for good: the Assignment it worked in was merged and the
+   * worktree removed, so there is nowhere to start Claude. Waking it can never succeed.
+   */
+  function orphaned(session: SessionRecord): boolean {
+    // Only a Worktree Kiln itself released: a directory that vanished some other way (a deleted
+    // clone, a deleted Worktree) is put right by the environment checks, and may be retried.
+    return session.role === "worker" && workdirMissing(session.cwd) &&
+      store.findWorktree(session.cwd)?.releasedAt != null;
+  }
+
+  /**
+   * Mail for a worker that has no worktree any more. An answer or a result is of no use to a
+   * worker that already reported: it is dead-lettered. An Assignment is failed back to its sender
+   * at once, saying why, so they can give the work to a new worker; retrying would only fail again.
+   */
+  function giveUpOn(session: SessionRecord, messages: MessageRecord[]): void {
+    const why = `${session.address} has no worktree any more (${session.cwd} was removed when ` +
+      `its earlier assignment was merged), so it cannot be woken`;
+    for (const m of messages) {
+      store.deadLetter(m.id);
+      store.appendEvent("message.dead_lettered", {
+        id: m.id,
+        to: m.to,
+        kind: m.kind,
+        why: "worktree removed",
+      });
+      if (m.kind === "assignment" && !hasResult(m.id)) {
+        synthesiseFailure(m, `${why}. Give this work to a new worker.`);
+      }
+    }
+    log.warn("not waking a worker without a worktree", {
+      address: session.address,
+      cwd: session.cwd,
+      messages: messages.map((m) => m.id),
+    });
+  }
+
+  async function nudge(session: SessionRecord, messages: MessageRecord[]): Promise<Launched> {
     // An answer to the agent's own question wakes the same Claude session that asked it; if that
     // session cannot be resumed, a fresh one still reads the answer from the inbox.
     const resume = messages.some((m) => m.kind === "answer")
       ? session.claudeSessionId ?? undefined
       : undefined;
     const first = await launchNudge(session, messages, resume);
-    if (first === "unstarted" && resume) return await launchNudge(session, messages, undefined);
+    if (first.outcome === "unstarted" && resume) {
+      return await launchNudge(session, messages, undefined);
+    }
     return first;
   }
 
@@ -634,7 +698,7 @@ export function createRouter(opts: RouterOptions) {
     session: SessionRecord,
     messages: MessageRecord[],
     resume: string | undefined,
-  ): Promise<Outcome> {
+  ): Promise<Launched> {
     const count = messages.length;
     const server = opts.selfCommand(["tool-server", "--address", session.address]);
     const stop = opts.selfCommand(["hook", "stop", "--address", session.address]);
@@ -721,14 +785,20 @@ export function createRouter(opts: RouterOptions) {
         log.warn("could not nudge", { address: session.address, outcome: launched.outcome });
       }
       // A limit, a cancel or a halt may have stopped it while its usage was being charged.
-      if (stoppedByKiln(abortController)) return "stopped";
-      if (launched.ok) return "ok";
-      return launched.turns === 0 ? "unstarted" : "failed";
+      if (stoppedByKiln(abortController)) return { outcome: "stopped" };
+      if (launched.ok) return { outcome: "ok" };
+      return {
+        outcome: launched.turns === 0 ? "unstarted" : "failed",
+        why: `Claude ended with ${launched.outcome}: ${launched.text}`.slice(0, WHY_KEEP),
+      };
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
       opts.observe?.(session, { turns: 0, costUsd: 0, outcome: "aborted" });
-      if (stoppedByKiln(abortController)) return "stopped";
-      return abortController.signal.aborted ? "failed" : "unstarted";
+      if (stoppedByKiln(abortController)) return { outcome: "stopped" };
+      return {
+        outcome: abortController.signal.aborted ? "failed" : "unstarted",
+        why: errorText(err).slice(0, WHY_KEEP),
+      };
     } finally {
       // A halt cut the agent off mid-work: what it had been given is put back for after the resume.
       if (abortController.signal.reason === "halt") {
