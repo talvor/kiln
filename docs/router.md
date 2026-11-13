@@ -121,7 +121,9 @@ from the recipient to the sender.
 
 Nudged agents run `kiln hook stop --address <address>` as a Claude Code Stop hook. It blocks the
 stop when the agent has unread Messages, or an assignment it has neither reported on nor asked a
-live question about using `assignmentId`. When Claude retries after being blocked
+live question about using `assignmentId`. A leader with a delegated assignment still awaiting a
+result is waiting, not finished: it may stop without reporting or raising a question, because the
+worker's result wakes it. `raise_question` is only for a real question or decision. When Claude retries after being blocked
 (`stop_hook_active`), the stop is allowed; an unreported assignment is then reported as a
 synthesised failed result. If Kiln cannot check the pending work, the hook blocks the stop until it
 can.
