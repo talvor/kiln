@@ -87,9 +87,11 @@ const DESTRUCTIVE: [RegExp, string][] = [
 const SECRET_IN_COMMAND =
   /(^|[\s"'=:<>/])(\.env(\.[\w.-]+)?|\.ssh|\.aws|\.gnupg|\.netrc|id_(rsa|dsa|ecdsa|ed25519)|[\w.-]+\.(pem|key))(["'\s;|&)]|\/|$)/;
 
+/** localhost, 127.x.x.x, 0.0.0.0, [::1], [::] and bash's /dev/tcp. */
 const LOOPBACK = /\b(localhost|127(\.\d+){3}|0\.0\.0\.0)\b|\[?::1?\]|\[::\]|\/dev\/(tcp|udp)\//i;
+/** Programs that open connections; with the port named, no loopback address is needed. */
 const NETWORK_CLIENT =
-  /\b(curl|wget|nc|ncat|netcat|socat|telnet|httpie|http|https|xh|python3?|node|deno|ruby|perl|php)\b/;
+  /\b(curl|wget|nc|ncat|netcat|socat|telnet|httpie|xh|python3?|node|deno|ruby|perl|php)\b/;
 
 /**
  * Whether a shell command is aimed at one of the Dashboard's ports: it names the port as a whole
@@ -191,7 +193,7 @@ export function judgeCall(ctx: CallContext, tool: string, input: Record<string, 
     if (SECRET_IN_COMMAND.test(command)) return deny(`Bash \`${command}\`: it touches secrets`);
     if (aimsAtDashboard(command, ctx.dashboardPorts ?? [])) {
       return deny(
-        `Bash \`${command}\`: it is aimed at the dashboard's port; agents may not use it`,
+        `Bash \`${command}\`: it is aimed at the Dashboard's port; agents may not use it`,
       );
     }
     return allow;

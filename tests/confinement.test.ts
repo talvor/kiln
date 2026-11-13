@@ -178,13 +178,13 @@ withWorld(
       `nc 127.0.0.1 ${port}`,
       `echo hi > /dev/tcp/127.0.0.1/${port}`,
       `python3 -c "import urllib.request as u; u.urlopen('http://0.0.0.0:${port}')"`,
-      `cd . && curl ${"http://localhost"}:${port}`,
+      `cd . && curl http://localhost:${port}`,
     ];
     const dashboard = await world.dashboard();
     for (const command of aimed(dashboard.port)) {
       const denied = await police(world, "dev-1", "Bash", { command });
       assertEquals(denied?.permissionDecision, "deny", command);
-      assertStringIncludes(denied!.permissionDecisionReason, "dashboard");
+      assertStringIncludes(denied!.permissionDecisionReason, "Dashboard");
     }
     // Other commands, and other ports, are untouched.
     assertEquals(await police(world, "dev-1", "Bash", { command: "git status" }), null);
