@@ -403,11 +403,11 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
     } catch (err) {
       log.error("could not record stop event", { err });
     }
-    // Stop accepting first, and close the store before removing the socket: once the socket
-    // is gone, a new daemon may start.
-    listener.close();
+    // Close the store before the listener: clients treat a refused socket connection as
+    // completed shutdown and may reopen the store immediately.
     await pageServer.shutdown().catch(() => {});
     store.close();
+    listener.close();
     removeQuietly(paths.socket);
     log.info("daemon stopped");
     Deno.exit(0);

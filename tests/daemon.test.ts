@@ -22,6 +22,12 @@ withHome("daemon starts, reports status, and stops", async (home) => {
 
   const stopped = await home.kiln("daemon", "stop");
   assertEquals(stopped.code, 0);
+  const reopened = new DatabaseSync(s.info.paths.store);
+  try {
+    assertEquals(reopened.prepare("pragma journal_mode = wal").get()!.journal_mode, "wal");
+  } finally {
+    reopened.close();
+  }
   assertEquals((await status(home)).code, 3);
   assertEquals((await home.kiln("daemon", "stop")).code, 0, "stopping a stopped daemon is fine");
 });
