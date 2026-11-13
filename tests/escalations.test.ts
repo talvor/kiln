@@ -158,6 +158,29 @@ withWorld("an escalation about a request that has ended is stale", async (world)
   assertStringIncludes(late.text, "already failed");
 });
 
+withWorld(
+  "an escalation raised without a request is tied to the only active one, and goes stale with it",
+  async (world) => {
+    await startRequest(world);
+    const raised = await raise(world, { summary: "Gatekeeper cannot launch; run `kiln resume`" });
+    assertEquals(raised.isError, false, raised.text);
+    assertEquals((await listed(world))[0].requestId, 1);
+
+    const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    await asAgent(world, "engineering-leader", (agent) =>
+      agent.send(
+        "overseer",
+        "result",
+        { status: "failed", summary: "Cannot reproduce" },
+        step.id,
+      ));
+
+    // Nothing is left open on a request that has failed.
+    assertEquals(await listed(world), []);
+    assertEquals((await listed(world, "--all"))[0].status, "stale");
+  },
+);
+
 withWorld("only the Overseer raises escalations, and they are checked", async (world) => {
   await openTeam(world);
   for (const address of ["dev-lead", "dev-1"]) {

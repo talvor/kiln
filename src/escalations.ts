@@ -37,6 +37,23 @@ export function viewOf(store: Store, e: EscalationRecord): EscalationView {
   return staleReason(store, e) ? { ...e, status: "stale" } : e;
 }
 
+/**
+ * The Request an Escalation raised without naming one is about, so that it goes stale when that
+ * Request ends instead of waiting for a decision nobody can act on. It follows the question the
+ * Escalation was raised over, to the Assignment that question concerned; failing that, it is the
+ * only Request in progress, if there is exactly one.
+ */
+function inferRequest(store: Store, questionId: number | null): number | null {
+  const assignmentId = questionId === null ? null : store.getMessage(questionId)?.assignmentId;
+  if (assignmentId) {
+    try {
+      return store.getAssignment(assignmentId).requestId;
+    } catch { /* not a tracked assignment: fall back */ }
+  }
+  const active = store.listRequests("active");
+  return active.length === 1 ? active[0].id : null;
+}
+
 export function createEscalations(store: Store) {
   return {
     /** The Overseer brings a decision to the user. */
@@ -78,6 +95,7 @@ export function createEscalations(store: Store) {
         }
         questionId = question.id;
       }
+      requestId ??= params.requestId === undefined ? inferRequest(store, questionId) : null;
       const e = store.addEscalation({ raisedBy: from, requestId, summary, detail, questionId });
       store.appendEvent("escalation.raised", { id: e.id, request: requestId });
       return e;

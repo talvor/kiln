@@ -60,7 +60,14 @@ leader, and the Overseer's chat tells the user). `limits.json` sets the budget:
 ```
 
 `retries` is how many times Kiln tries again after the first failure. If `limits.json` cannot be
-read, the defaults above apply. A worker's hang is not a launch failure: the Assignment's inactivity
+read, the defaults above apply. The log and the stuck report say why the launch failed: Claude's
+exit code and what it wrote to stderr, or the working directory it could not start in. (The Claude
+Agent SDK words every failure to spawn the binary as a libc mismatch, which it often is not.)
+
+A worker whose Worktree has been removed (its Assignment was merged) is not a launch failure, and
+is never woken: nothing can be started there, so retrying would only fail. An Assignment sent to it
+fails at once with a result written by Kiln, which tells the leader to use a new worker; an answer
+or other mail for a worker that already reported is dead-lettered. A worker's hang is not a launch failure: the Assignment's inactivity
 limit stops it (see `limits.md`).
 
 ## Halt and resume

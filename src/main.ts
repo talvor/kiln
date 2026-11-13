@@ -1,5 +1,5 @@
 import { call, DaemonNotRunning, ensureDaemon, isRunning, stopDaemon } from "./client.ts";
-import { ClaudeNotInstalled, launch } from "./launcher.ts";
+import { ClaudeNotInstalled, launch, LaunchError } from "./launcher.ts";
 import { type DaemonStatus, runDaemon, VERSION } from "./daemon.ts";
 import { resolvePaths } from "./paths.ts";
 import { resolve } from "@std/path";
@@ -865,7 +865,7 @@ async function main(args: string[]): Promise<number> {
       else console.error(`claude stopped: ${result.outcome}: ${result.text}`);
       return result.ok ? 0 : 1;
     } catch (err) {
-      if (err instanceof ClaudeNotInstalled) {
+      if (err instanceof ClaudeNotInstalled || err instanceof LaunchError) {
         console.error(err.message);
         return 1;
       }

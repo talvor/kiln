@@ -22,7 +22,7 @@ export interface LauncherRun {
   /** SDK mode: how the run ended; default "success". */
   outcome?: "success" | "error_max_budget_usd" | "error_max_turns" | "error_during_execution";
   hang?: boolean;
-  /** SDK mode: the process dies as soon as it is given the prompt, without a result. */
+  /** SDK mode: the process dies as soon as it is given the prompt, without a result, writing `stderr` and exiting with `exit` (default 1). */
   crash?: boolean;
   /**
    * Interactive mode: what happens in the session, in order, using the hooks and status line
@@ -131,7 +131,10 @@ async function speakSdkProtocol(run: LauncherRun): Promise<void> {
           JSON.stringify(msg) + "\n",
           { append: true },
         );
-        if (run.crash) Deno.exit(1);
+        if (run.crash) {
+          if (run.stderr) Deno.stderr.writeSync(new TextEncoder().encode(run.stderr));
+          Deno.exit(run.exit ?? 1);
+        }
         if (run.hang) await new Promise((resolve) => setTimeout(resolve, 60_000));
         const base = {
           type: "result",
