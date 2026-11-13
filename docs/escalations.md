@@ -20,7 +20,9 @@ kiln reject <escalation-id> --reason <text>
 - Only the daemon records a decision, and only for you. A decision is final: deciding again is
   refused. A rejection needs a reason, which the Overseer reads.
 - An open Escalation whose Request has since finished or failed is **stale**: it is listed as such
-  and cannot be decided.
+  and cannot be decided. An Escalation that names no Request is tied to the Request of the
+  Assignment its question concerned (a stuck-agent report included); with no such Assignment it
+  belongs to no Request and is never stale.
 - Agents never decide. Kiln marks every command an agent runs (`KILN_AGENT`), and the daemon refuses
   `approve` and `reject` from it; the policing hook also refuses the commands in an agent's shell,
   and no tool decides.
