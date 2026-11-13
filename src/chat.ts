@@ -241,13 +241,10 @@ export function createChat(opts: ChatOptions) {
   /** Something has happened that the Overseer has not been told, and it is not mid-turn. */
   function newsWaiting(chat: ChatRecord): boolean {
     if (midTurn) return false;
+    if (unread().length) return true;
     if (checked?.chatId !== chat.id) checked = { chatId: chat.id, through: chat.eventsThrough };
     const events = store.listEvents(checked.through);
-    const mail = new Set(unread().map((m) => m.id));
-    const wake = events.some((e) =>
-      e.kind === "request.done" ||
-      (e.kind === "message.sent" && e.data.to === overseer()?.address && mail.has(e.data.id as number))
-    );
+    const wake = events.some((e) => e.kind === "request.done");
     if (!wake) checked.through = events.at(-1)?.id ?? checked.through;
     return wake;
   }

@@ -486,6 +486,40 @@ withWorld("mail for an idle chat is surfaced without a user prompt", async (worl
   assertEquals(calls.length, 2);
 });
 
+withWorld("unread mail still wakes a replacement chat after its turn", async (world) => {
+  await openTeam(world);
+  await world.launcher.script([
+    { session: [{ wait: 30_000 }] },
+    { session: [{ wait: 30_000 }] },
+    { session: [{ wait: 5_000 }] },
+  ]);
+  const chatting = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", MAIN, "chat"],
+    env: world.env,
+    clearEnv: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+  );
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+
+  assertStringIncludes((await hook(world, "stop", {}, 2)).reason, "unread message");
+  assertEquals(await hook(world, "stop", { stop_hook_active: true }, 2), null);
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 3, 10_000);
+  assertStringIncludes((await claudeArg(world, 2, "--append-system-prompt"))!, "unread message");
+  assertEquals((await asAgent(world, "overseer", (agent) => agent.inbox())).length, 1);
+  assertEquals(await hook(world, "stop", {}, 3), null);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assertEquals((await world.launcher.calls()).length, 3);
+  await chatting.output();
+});
+
 withWorld("mail sent during a daemon restart wakes the attached chat", async (world) => {
   const chatting = await idleChat(world);
   assertEquals((await world.kiln("daemon", "stop")).code, 0);
