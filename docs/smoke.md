@@ -31,3 +31,20 @@ the result and cost as JSON. The launcher sets `acceptEdits` so Claude may edit 
 approval. SDK setting sources are disabled, so project settings, hooks, MCP servers, allow rules,
 and `CLAUDE.md` guidance are not loaded. See [the registration guide](register.md) for the separate
 onboarding process.
+
+## Dashboard browser smoke
+
+One more opt-in test drives a real Chrome against the real `kiln dashboard --no-open` and a real
+daemon in the test world. It opens the Health, Cost, Request (Overview, Transcript, Report) and
+Escalation views, checks they survive a reload, approves an Escalation with one click, and sees a
+live event: an Escalation raised from outside appears in Needs you and the tab title without a
+reload. It costs nothing and makes no Claude call.
+
+```sh
+deno task smoke:dashboard
+```
+
+The task sets `KILN_SMOKE=1`. It finds `google-chrome`, `chromium` or `chrome` on `PATH`; set
+`KILN_SMOKE_CHROME` to a command line to use another browser, for example
+`KILN_SMOKE_CHROME="flatpak run org.chromium.Chromium"`. Chrome runs headless with a throwaway
+profile. `deno task test` does not discover the file.
