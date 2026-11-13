@@ -51,6 +51,8 @@ kiln escalations         the decisions waiting for you
 kiln projects            the registered projects
 kiln approve <id>        approve an escalation (you, not the Overseer, decide)
 kiln reject <id> <why>   reject an escalation, saying why
+kiln halt                stop all work until you resume
+kiln resume              carry on after a halt
 kiln help
 ```
 

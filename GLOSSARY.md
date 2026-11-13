@@ -145,7 +145,7 @@ A message from Kiln to the user outside the chat, handed to the command the user
 _Avoid_: alert, push
 
 **Digest**:
-What happened since the user was last told, sent once a day as a Notification and given to the Overseer when the user attaches with `kiln chat`. When nothing happened there is no digest.
+What happened since the user was last told, sent once a day as a Notification and given to the Overseer in `kiln chat`. When nothing happened there is no digest.
 _Avoid_: summary, report
 
 **Dashboard**:
