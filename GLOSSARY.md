@@ -127,8 +127,8 @@ change makes. `kiln report` shows the Source of each decision. _Avoid_: origin, 
 stopped, nobody is woken and no Request advances until `kiln resume`. A halt survives a restart.
 _Avoid_: pause, freeze
 
-**Interruption**: A crash of Kiln under an agent's launch. The work is resumed once; interrupted a
-second time it fails. _Avoid_: restart failure
+**Interruption**: A crash of Kiln under an agent's launch, or a leader stopping without a result on a
+Step that follows the merge. The work is resumed once; interrupted a second time it fails. _Avoid_: restart failure
 
 **Stuck**: An agent Kiln stopped waking because its launches kept failing for infrastructure reasons
 past the retry budget (with backoff), or because its work was interrupted twice. The Overseer is

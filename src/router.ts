@@ -85,6 +85,8 @@ interface Launched {
 const MAX_BACKOFF_SECONDS = 3600;
 /** How many times the same work may be interrupted by a crash before Kiln fails it. */
 export const MAX_INTERRUPTIONS = 2;
+/** Whether work that was interrupted or stopped on once more may still be given back. */
+const canResume = (m: MessageRecord) => m.interruptions + 1 < MAX_INTERRUPTIONS;
 
 export interface StopVerdict {
   block: boolean;
@@ -177,7 +179,7 @@ export function createRouter(opts: RouterOptions) {
    * to be woken again, up to MAX_INTERRUPTIONS times in all. True when it was handed back.
    */
   function retryAfterMerge(assignment: MessageRecord): boolean {
-    if (assignment.interruptions + 1 >= MAX_INTERRUPTIONS) return false;
+    if (!canResume(assignment)) return false;
     const step = store.stepOfMessage(assignment.id);
     if (step?.spec.after !== "merge") return false;
     store.requeueMessage(assignment.id, true);
@@ -433,7 +435,7 @@ export function createRouter(opts: RouterOptions) {
         store.setLaunching(session.address, false);
         for (const m of openAssignments(session.address)) {
           if (m.deadLetteredAt !== null || opts.hold?.(m)) continue;
-          if (m.interruptions + 1 >= MAX_INTERRUPTIONS) {
+          if (!canResume(m)) {
             const why = `assignment ${m.id} ("${m.body.title}") was interrupted twice`;
             reportStuck(session, why, m.id);
             synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
@@ -613,9 +615,7 @@ export function createRouter(opts: RouterOptions) {
         if (retryAfterMerge(a)) continue;
         synthesiseFailure(
           a,
-          `The agent was launched but stopped without reporting a result${
-            a.interruptions ? ` (it had already been woken again ${a.interruptions} time(s))` : ""
-          }.`,
+          "The agent was launched but stopped without reporting a result.",
         );
       }
       return { block: false };
