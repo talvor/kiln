@@ -2,3 +2,4 @@
 .lavish/
 dist/
 node_modules/
+.live/

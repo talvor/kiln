@@ -1,6 +1,0 @@
-export DENO_DIR="${DENO_DIR:-/home/phillip/.cache/deno}"
-export HOME="$PWD/.live/home"
-export KILN_CONFIG_DIR="$PWD/.live/config"
-export KILN_DATA_DIR="$PWD/.live/data"
-export KILN_STATE_DIR="$PWD/.live/state"
-export KILN_RUNTIME_DIR=".live/run"
