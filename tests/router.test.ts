@@ -185,6 +185,56 @@ withWorld("a question exempts only its live assignment", async (world) => {
   assertEquals(await stopHook(world, "dev-1"), null);
 });
 
+withWorld("a leader waiting on a delegated worker may stop without a question", async (world) => {
+  await openTeam(world);
+  // The leader holds an assignment from the overseer and has delegated part of it to dev-1.
+  const held = await asAgent(
+    world,
+    "overseer",
+    (agent) => agent.send("dev-lead", "assignment", assignment),
+  );
+  await asAgent(world, "dev-lead", async (agent) => {
+    await agent.inbox();
+    await agent.send("dev-1", "assignment", { ...assignment, title: "Delegated" });
+  });
+  // Waiting at the first step and again at a later one: no block, no question, no failure.
+  for (const again of [false, true]) {
+    assertEquals(await stopHook(world, "dev-lead", again), null);
+  }
+  const overseer = await asAgent(world, "overseer", (agent) => agent.inbox());
+  assertEquals(overseer.filter((m) => m.kind === "question" || m.kind === "result"), []);
+  // Once the worker has reported, the leader is no longer waiting and must report on its own job.
+  await asAgent(world, "dev-1", async (agent) => {
+    const [job] = await agent.inbox();
+    await agent.send("dev-lead", "result", { status: "done", summary: "ok" }, job.id);
+  });
+  const verdict = await stopHook(world, "dev-lead");
+  assertEquals(verdict?.decision, "block");
+  assertStringIncludes(verdict!.reason, `assignment ${held.id}`);
+});
+
+withWorld("a leader with a genuine question can still raise one", async (world) => {
+  await openTeam(world);
+  const held = await asAgent(
+    world,
+    "overseer",
+    (agent) => agent.send("dev-lead", "assignment", assignment),
+  );
+  await asAgent(world, "dev-lead", async (agent) => {
+    await agent.inbox();
+    await agent.send("dev-1", "assignment", { ...assignment, title: "Delegated" });
+    const q = await agent.call("raise_question", {
+      question: "Which branch?",
+      assignmentId: held.id,
+    });
+    assertEquals(q.isError, false, q.text);
+  });
+  const overseer = await asAgent(world, "overseer", (agent) => agent.inbox());
+  assertEquals(overseer.filter((m) => m.kind === "question").map((m) => m.body.question), [
+    "Which branch?",
+  ]);
+});
+
 withWorld("an answered question no longer exempts its assignment", async (world) => {
   await openTeam(world);
   const job = await asAgent(

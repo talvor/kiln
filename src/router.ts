@@ -534,7 +534,13 @@ export function createRouter(opts: RouterOptions) {
       sessionAt(address);
       const unread = store.listMessages({ to: address, waiting: true });
       const open = openAssignments(address);
-      const unreported = open.filter((a) => !openQuestions(address, a.id).length);
+      // A leader that has delegated work still in flight is waiting, not finished: the worker's
+      // result will wake it, so it needs neither to report yet nor to raise a question.
+      const waitingOnWorker = store.listMessages({ from: address, kind: "assignment" })
+        .some((a) => !hasResult(a.id));
+      const unreported = waitingOnWorker
+        ? []
+        : open.filter((a) => !openQuestions(address, a.id).length);
       if (!alreadyBlocked) {
         const reasons: string[] = [];
         if (unread.length) {
@@ -548,8 +554,9 @@ export function createRouter(opts: RouterOptions) {
           reasons.push(
             `You have not reported on ${unreported.map(describe).join("; ")}. ` +
               `Call send with a result (status done or failed) and inReplyTo set to that id. ` +
-              `If you are waiting on an answer or a decision, call raise_question with ` +
-              `assignmentId set to that id, so it is held rather than lost.`,
+              `Only if you have a real question or decision for someone else, call raise_question ` +
+              `with assignmentId set to that id, so it is held rather than lost; never raise ` +
+              `one just to say you are waiting.`,
           );
         }
         if (reasons.length) return { block: true, reason: reasons.join(" ") };
