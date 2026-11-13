@@ -433,7 +433,6 @@ withWorld("a result to the wrong assignment names the open one", async (world) =
     await agent.send("overseer", "result", { status: "done", summary: "x" }, next.id);
   });
 
-  // With nothing open, the refusal says so instead of naming an id.
   await asAgent(world, "dev-lead", async (agent) => {
     const none = await agent.call("send", {
       to: "overseer",
@@ -442,6 +441,7 @@ withWorld("a result to the wrong assignment names the open one", async (world) =
       inReplyTo: toWorker.id,
     });
     assert(none.isError);
-    assertStringIncludes(none.text, "no open assignment");
+    assertStringIncludes(none.text, "must reply to an assignment");
+    assert(!none.text.includes("no open assignment"));
   });
 });

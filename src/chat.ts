@@ -310,7 +310,6 @@ export function createChat(opts: ChatOptions) {
       const wake = chat.endedAt === null && newsWaiting(chat);
       if (wake) {
         wokenFrom = chat.eventsThrough;
-        store.appendEvent("chat.woken", { id: chatId });
       }
       return { rollover: false, wake };
     },
