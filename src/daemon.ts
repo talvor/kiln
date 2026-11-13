@@ -21,7 +21,7 @@ import { createRouter } from "./router.ts";
 import { createChat } from "./chat.ts";
 import { createBudgets } from "./budgets.ts";
 import { createLogger, type Logger } from "./log.ts";
-import { ensureDirs, type KilnPaths } from "./paths.ts";
+import { ensureDirs, type KilnPaths, runningDashboardPorts } from "./paths.ts";
 import {
   errorCodeOf,
   readLines,
@@ -209,6 +209,7 @@ async function serveForever(paths: KilnPaths, log: Logger): Promise<void> {
       session.role === "overseer"
         ? [paths.chat, ...store.listProjects().map((p) => p.clonePath)]
         : undefined,
+    dashboardPorts: () => runningDashboardPorts(paths),
     halted: holding,
     infrastructure: async () => (await loadConfig(paths.config)).limits.infrastructure,
     launchLimits: (session) => conductor.launchLimits(session),

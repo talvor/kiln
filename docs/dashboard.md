@@ -113,6 +113,19 @@ not be able to drive it.
   refused request never reaches the daemon.
 - GET requests have no side effects.
 
-The risk that remains: a process running as you can read the dashboard's memory. Keeping agents away
-(the policing hook refusing their shell commands aimed at the dashboard port) comes in a later
-change. Reaching the Dashboard from another device means tunnelling to the loopback port yourself.
+The risk that remains: a process running as you can read the dashboard's memory. Agents are kept
+away by the policing hook, which refuses a shell command (`Bash`) aimed at the port of a running
+Dashboard: one that names the port and either a loopback address (`localhost`, `127.x.x.x`, `::1`,
+`0.0.0.0`, `/dev/tcp/...`) or a network client (`curl`, `nc`, `python`, ...). The port is not secret;
+each Dashboard records it as a file named for the port in the `dashboards` folder of the daemon's
+runtime directory while it runs, and removes it when it stops. The refusal is raised like any other:
+a question to the agent's direct superior.
+
+That is a guard against an agent wandering onto the Dashboard, not a boundary. It is a pattern match
+on the command text, so a determined same-user process gets past it (a port built up at run time, a
+hostname that resolves to loopback, a script written to a file and run, reading the dashboard's
+memory through `/proc` or a debugger), and a Dashboard that was killed rather than stopped leaves a
+stale port file, which keeps refusing that port until the file is deleted. Agents run sandboxed and
+without the user's secrets, which is the real limit on what they can reach. Anything running as you,
+outside Kiln's agents, is trusted as much as you are. Reaching the Dashboard from another device
+means tunnelling to the loopback port yourself.

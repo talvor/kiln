@@ -166,3 +166,37 @@ withWorld(
     assertEquals(await police(world, "dev-1", "Read", { file_path: ".env.example" }), null);
   },
 );
+
+withWorld(
+  "the policing hook refuses shell commands aimed at a running dashboard's port",
+  async (world) => {
+    await openTeam(world);
+    const aimed = (port: number) => [
+      `curl http://127.0.0.1:${port}/api/needs-you`,
+      `curl -s localhost:${port}/`,
+      `wget -qO- http://[::1]:${port}/`,
+      `nc 127.0.0.1 ${port}`,
+      `echo hi > /dev/tcp/127.0.0.1/${port}`,
+      `python3 -c "import urllib.request as u; u.urlopen('http://0.0.0.0:${port}')"`,
+      `cd . && curl http://localhost:${port}`,
+    ];
+    const dashboard = await world.dashboard();
+    for (const command of aimed(dashboard.port)) {
+      const denied = await police(world, "dev-1", "Bash", { command });
+      assertEquals(denied?.permissionDecision, "deny", command);
+      assertStringIncludes(denied!.permissionDecisionReason, "Dashboard");
+    }
+    // Other commands, and other ports, are untouched.
+    assertEquals(await police(world, "dev-1", "Bash", { command: "git status" }), null);
+    assertEquals(
+      await police(world, "dev-1", "Bash", { command: "curl http://localhost:1/health" }),
+      null,
+    );
+    // Once the dashboard stops, its port is no longer special.
+    assertEquals(await dashboard.interrupt(), 0);
+    assertEquals(
+      await police(world, "dev-1", "Bash", { command: `curl localhost:${dashboard.port}` }),
+      null,
+    );
+  },
+);

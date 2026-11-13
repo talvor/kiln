@@ -46,6 +46,8 @@ export interface RouterOptions {
   rolePrompt?: (roleName: string) => Promise<string | undefined>;
   /** Where a session may read besides its own directory: the Overseer reads Project clones. */
   readRoots?: (session: SessionRecord) => string[] | undefined;
+  /** Ports of the Dashboards running now; shell commands aimed at them are refused. */
+  dashboardPorts?: () => number[];
   /** The built-in tools a configured role may use; undefined if unknown (the kind's default applies). */
   roleTools?: (roleName: string) => Promise<string[] | undefined>;
   /** How to start `kiln <args>` again: used to give a nudged agent its tool server and hook. */
@@ -474,6 +476,7 @@ export function createRouter(opts: RouterOptions) {
           tools: await toolsOf(session),
           worktree: session.cwd,
           readRoots: opts.readRoots?.(session),
+          dashboardPorts: opts.dashboardPorts?.(),
         },
         tool,
         input,
