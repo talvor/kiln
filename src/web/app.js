@@ -905,6 +905,7 @@
   }
 
   function renderMain() {
+    if (location.pathname === "/board") return; // PROTOTYPE: prototype_board.js owns #main
     main.replaceChildren();
     if (location.pathname === "/health") return renderHealth();
     const requestId = selectedRequestId();

@@ -12,6 +12,7 @@ import { END_KINDS, type RequestListing } from "./observe.ts";
 import { join } from "@std/path";
 import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
+import protoBoardJs from "./web/prototype_board.js" with { type: "text" }; // PROTOTYPE
 import indexHtml from "./web/index.html" with { type: "text" };
 
 const COOKIE = "kiln_dashboard";
@@ -551,11 +552,17 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     // Every view has its own address; the page swaps its main area to match.
     if (
-      url.pathname === "/" || url.pathname === "/cost" || url.pathname === "/health" ||
+      url.pathname === "/" || url.pathname === "/board" || url.pathname === "/cost" ||
+      url.pathname === "/health" ||
       /^\/(escalations\/\d+|requests\/\d+(\/(overview|transcript|report))?)$/.test(url.pathname)
     ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
         headers: headers({ "content-type": "text/html; charset=utf-8" }),
+      });
+    }
+    if (url.pathname === "/prototype_board.js") { // PROTOTYPE
+      return new Response(protoBoardJs, {
+        headers: headers({ "content-type": "text/javascript; charset=utf-8" }),
       });
     }
     if (url.pathname === "/app.js") {
