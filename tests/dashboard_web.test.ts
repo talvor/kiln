@@ -559,6 +559,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     { now: () => Date.now(), parse: Date.parse },
   );
   const strip = page.getElementById("strip");
+  const costLink = () => strip.querySelectorAll("a").find((a) => a.href === "/cost")!;
   const quiet = { haltedSince: null, capUsd: 5, todayUsd: 1.5, capReached: false, stuck: 0 };
   const show = async (facts: unknown) => {
     stream.emit("open");
@@ -567,14 +568,18 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   };
 
   await show(quiet);
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
-  assertEquals(strip.querySelector("a")?.href, "/cost");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
+  assertEquals(
+    strip.querySelectorAll("a").find((a) => a.dataset.key === "health")?.href,
+    "/health",
+  );
+  assertEquals(costLink()?.href, "/cost");
   assertEquals(page.activeElement, null);
-  strip.querySelector("a")!.focus();
+  costLink()!.focus();
 
   const previousRequests = pending.length;
   ageTimer();
-  assertEquals(page.activeElement, strip.querySelector("a"));
+  assertEquals(page.activeElement, costLink());
   refreshTimer();
   assertEquals(pending.length, previousRequests + 1);
   assertEquals(pending.at(-1)!.url, "/api/needs-you");
@@ -583,8 +588,8 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     strip: { ...quiet, todayUsd: 0, capUsd: 6 },
   }));
   await tick();
-  assertEquals(strip.textContent, "$0.00 of $6.00 todayHalt");
-  assertEquals(page.activeElement, strip.querySelector("a"));
+  assertEquals(strip.textContent, "Health$0.00 of $6.00 todayHalt");
+  assertEquals(page.activeElement, costLink());
 
   await show({
     ...quiet,
@@ -594,16 +599,20 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   });
   assertEquals(
     strip.textContent,
-    "Halted just nowDaily cap reached2 Stuck agents$1.50 of $5.00 todayResume",
+    "Halted just nowDaily cap reached2 Stuck agentsHealth$1.50 of $5.00 todayResume",
   );
-  assertEquals(page.activeElement, strip.querySelector("a"));
+  assertEquals(
+    strip.querySelectorAll("a").filter((a) => a.className === "cond").map((a) => a.textContent),
+    ["Halted just now", "Daily cap reached", "2 Stuck agents"],
+  );
+  assertEquals(page.activeElement, costLink());
 
   await show({ ...quiet, capUsd: null });
-  assertEquals(page.activeElement, strip.querySelector("a"));
-  strip.querySelector("a")!.click();
+  assertEquals(page.activeElement, costLink());
+  costLink()!.click();
   assertEquals(location.pathname, "/cost");
   const halt = strip.querySelector("button")!;
-  assertEquals(strip.textContent, "$1.50 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 todayHalt");
   halt.click(2); // a held key or a double click
   assertEquals(pending.filter((p) => p.url === "/api/halt").length, 0);
   halt.click();
@@ -643,7 +652,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   await tick();
   assertEquals(strip.textContent, "");
   await show(quiet);
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
 
   strip.querySelector("button")!.click();
   pending.at(-1)!.resolve(Response.json({
@@ -656,7 +665,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     Response.json({ ...snapshot(0), strip: quiet }),
   );
   await tick();
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
 
   strip.querySelector("button")!.click();
   pending.at(-1)!.reject(new Error("offline"));
@@ -665,7 +674,10 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     Response.json({ ...snapshot(0), strip: quiet }),
   );
   await tick();
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
+  strip.querySelectorAll("a").find((a) => a.dataset.key === "health")!.click();
+  assertEquals(location.pathname, "/health");
+  assertEquals(pending.at(-1)!.url, "/api/health");
 });
 
 const requestRow = (id: number, over: Record<string, unknown> = {}) => ({
@@ -1231,7 +1243,7 @@ Deno.test("the Cost view shows today against the cap, a table per Project and Re
       strip: { haltedSince: null, capUsd: 5, todayUsd: 3.5, capReached: false, stuck: 0 },
     }),
   );
-  const link = page.getElementById("strip").querySelectorAll("a")[0];
+  const link = page.getElementById("strip").querySelectorAll("a").find((a) => a.href === "/cost")!;
   assertEquals(link.href, "/cost");
   link.click();
   await tick();
@@ -1288,4 +1300,126 @@ Deno.test("the Cost view shows today against the cap, a table per Project and Re
     "$4.00",
     "$4.00 of $8.00 (50%)",
   ]);
+});
+
+Deno.test("the Health view shows the daemon, Halt and Resume, trouble read-only, and runs checks on demand", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{
+    url: string;
+    method?: string;
+    resolve: (r: Response) => void;
+  }> = [];
+  const fetch = (url: string, init?: { method?: string }) =>
+    new Promise<Response>((resolve) => pending.push({ url, method: init?.method, resolve }));
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    { pushState: (_s: null, _t: string, path: string) => location.pathname = path },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    () => 1,
+    () => {},
+    { now: () => Date.now(), parse: Date.parse },
+  );
+  const strip = page.getElementById("strip");
+  const main = page.getElementById("main");
+  const since = new Date(Date.now() - 3_600_000).toISOString();
+  stream!.emit("open");
+  pending.at(-1)!.resolve(Response.json({
+    ...snapshot(0),
+    strip: { haltedSince: since, capUsd: null, todayUsd: 0, capReached: false, stuck: 1 },
+  }));
+  await tick();
+
+  // The strip's conditions open the Health view.
+  const conditions = strip.querySelectorAll("a").filter((a) => a.className === "cond");
+  assertEquals(conditions.map((a) => a.textContent), ["Halted 1 h ago", "1 Stuck agent"]);
+  conditions[0].click();
+  assertEquals(location.pathname, "/health");
+  const facts = (over: Record<string, unknown> = {}) => ({
+    running: true,
+    pid: 4242,
+    version: "1.2.3",
+    startedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+    haltedSince: since,
+    stuck: [{ address: "worker-1", since, requestId: 7 }],
+    faults: [{ project: "Example", kind: "clone-missing", detail: "<b>gone</b>", since }],
+    paused: ["Example"],
+    ...over,
+  });
+  const reply = async (url: string, response: Response) => {
+    pending.splice(0).filter((p) => p.url === url).at(-1)!.resolve(response);
+    await tick();
+  };
+  await reply("/api/health", Response.json(facts()));
+  const text = main.textContent;
+  for (
+    const part of [
+      "Kiln 1.2.3 · pid 4242 · up 1 h 30 min",
+      "Halted 1 h ago",
+      "worker-1 · Request 7",
+      "Example · clone-missing · <b>gone</b>",
+      "Paused ProjectsExample",
+      "Run checks",
+    ]
+  ) assert(text.includes(part), part);
+  assertEquals(main.querySelectorAll("button").map((b) => b.textContent), ["Resume", "Run checks"]);
+
+  // Run checks: one run at a time, and its results are listed.
+  const run = main.querySelectorAll("button")[1];
+  run.click();
+  run.click(2);
+  assertEquals(pending.filter((p) => p.url === "/api/doctor").length, 1);
+  assertEquals(pending.at(-1)!.method, "POST");
+  await reply(
+    "/api/doctor",
+    Response.json({
+      ok: true,
+      checks: [
+        { name: "git", status: "ok", detail: "git version 2" },
+        { name: "claude login", status: "fail", detail: "Claude is not logged in" },
+      ],
+    }),
+  );
+  assert(main.textContent.includes("ok · git · git version 2"));
+  assert(main.textContent.includes("fail · claude login · Claude is not logged in"));
+
+  // Resume is the same one click as the strip's.
+  main.querySelectorAll("button")[0].click();
+  assertEquals(pending.at(-1)!.url, "/api/resume");
+  assertEquals(main.querySelectorAll("button")[0].getAttribute("aria-disabled"), "true");
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "true");
+  await reply("/api/resume", Response.json({ ok: true }));
+  await reply(
+    "/api/needs-you",
+    Response.json({
+      ...snapshot(0),
+      strip: { haltedSince: since, capUsd: null, todayUsd: 0, capReached: false, stuck: 1 },
+    }),
+  );
+  await reply("/api/health", Response.json(facts()));
+  assertEquals(main.querySelectorAll("button")[0].getAttribute("aria-disabled"), "false");
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
 });

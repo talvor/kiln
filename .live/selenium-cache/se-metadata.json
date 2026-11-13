@@ -1,0 +1,29 @@
+{
+  "browsers": [],
+  "drivers": [
+    {
+      "major_browser_version": "158",
+      "driver_name": "geckodriver",
+      "driver_version": "0.37.1",
+      "driver_ttl": 1794553245
+    }
+  ],
+  "stats": [
+    {
+      "browser": "firefox",
+      "browser_version": "",
+      "os": "linux",
+      "arch": "x86_64",
+      "lang": "javascript",
+      "selenium_version": "4.51",
+      "stats_ttl": 1794553245
+    }
+  ],
+  "cached_assets": [
+    {
+      "asset_name": "geckodriver",
+      "asset_version": "0.37.1",
+      "last_used": 1794549702
+    }
+  ]
+}

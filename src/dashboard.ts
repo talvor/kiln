@@ -5,6 +5,7 @@
 // The per-launch token lives in this process's memory and nowhere else: it is printed in the URL,
 // exchanged once for a session cookie, then dead.
 import { call, DaemonError, DaemonNotRunning } from "./client.ts";
+import { runDoctor } from "./doctor.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
 import { END_KINDS, type RequestListing } from "./observe.ts";
@@ -466,6 +467,37 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
+  /** The Health view's facts: the daemon, and what `health.report` says is wrong. Read-only. */
+  async function healthView(): Promise<Response> {
+    try {
+      const s = await call<{ pid: number; version: string; startedAt: string }>(paths, "status");
+      const h = await call<{
+        haltedSince: string | null;
+        stuck: { address: string; since: string; requestId: number | null }[];
+        faults: { project: string; kind: string; detail: string; since: string }[];
+        paused: string[];
+      }>(paths, "health.report");
+      return json({
+        running: true,
+        pid: s.pid,
+        version: s.version,
+        startedAt: s.startedAt,
+        haltedSince: h.haltedSince,
+        stuck: h.stuck,
+        faults: h.faults,
+        paused: h.paused,
+      });
+    } catch (err) {
+      if (err instanceof DaemonNotRunning) return json({ running: false });
+      throw err;
+    }
+  }
+
+  /** Run the doctor's checks now. */
+  async function doctor(): Promise<Response> {
+    return json({ ok: true, checks: await runDoctor(paths, { startDaemon: false }) });
+  }
+
   const redirectHome = (setCookie?: string) =>
     new Response(null, {
       status: 303,
@@ -513,11 +545,12 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
       if (req.method === "POST" && url.pathname === "/api/resume") {
         return await haltOrResume("kiln.resume");
       }
+      if (req.method === "POST" && url.pathname === "/api/doctor") return await doctor();
       return refuse(405, "No such action.");
     }
     // Every view has its own address; the page swaps its main area to match.
     if (
-      url.pathname === "/" || url.pathname === "/cost" ||
+      url.pathname === "/" || url.pathname === "/cost" || url.pathname === "/health" ||
       /^\/(escalations\/\d+|requests\/\d+(\/(overview|transcript|report))?)$/.test(url.pathname)
     ) {
       return new Response(req.method === "HEAD" ? null : indexHtml, {
@@ -545,6 +578,7 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
     if (url.pathname === "/api/cost") return await costView();
     if (url.pathname === "/api/needs-you") return await needsYouView();
+    if (url.pathname === "/api/health") return await healthView();
     if (url.pathname === "/api/status") return await status();
     return refuse(404, "Not found.");
   }

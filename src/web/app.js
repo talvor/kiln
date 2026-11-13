@@ -21,6 +21,8 @@
   let report = { id: null, data: null, error: null };
   // The Cost view's report of today's spend.
   let cost = { data: null, error: null };
+  // The Health view: the daemon's facts, and the doctor's checks while the user has run them.
+  const health = { data: null, error: null, checks: null, checking: false, checkError: null };
   const CUT = 600;
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
   let cancelAct = { ...blankCancel };
@@ -291,9 +293,44 @@
     return false;
   }
 
+  let healthSeq = 0;
+  async function loadHealth() {
+    const mine = ++healthSeq;
+    const current = () => mine === healthSeq && location.pathname === "/health";
+    try {
+      const res = await fetch("/api/health");
+      const out = await res.json().catch(() => ({ error: "Something went wrong." }));
+      if (!current()) return;
+      health.data = res.ok ? out : null;
+      health.error = res.ok ? null : out.error ?? "Something went wrong.";
+    } catch {
+      if (!current()) return;
+      health.error = "The dashboard could not be reached.";
+    }
+    render();
+  }
+
+  async function runChecks() {
+    if (health.checking) return;
+    health.checking = true;
+    health.checkError = null;
+    render();
+    try {
+      const res = await fetch("/api/doctor", { method: "POST" });
+      const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
+      if (out.ok) health.checks = out.checks;
+      else health.checkError = out.error ?? "Something went wrong.";
+    } catch {
+      health.checkError = "The dashboard could not be reached.";
+    }
+    health.checking = false;
+    render();
+  }
+
   let detailSeq = 0;
   async function loadDetail() {
     const mine = ++detailSeq;
+    if (location.pathname === "/health") return loadHealth();
     const id = selectedRequestId();
     if (id === null) return location.pathname === "/cost" ? await loadCost(mine) : undefined;
     const current = () => mine === detailSeq && selectedRequestId() === id;
@@ -769,8 +806,107 @@
     );
   }
 
+  function uptime(iso) {
+    const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    if (seconds < 60) return seconds + " s";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + " min";
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return hours + " h " + (minutes % 60) + " min";
+    return Math.floor(hours / 24) + " d " + (hours % 24) + " h";
+  }
+
+  function healthSection(title, items, empty) {
+    const box = el("section", "health-section");
+    box.append(el("h3", "", title));
+    if (items.length === 0) box.append(el("p", "meta", empty));
+    else {
+      const list = el("ul", "health-list");
+      for (const text of items) list.append(el("li", "", text));
+      box.append(list);
+    }
+    return box;
+  }
+
+  function renderHealth() {
+    main.append(el("h2", "", "Health"));
+    const h = health.data;
+    if (!view.running || (h && !h.running)) {
+      main.append(el("p", "note", "Kiln is not running."));
+    } else if (!h) {
+      main.append(el("p", "note", health.error ?? "Loading…"));
+    } else {
+      if (health.error) main.append(el("p", "refusal", health.error));
+      main.append(
+        el(
+          "p",
+          "",
+          "Kiln " + h.version + " · pid " + h.pid + " · up " + uptime(h.startedAt),
+        ),
+        el(
+          "p",
+          "meta",
+          h.haltedSince === null ? "Running" : "Halted " + when(h.haltedSince),
+        ),
+      );
+      const bar = el("div", "bar");
+      const control = (label, path) => {
+        const b = el("button", "btn", label);
+        b.type = "button";
+        b.setAttribute("aria-disabled", String(stripBusy));
+        b.addEventListener("click", (event) => {
+          if (event.detail > 1) return;
+          haltOrResume(path);
+        });
+        bar.append(b);
+      };
+      if (h.haltedSince === null) control("Halt", "/api/halt");
+      if (h.haltedSince !== null || h.stuck.length > 0) control("Resume", "/api/resume");
+      main.append(bar);
+      if (stripRefusal) main.append(el("p", "refusal", stripRefusal.message));
+      main.append(
+        healthSection(
+          "Stuck agents",
+          h.stuck.map((s) =>
+            s.address + (s.requestId === null ? "" : " · Request " + s.requestId) +
+            " · stuck " + when(s.since)
+          ),
+          "None.",
+        ),
+        healthSection(
+          "Faults",
+          h.faults.map((f) =>
+            f.project + " · " + f.kind + " · " + f.detail + " · " + when(f.since)
+          ),
+          "None.",
+        ),
+        healthSection("Paused Projects", h.paused, "None."),
+      );
+    }
+    const checks = el("section", "health-section");
+    checks.append(el("h3", "", "Checks"));
+    const run = el("button", "btn", health.checking ? "Running checks…" : "Run checks");
+    run.type = "button";
+    run.setAttribute("aria-disabled", String(health.checking));
+    run.addEventListener("click", (event) => {
+      if (event.detail > 1) return;
+      runChecks();
+    });
+    checks.append(run);
+    if (health.checkError) checks.append(el("p", "refusal", health.checkError));
+    if (health.checks) {
+      const list = el("ul", "health-list");
+      for (const c of health.checks) {
+        list.append(el("li", "check-" + c.status, c.status + " · " + c.name + " · " + c.detail));
+      }
+      checks.append(list);
+    }
+    main.append(checks);
+  }
+
   function renderMain() {
     main.replaceChildren();
+    if (location.pathname === "/health") return renderHealth();
     const requestId = selectedRequestId();
     if (requestId !== null) return renderRequest(requestId);
     const id = selectedId();
@@ -815,7 +951,7 @@
     if (stripBusy) return;
     stripBusy = true;
     stripRefusal = null;
-    renderStrip();
+    render();
     try {
       const res = await fetch(path, { method: "POST" });
       const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
@@ -825,27 +961,41 @@
     }
     await refresh();
     stripBusy = false;
-    renderStrip();
+    render();
   }
 
   function renderStrip() {
-    const focusedLink = document.activeElement !== null &&
-      stripBox.querySelector("a") === document.activeElement;
+    const focusedLink = [...stripBox.querySelectorAll("a")].find((a) =>
+      a === document.activeElement
+    );
     const focusedLabel = !focusedLink && stripBox.contains(document.activeElement)
       ? document.activeElement.textContent
       : null;
     stripBox.replaceChildren();
     const strip = view.strip;
     if (!view.running || !strip) return;
+    const healthLink = (key, text, className) => {
+      const a = el("a", className, text);
+      a.dataset.key = key;
+      a.href = "/health";
+      a.addEventListener("click", (event) => {
+        event.preventDefault();
+        go("/health");
+      });
+      stripBox.append(a);
+    };
     if (strip.haltedSince !== null) {
-      stripBox.append(el("span", "cond", "Halted " + when(strip.haltedSince)));
+      healthLink("halted", "Halted " + when(strip.haltedSince), "cond");
     }
-    if (strip.capReached) stripBox.append(el("span", "cond", "Daily cap reached"));
+    if (strip.capReached) healthLink("cap", "Daily cap reached", "cond");
     if (strip.stuck > 0) {
-      stripBox.append(
-        el("span", "cond", strip.stuck + " Stuck agent" + (strip.stuck === 1 ? "" : "s")),
+      healthLink(
+        "stuck",
+        strip.stuck + " Stuck agent" + (strip.stuck === 1 ? "" : "s"),
+        "cond",
       );
     }
+    healthLink("health", "Health", "");
     const cost = el(
       "a",
       "",
@@ -853,6 +1003,7 @@
         ? usd(strip.todayUsd) + " today"
         : usd(strip.todayUsd) + " of " + usd(strip.capUsd) + " today",
     );
+    cost.dataset.key = "cost";
     cost.href = "/cost";
     cost.addEventListener("click", (event) => {
       event.preventDefault();
@@ -875,8 +1026,12 @@
     if (strip.haltedSince !== null || strip.stuck > 0) {
       stripBox.append(button("Resume", "/api/resume"));
     }
-    if (focusedLink) cost.focus({ preventScroll: true });
-    else if (focusedLabel) {
+    if (focusedLink) {
+      const same = [...stripBox.querySelectorAll("a")].find((a) =>
+        a.dataset.key === focusedLink.dataset.key
+      ) ?? cost;
+      same.focus({ preventScroll: true });
+    } else if (focusedLabel) {
       const same = [...stripBox.querySelectorAll("button")].find((b) =>
         b.textContent === focusedLabel
       );
