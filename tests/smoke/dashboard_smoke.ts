@@ -33,11 +33,11 @@ async function chromeCommand(): Promise<string[]> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function freePort(): Promise<number> {
+function freePort(): Promise<number> {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const { port } = listener.addr as Deno.NetAddr;
   listener.close();
-  return port;
+  return Promise.resolve(port);
 }
 
 /** A page of a headless Chrome, driven over the DevTools protocol. */
