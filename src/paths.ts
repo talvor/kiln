@@ -18,6 +18,8 @@ export interface KilnPaths {
   worktrees: string;
   /** Lavish pages for Escalations; local files, never published. */
   pages: string;
+  /** One file per running Dashboard, named for its port; the policing hook reads them. */
+  dashboards: string;
   log: string;
   /** Where the Overseer's chat session works; empty, so there is nothing in it to change. */
   chat: string;
@@ -70,6 +72,7 @@ export function resolvePaths(
     projects: join(data, "projects"),
     worktrees: join(data, "worktrees"),
     pages: join(data, "pages"),
+    dashboards: join(runtime, "dashboards"),
     log: join(state, "daemon.log"),
     chat: join(data, "overseer"),
   };
@@ -94,4 +97,15 @@ export function ensureDirs(p: KilnPaths): void {
   }
   // The socket directory must be private even if it already existed.
   Deno.chmodSync(p.runtime, 0o700);
+}
+
+/** The ports of the Dashboards running now, from the files each leaves in `paths.dashboards`. */
+export function runningDashboardPorts(paths: KilnPaths): number[] {
+  try {
+    return [...Deno.readDirSync(paths.dashboards)]
+      .map((e) => Number(e.name))
+      .filter((n) => Number.isSafeInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
 }

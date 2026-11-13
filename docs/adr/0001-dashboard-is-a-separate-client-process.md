@@ -13,5 +13,5 @@ Notification link but weakens the secret). Reaching the Dashboard from another d
 tunnelling to the loopback port yourself.
 
 The residual risk is that a process running as the same user can read the dashboard's memory; agents
-are kept off it by extending the policing hook to refuse their shell commands aimed at the dashboard
+are kept off it by the policing hook, which refuses their shell commands aimed at the dashboard
 port.

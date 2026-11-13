@@ -9,6 +9,7 @@ import { runDoctor } from "./doctor.ts";
 import type { EscalationView } from "./escalations.ts";
 import { needsYou } from "./needs_you.ts";
 import { END_KINDS, type RequestListing } from "./observe.ts";
+import { join } from "@std/path";
 import type { KilnPaths } from "./paths.ts";
 import appJs from "./web/app.js" with { type: "text" };
 import indexHtml from "./web/index.html" with { type: "text" };
@@ -605,11 +606,20 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     (req) => handle(req).catch(() => refuse(500, "Something went wrong.")),
   );
   port = server.addr.port;
+  // The port is no secret; it is recorded so the policing hook can keep agents off it.
+  const portFile = join(paths.dashboards, String(port));
+  try {
+    Deno.mkdirSync(paths.dashboards, { recursive: true, mode: 0o700 });
+    Deno.writeTextFileSync(portFile, `${Deno.pid}\n`, { mode: 0o600 });
+  } catch { /* the Dashboard still works; agents are just not kept off its port */ }
   return {
     url: `http://127.0.0.1:${port}/?token=${token}`,
     openUrl: `http://127.0.0.1:${port}/launch/${launch}`,
     port,
     stop: () => {
+      try {
+        Deno.removeSync(portFile);
+      } catch { /* already gone */ }
       for (const close of [...closers]) close(); // open streams would hold a graceful shutdown
       return server.shutdown();
     },
