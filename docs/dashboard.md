@@ -58,7 +58,14 @@ total, and total against its Budget), and the unclaimed spend no Request claims,
 Overseer's. It comes from `cost.report` and
 refreshes with the rest of the page. Only Requests that spent something today are listed.
 
-Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>`,
+The strip's conditions (**Halted**, **Daily cap reached**, **Stuck agents**) open the **Health**
+view at `/health`. It shows the daemon's version, pid and uptime, with **Halt** or **Resume** as
+in the strip, then the Stuck agents, the faults and the paused Projects, all read-only. **Run
+checks** runs the same checks as `kiln doctor` when you click it, one run at a time, and lists each
+result; nothing runs until you ask. It is not run while Kiln is not running, since it would start
+the daemon.
+
+Views have their own addresses (`/`, `/cost`, `/health`, `/escalations/<id>`, `/requests/<id>`,
 `/requests/<id>/overview`, `/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back
 and forward work, and moving between them swaps the main area without reloading the page.
 
