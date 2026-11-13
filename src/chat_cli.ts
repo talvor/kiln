@@ -1,7 +1,8 @@
 // `kiln chat`: the user's side of the Overseer chat. It runs the installed `claude` interactively,
 // as the Overseer, with Kiln's tools, status line and hooks; and it replaces the session with a
-// fresh one, seeded with a digest, when the daemon says its context has grown too large. The hooks
-// Claude runs (`kiln hook chat ...`) live here too: they only relay to the daemon.
+// fresh one, seeded with a digest, when the daemon says its context has grown too large or news
+// arrived for an idle chat. The hooks Claude runs (`kiln hook chat ...`) live here too: they only
+// relay to the daemon.
 import { call, ensureDaemon, selfCommand } from "./client.ts";
 import { confine } from "./confinement.ts";
 import { findClaude } from "./launcher.ts";
@@ -74,17 +75,21 @@ export async function runChat(paths: KilnPaths): Promise<number> {
         stderr: "inherit",
       }).spawn();
       let rollover = false;
+      let woken = false;
       let exited = false;
       const done = child.status.finally(() => exited = true);
       while (!exited) {
         await Promise.race([done, new Promise((r) => setTimeout(r, HEARTBEAT_MS))]);
         if (exited) break;
         try {
-          const beat = await call<{ rollover: boolean }>(paths, "chat.heartbeat", {
-            id: begun.chatId,
-          });
-          if (beat.rollover) {
+          const beat = await call<{ rollover: boolean; wake: boolean }>(
+            paths,
+            "chat.heartbeat",
+            { id: begun.chatId },
+          );
+          if (beat.rollover || beat.wake) {
             rollover = true;
+            woken = !beat.rollover;
             child.kill("SIGTERM");
             await done.catch(() => {});
           }
@@ -95,8 +100,11 @@ export async function runChat(paths: KilnPaths): Promise<number> {
         .catch(() => {});
       if (!rollover) return status.code;
       console.error(
-        "\nkiln: the conversation outgrew its context; continuing in a fresh session " +
-          "seeded with a digest.",
+        woken
+          ? "\nkiln: news for the Overseer arrived while the chat was idle; continuing in a " +
+            "fresh session seeded with a digest."
+          : "\nkiln: the conversation outgrew its context; continuing in a fresh session " +
+            "seeded with a digest.",
       );
     }
   } finally {

@@ -44,4 +44,4 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno test -A --parallel ${{ matrix.suite.args }}
+      - run: DENO_JOBS=2 deno test -A --parallel ${{ matrix.suite.args }}

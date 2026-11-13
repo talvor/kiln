@@ -228,6 +228,8 @@ withWorld("news already told is not repeated in the next session", async (world)
     stderr: "piped",
   }).spawn();
   await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  // Mid-turn, so the news is not announced to the chat itself.
+  await hook(world, "prompt", { prompt: "hello" });
   const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
   try {
     db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
@@ -423,6 +425,8 @@ withWorld("the Overseer's mail waits for the chat instead of being nudged", asyn
     stderr: "piped",
   }).spawn();
   await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  // The user has a prompt in flight, so the Overseer is mid-turn.
+  await hook(world, "prompt", { prompt: "hello" });
   await asAgent(
     world,
     "dev-lead",
@@ -430,18 +434,237 @@ withWorld("the Overseer's mail waits for the chat instead of being nudged", asyn
       agent.send("overseer", "question", { question: "Which branch should the fix target?" }),
   );
 
-  // While the user is chatting, the question waits: it is shown, not delivered by a nudge.
+  // While the Overseer is mid-turn the question waits: it is shown, not delivered by a nudge.
   await new Promise((resolve) => setTimeout(resolve, tickSeconds * 3_000));
   assertEquals((await world.launcher.calls()).length, 1);
   const status = await world.kilnWithInput("{}", "hook", "chat", "status-line", "--chat", "1");
   assertStringIncludes(status.stdout, "1 unread");
   const prompt = await hook(world, "prompt", { prompt: "any news?" });
   assertStringIncludes(prompt.hookSpecificOutput.additionalContext, "read_inbox");
-  // The Overseer may not end its turn with the mail unread; once told, it may.
+  // The Overseer may not end its turn with the mail unread.
   assertStringIncludes((await hook(world, "stop", {})).reason, "unread message");
-  assertEquals(await hook(world, "stop", { stop_hook_active: true }), null);
 
   // Once the user has left, the mail is delivered the usual way.
   await chatting.output();
   await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 15_000);
+});
+
+/** Open `kiln chat` against a first session that idles, as an idle user's chat does. */
+async function idleChat(world: World, openFor = 30_000, beforeStart?: () => Promise<void>) {
+  await openTeam(world);
+  await beforeStart?.();
+  await world.launcher.script([
+    { session: [{ wait: openFor }] }, // the chat, idle
+    { session: [] }, // its replacement, which ends at once
+  ]);
+  const chatting = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", MAIN, "chat"],
+    env: world.env,
+    clearEnv: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  return chatting;
+}
+
+withWorld("mail for an idle chat is surfaced without a user prompt", async (world) => {
+  const chatting = await idleChat(world);
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+  );
+
+  // Nobody types anything: the chat is replaced by a session that tells the user.
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  const calls = await world.launcher.calls();
+  assertStringIncludes(calls[1].args[0], "has just opened the chat");
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
+  // Surfaced once, not on every heartbeat.
+  assertEquals(calls.length, 2);
+});
+
+withWorld("a result for an idle Overseer chat is surfaced without a user prompt", async (world) => {
+  let assignmentId = 0;
+  const chatting = await idleChat(world, 30_000, async () => {
+    assertEquals((await world.kiln("halt")).code, 0);
+    const assignment = await asAgent(
+      world,
+      "overseer",
+      (agent) =>
+        agent.send("dev-lead", "assignment", {
+          title: "Diagnose the stall",
+          instructions: "Report the cause",
+        }),
+    );
+    assignmentId = assignment.id;
+    await asAgent(world, "dev-lead", (agent) => agent.inbox());
+    assertEquals((await world.kiln("resume")).code, 0);
+  });
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) =>
+      agent.send(
+        "overseer",
+        "result",
+        { status: "done", summary: "Found the cause" },
+        assignmentId,
+      ),
+  );
+
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
+  const messages = await asAgent(world, "overseer", (agent) => agent.inbox());
+  assertEquals(messages.map((m) => [m.kind, m.inReplyTo]), [["result", assignmentId]]);
+});
+
+withWorld("unread mail still wakes a replacement chat after its turn", async (world) => {
+  await openTeam(world);
+  await world.launcher.script([
+    { session: [{ wait: 30_000 }] },
+    { session: [{ wait: 30_000 }] },
+    { session: [{ wait: 5_000 }] },
+  ]);
+  const chatting = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", MAIN, "chat"],
+    env: world.env,
+    clearEnv: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 1);
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+  );
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+
+  assertStringIncludes((await hook(world, "stop", {}, 2)).reason, "unread message");
+  assertEquals(await hook(world, "stop", { stop_hook_active: true }, 2), null);
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 3, 15_000);
+  assertStringIncludes((await claudeArg(world, 2, "--append-system-prompt"))!, "unread message");
+  assertEquals((await asAgent(world, "overseer", (agent) => agent.inbox())).length, 1);
+  assertEquals(await hook(world, "stop", {}, 3), null);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  assertEquals((await world.launcher.calls()).length, 3);
+  await chatting.output();
+});
+
+withWorld("mail sent during a daemon restart wakes the attached chat", async (world) => {
+  const chatting = await idleChat(world);
+  assertEquals((await world.kiln("daemon", "stop")).code, 0);
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
+  try {
+    const sent = db.prepare(
+      "insert into messages (sender, recipient, kind, body, sent_at) values (?, ?, ?, ?, ?)",
+    ).run("dev-lead", "overseer", "question", '{"question":"Which id?"}', new Date().toISOString());
+    const id = Number(sent.lastInsertRowid);
+    db.prepare("insert into message_status (message_id) values (?)").run(id);
+    db.prepare("insert into events (ts, kind, data) values (?, ?, ?)")
+      .run(new Date().toISOString(), "message.sent", JSON.stringify({ id, to: "overseer" }));
+  } finally {
+    db.close();
+  }
+  assertEquals((await world.kiln("daemon", "start")).code, 0);
+
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
+});
+
+withWorld("a finished request is announced to an idle chat", async (world) => {
+  const chatting = await idleChat(world);
+  const db = new DatabaseSync(join(world.dirs.data, "kiln.db"), { timeout: 5_000 });
+  try {
+    db.prepare("insert into events (ts, kind, data) values ('now', 'request.done', '{\"id\":7}')")
+      .run();
+  } finally {
+    db.close();
+  }
+
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes(
+    (await claudeArg(world, 1, "--append-system-prompt"))!,
+    "Request 7 finished.",
+  );
+  assertStringIncludes((await world.launcher.calls())[1].args[0], "has just opened the chat");
+});
+
+for (const hold of ["halt", "daily cap"] as const) {
+  withWorld(`an idle chat waits through ${hold} before waking`, async (world) => {
+    if (hold === "daily cap") {
+      await Deno.mkdir(world.dirs.config, { recursive: true });
+      await Deno.writeTextFile(
+        join(world.dirs.config, "limits.json"),
+        JSON.stringify({ budgets: { dailyUsd: 1 } }),
+      );
+    }
+    const chatting = await idleChat(world);
+    if (hold === "halt") {
+      assertEquals((await world.kiln("halt")).code, 0);
+      await asAgent(
+        world,
+        "dev-lead",
+        (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+      );
+    } else {
+      const db = new DatabaseSync(join(world.dirs.data, "kiln.db"));
+      try {
+        db.exec("PRAGMA busy_timeout = 5000");
+        db.prepare("insert into spend (at, address, request_id, usd) values (?, ?, ?, ?)")
+          .run(new Date().toISOString(), "overseer", null, 1);
+        db.prepare("insert into events (ts, kind, data) values (?, ?, ?)")
+          .run(new Date().toISOString(), "request.done", '{"id":7}');
+      } finally {
+        db.close();
+      }
+      const cost = JSON.parse((await world.kiln("cost", "--json")).stdout);
+      assertEquals(cost.capReached, true);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    assertEquals((await world.launcher.calls()).length, 1);
+
+    if (hold === "halt") {
+      assertEquals((await world.kiln("resume")).code, 0);
+    } else {
+      await Deno.writeTextFile(
+        join(world.dirs.config, "limits.json"),
+        JSON.stringify({ budgets: { dailyUsd: 10 } }),
+      );
+    }
+    await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+    await chatting.output();
+    assertStringIncludes(
+      (await claudeArg(world, 1, "--append-system-prompt"))!,
+      hold === "halt" ? "unread message" : "Request 7 finished.",
+    );
+  });
+}
+
+withWorld("mail waits for the end of the turn when the Overseer is mid-turn", async (world) => {
+  const chatting = await idleChat(world, 10_000);
+  await hook(world, "prompt", { prompt: "hello" });
+  await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("overseer", "question", { question: "Which id should I use?" }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 4_000));
+  assertEquals((await world.launcher.calls()).length, 1);
+
+  const prompt = await hook(world, "prompt", { prompt: "any news?" });
+  assertStringIncludes(prompt.hookSpecificOutput.additionalContext, "read_inbox");
+  assertStringIncludes((await hook(world, "stop", {})).reason, "unread message");
+  assertEquals(await hook(world, "stop", { stop_hook_active: true }), null);
+  await waitFor(() => world.launcher.calls(), (calls) => calls.length === 2, 10_000);
+  await chatting.output();
+  assertStringIncludes((await claudeArg(world, 1, "--append-system-prompt"))!, "unread message");
 });

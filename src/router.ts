@@ -121,12 +121,22 @@ export function createRouter(opts: RouterOptions) {
       !store.listMessages({ kind: "answer", inReplyTo: q.id }).length
     );
 
+  function openHint(from: string, to: string): string {
+    const open = openAssignments(from).filter((a) => a.from === to && a.deadLetteredAt === null);
+    if (!open.length) return "";
+    return open.length === 1
+      ? `; the open assignment ${to} sent you is ${open[0].id}: reply to assignment ${open[0].id}`
+      : `; the open assignments ${to} sent you are ${open.map((m) => m.id).join(", ")}`;
+  }
+
   const append = (m: Parameters<Store["appendMessage"]>[0]): MessageRecord => {
     if (
       m.kind === "result" && m.inReplyTo !== undefined && m.inReplyTo !== null &&
       hasResult(m.inReplyTo)
     ) {
-      throw new RouterError(`assignment ${m.inReplyTo} already has a result`);
+      throw new RouterError(
+        `assignment ${m.inReplyTo} already has a result` + openHint(m.from, m.to),
+      );
     }
     const sent = store.appendMessage(m);
     store.appendEvent("message.sent", {
@@ -203,7 +213,8 @@ export function createRouter(opts: RouterOptions) {
         throw new RouterError(
           `a ${kind} must reply to ${
             target === "assignment" ? "an" : "a"
-          } ${target} that ${to} sent you (set inReplyTo to its id)`,
+          } ${target} that ${to} sent you (set inReplyTo to its id)` +
+            (kind === "result" ? openHint(from, to) : ""),
         );
       }
       if (kind === "answer" && store.listMessages({ kind, inReplyTo: original.id }).length) {

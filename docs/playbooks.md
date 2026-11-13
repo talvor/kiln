@@ -135,7 +135,7 @@ by", and then checks **each ticket is in the tracker** (`gh issue view`); one th
 Request. The URLs are recorded on the Request (`Ticket:` in `kiln request status`).
 
 The **Overseer approves** the breakdown once that holds, with no Gate: the user is **told
-afterwards**, in the Overseer's news when they next open `kiln chat`.
+afterwards** in the Overseer's news, as [the chat guide](chat.md) describes.
 
 ## Wayfinding a ticket
 

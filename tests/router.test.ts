@@ -378,3 +378,70 @@ withWorld("a timed out launch does not hold another recipient's nudge", async (w
   const [nudged] = await asAgent(world, "dev-2", (agent) => agent.inbox());
   assertEquals([hung.deliveries, nudged.deliveries], [0, 1]);
 });
+
+withWorld("a result to the wrong assignment names the open one", async (world) => {
+  await openTeam(world);
+  const fromOverseer = await asAgent(
+    world,
+    "overseer",
+    (agent) => agent.send("dev-lead", "assignment", assignment),
+  );
+  const toWorker = await asAgent(
+    world,
+    "dev-lead",
+    (agent) => agent.send("dev-1", "assignment", assignment),
+  );
+  assertNotEquals(fromOverseer.id, toWorker.id);
+
+  await asAgent(world, "dev-lead", async (agent) => {
+    // The leader's own assignment to its worker is the id it used by mistake.
+    const wrong = await agent.call("send", {
+      to: "overseer",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+      inReplyTo: toWorker.id,
+    });
+    assert(wrong.isError);
+    assertStringIncludes(wrong.text, `assignment ${fromOverseer.id}`);
+    assertStringIncludes(wrong.text, "open assignment");
+    const missing = await agent.call("send", {
+      to: "overseer",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+    });
+    assert(missing.isError);
+    assertStringIncludes(missing.text, `assignment ${fromOverseer.id}`);
+    // The named id is accepted.
+    await agent.send("overseer", "result", { status: "done", summary: "x" }, fromOverseer.id);
+  });
+
+  const next = await asAgent(
+    world,
+    "overseer",
+    (agent) => agent.send("dev-lead", "assignment", assignment),
+  );
+  await asAgent(world, "dev-lead", async (agent) => {
+    const completed = await agent.call("send", {
+      to: "overseer",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+      inReplyTo: fromOverseer.id,
+    });
+    assert(completed.isError);
+    assertStringIncludes(completed.text, "already has a result");
+    assertStringIncludes(completed.text, `assignment ${next.id}`);
+    await agent.send("overseer", "result", { status: "done", summary: "x" }, next.id);
+  });
+
+  await asAgent(world, "dev-lead", async (agent) => {
+    const none = await agent.call("send", {
+      to: "overseer",
+      kind: "result",
+      body: { status: "done", summary: "x" },
+      inReplyTo: toWorker.id,
+    });
+    assert(none.isError);
+    assertStringIncludes(none.text, "must reply to an assignment");
+    assert(!none.text.includes("no open assignment"));
+  });
+});

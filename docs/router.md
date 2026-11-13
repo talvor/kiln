@@ -19,10 +19,11 @@ Message may only take these routes; anything else is refused with the reason:
 | `result`     | up, to your direct superior | `inReplyTo` the assignment                            |
 | `question`   | up, to your direct superior | Optional `assignmentId` of the assignment it concerns |
 
-The [message schemas](../src/messages.ts) own the body fields. Required fields must be present, all
-supplied fields must be non-empty strings, and unknown fields are refused. A result or answer must
-reply to a Message the recipient sent you. Each assignment takes one result; each question takes one
-answer.
+The [message schemas](../src/messages.ts) own the body fields. Required fields must be present,
+all supplied fields must be non-empty strings, and unknown fields are refused. A result or answer
+must reply to a Message the recipient sent you. Each assignment takes one result; each question
+takes one answer. If a result names the wrong assignment or one that already has a result, the
+rejection names any open assignment IDs that the recipient sent the sender.
 
 ## The agent's tools
 
