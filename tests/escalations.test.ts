@@ -158,26 +158,55 @@ withWorld("an escalation about a request that has ended is stale", async (world)
   assertStringIncludes(late.text, "already failed");
 });
 
+const failTheStep = async (world: World, stepId?: number) => {
+  const step = {
+    id: stepId ?? (await asAgent(world, "engineering-leader", (a) => a.inbox()))[0].id,
+  };
+  await asAgent(world, "engineering-leader", (agent) =>
+    agent.send(
+      "overseer",
+      "result",
+      { status: "failed", summary: "Cannot reproduce" },
+      step.id,
+    ));
+  return step;
+};
+
 withWorld(
-  "an escalation raised without a request is tied to the only active one, and goes stale with it",
+  "an escalation raised over a question about an assignment goes stale when its request fails",
   async (world) => {
     await startRequest(world);
-    const raised = await raise(world, { summary: "Gatekeeper cannot launch; run `kiln resume`" });
+    const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    const tracked = await world.kiln("assignment", "start", "1", String(step.id));
+    assertEquals(tracked.code, 0, tracked.stderr);
+    const question = await asAgent(
+      world,
+      "engineering-leader",
+      (agent) =>
+        agent.send("overseer", "question", { question: "Widen the fix?" }, undefined, step.id),
+    );
+    const raised = await raise(world, { summary: "Widen the fix?", questionId: question.id });
     assertEquals(raised.isError, false, raised.text);
     assertEquals((await listed(world))[0].requestId, 1);
 
-    const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
-    await asAgent(world, "engineering-leader", (agent) =>
-      agent.send(
-        "overseer",
-        "result",
-        { status: "failed", summary: "Cannot reproduce" },
-        step.id,
-      ));
+    await failTheStep(world, step.id);
 
-    // Nothing is left open on a request that has failed.
     assertEquals(await listed(world), []);
     assertEquals((await listed(world, "--all"))[0].status, "stale");
+  },
+);
+
+withWorld(
+  "an escalation that names no request and no assignment is left open when a request fails",
+  async (world) => {
+    await startRequest(world);
+    const raised = await raise(world, { summary: "Adopt the new logging format?" });
+    assertEquals(raised.isError, false, raised.text);
+    assertEquals((await listed(world))[0].requestId, null);
+
+    await failTheStep(world);
+
+    assertEquals((await listed(world)).map((e) => e.status), ["open"]);
   },
 );
 

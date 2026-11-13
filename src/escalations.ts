@@ -40,18 +40,16 @@ export function viewOf(store: Store, e: EscalationRecord): EscalationView {
 /**
  * The Request an Escalation raised without naming one is about, so that it goes stale when that
  * Request ends instead of waiting for a decision nobody can act on. It follows the question the
- * Escalation was raised over, to the Assignment that question concerned; failing that, it is the
- * only Request in progress, if there is exactly one.
+ * Escalation was raised over, to the Assignment that question concerned.
  */
 function inferRequest(store: Store, questionId: number | null): number | null {
   const assignmentId = questionId === null ? null : store.getMessage(questionId)?.assignmentId;
   if (assignmentId) {
     try {
       return store.getAssignment(assignmentId).requestId;
-    } catch { /* not a tracked assignment: fall back */ }
+    } catch { /* not a tracked assignment: no link */ }
   }
-  const active = store.listRequests("active");
-  return active.length === 1 ? active[0].id : null;
+  return null;
 }
 
 export function createEscalations(store: Store) {
