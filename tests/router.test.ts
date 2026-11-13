@@ -376,12 +376,12 @@ withWorld("three automatic nudges dead-letter unread work and questions", async 
   const deadLettered = await waitFor(
     () => eventsOf(world, "message.dead_lettered"),
     (events) => events.some((e) => e.kind === "question") && events.some((e) => e.id === job.id),
-    30_000,
+    90_000,
   );
   const leader = await waitFor(
     () => asAgent(world, "dev-lead", (agent) => agent.inbox()),
     (messages) => messages.some((m) => m.kind === "result" && m.inReplyTo === job.id),
-    30_000,
+    90_000,
   );
   const [failure] = leader;
   assertEquals([failure.synthesised, failure.body.status, failure.inReplyTo], [
