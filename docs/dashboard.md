@@ -24,11 +24,11 @@ first, with their outcome, time, Source and any reason.
 
 The **header strip** shows what needs attention at a glance: **Halted** (with how long ago), **Daily
 cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap (or just
-today's spend when no cap is set). The spend chip links to the Cost view below. **Halt** shows while
-Kiln is running and **Resume** while it is halted or has Stuck agents;
-each is one click, with no confirmation, and records Source `dashboard`. A held key or double click
-counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
-`health.report`, in the same snapshot as Needs you.
+today's spend when no cap is set). A **Health** link stays visible while Kiln runs, and the spend
+chip links to the Cost view below. **Halt** shows while Kiln is running and **Resume** while it is
+halted or has Stuck agents; each is one click, with no confirmation, and records Source `dashboard`.
+A held key or double click counts once, and the buttons ignore clicks while one is in flight. The
+strip's facts come from `health.report`, in the same snapshot as Needs you.
 
 Under Needs you, the **Requests** rail lists the Requests that are running or waiting, and those
 that failed in the last 24 hours. An unfinished one with an open Escalation is marked **waiting on
@@ -58,12 +58,12 @@ total, and total against its Budget), and the unclaimed spend no Request claims,
 Overseer's. It comes from `cost.report` and
 refreshes with the rest of the page. Only Requests that spent something today are listed.
 
-The strip's conditions (**Halted**, **Daily cap reached**, **Stuck agents**) open the **Health**
-view at `/health`. It shows the daemon's version, pid and uptime, with **Halt** or **Resume** as
-in the strip, then the Stuck agents, the faults and the paused Projects, all read-only. **Run
-checks** runs the same checks as `kiln doctor` when you click it, one run at a time, and lists each
-result; nothing runs until you ask. It is not run while Kiln is not running, since it would start
-the daemon.
+The strip's conditions (**Halted**, **Daily cap reached**, **Stuck agents**) and its persistent
+**Health** link open the Health view at `/health`. It shows the daemon's version, pid and uptime,
+with **Halt** or **Resume** as in the strip, then the Stuck agents, the faults and the paused
+Projects, all read-only. **Run checks** runs the same checks as `kiln doctor` when you click it, one
+run at a time, and lists each result; nothing runs until you ask. Dashboard checks never start the
+daemon. When Kiln is down, the SQLite check reports **Kiln is not running**.
 
 Views have their own addresses (`/`, `/cost`, `/health`, `/escalations/<id>`, `/requests/<id>`,
 `/requests/<id>/overview`, `/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back

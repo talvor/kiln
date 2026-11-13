@@ -974,9 +974,8 @@
     stripBox.replaceChildren();
     const strip = view.strip;
     if (!view.running || !strip) return;
-    // Each condition opens the Health view.
-    const condition = (key, text) => {
-      const a = el("a", "cond", text);
+    const healthLink = (key, text, className) => {
+      const a = el("a", className, text);
       a.dataset.key = key;
       a.href = "/health";
       a.addEventListener("click", (event) => {
@@ -985,11 +984,18 @@
       });
       stripBox.append(a);
     };
-    if (strip.haltedSince !== null) condition("halted", "Halted " + when(strip.haltedSince));
-    if (strip.capReached) condition("cap", "Daily cap reached");
-    if (strip.stuck > 0) {
-      condition("stuck", strip.stuck + " Stuck agent" + (strip.stuck === 1 ? "" : "s"));
+    if (strip.haltedSince !== null) {
+      healthLink("halted", "Halted " + when(strip.haltedSince), "cond");
     }
+    if (strip.capReached) healthLink("cap", "Daily cap reached", "cond");
+    if (strip.stuck > 0) {
+      healthLink(
+        "stuck",
+        strip.stuck + " Stuck agent" + (strip.stuck === 1 ? "" : "s"),
+        "cond",
+      );
+    }
+    healthLink("health", "Health", "");
     const cost = el(
       "a",
       "",

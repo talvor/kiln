@@ -568,7 +568,11 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   };
 
   await show(quiet);
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
+  assertEquals(
+    strip.querySelectorAll("a").find((a) => a.dataset.key === "health")?.href,
+    "/health",
+  );
   assertEquals(costLink()?.href, "/cost");
   assertEquals(page.activeElement, null);
   costLink()!.focus();
@@ -584,7 +588,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     strip: { ...quiet, todayUsd: 0, capUsd: 6 },
   }));
   await tick();
-  assertEquals(strip.textContent, "$0.00 of $6.00 todayHalt");
+  assertEquals(strip.textContent, "Health$0.00 of $6.00 todayHalt");
   assertEquals(page.activeElement, costLink());
 
   await show({
@@ -595,10 +599,10 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   });
   assertEquals(
     strip.textContent,
-    "Halted just nowDaily cap reached2 Stuck agents$1.50 of $5.00 todayResume",
+    "Halted just nowDaily cap reached2 Stuck agentsHealth$1.50 of $5.00 todayResume",
   );
   assertEquals(
-    strip.querySelectorAll("a").filter((a) => a.href === "/health").map((a) => a.textContent),
+    strip.querySelectorAll("a").filter((a) => a.className === "cond").map((a) => a.textContent),
     ["Halted just now", "Daily cap reached", "2 Stuck agents"],
   );
   assertEquals(page.activeElement, costLink());
@@ -608,7 +612,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   costLink()!.click();
   assertEquals(location.pathname, "/cost");
   const halt = strip.querySelector("button")!;
-  assertEquals(strip.textContent, "$1.50 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 todayHalt");
   halt.click(2); // a held key or a double click
   assertEquals(pending.filter((p) => p.url === "/api/halt").length, 0);
   halt.click();
@@ -648,7 +652,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   await tick();
   assertEquals(strip.textContent, "");
   await show(quiet);
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
 
   strip.querySelector("button")!.click();
   pending.at(-1)!.resolve(Response.json({
@@ -661,7 +665,7 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     Response.json({ ...snapshot(0), strip: quiet }),
   );
   await tick();
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
 
   strip.querySelector("button")!.click();
   pending.at(-1)!.reject(new Error("offline"));
@@ -670,7 +674,10 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     Response.json({ ...snapshot(0), strip: quiet }),
   );
   await tick();
-  assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
+  assertEquals(strip.textContent, "Health$1.50 of $5.00 todayHalt");
+  strip.querySelectorAll("a").find((a) => a.dataset.key === "health")!.click();
+  assertEquals(location.pathname, "/health");
+  assertEquals(pending.at(-1)!.url, "/api/health");
 });
 
 const requestRow = (id: number, over: Record<string, unknown> = {}) => ({
@@ -1236,7 +1243,7 @@ Deno.test("the Cost view shows today against the cap, a table per Project and Re
       strip: { haltedSince: null, capUsd: 5, todayUsd: 3.5, capReached: false, stuck: 0 },
     }),
   );
-  const link = page.getElementById("strip").querySelectorAll("a")[0];
+  const link = page.getElementById("strip").querySelectorAll("a").find((a) => a.href === "/cost")!;
   assertEquals(link.href, "/cost");
   link.click();
   await tick();
@@ -1347,7 +1354,7 @@ Deno.test("the Health view shows the daemon, Halt and Resume, trouble read-only,
   await tick();
 
   // The strip's conditions open the Health view.
-  const conditions = strip.querySelectorAll("a").filter((a) => a.href === "/health");
+  const conditions = strip.querySelectorAll("a").filter((a) => a.className === "cond");
   assertEquals(conditions.map((a) => a.textContent), ["Halted 1 h ago", "1 Stuck agent"]);
   conditions[0].click();
   assertEquals(location.pathname, "/health");
