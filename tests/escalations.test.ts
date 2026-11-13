@@ -197,6 +197,46 @@ withWorld(
 );
 
 withWorld(
+  "an escalation raised over a stuck-agent question goes stale when its request fails",
+  async (world) => {
+    await Deno.mkdir(world.dirs.config, { recursive: true });
+    await Deno.writeTextFile(
+      join(world.dirs.config, "limits.json"),
+      JSON.stringify({ infrastructure: { retries: 1, backoffSeconds: 1 } }),
+    );
+    await startRequest(world);
+    const [step] = await asAgent(world, "engineering-leader", (agent) => agent.inbox());
+    const tracked = await world.kiln("assignment", "start", "1", String(step.id));
+    assertEquals(tracked.code, 0, tracked.stderr);
+    await world.launcher.script([{ crash: true }, { crash: true }]);
+    await asAgent(
+      world,
+      "engineering-leader",
+      (agent) =>
+        agent.send("diagnostician-1", "assignment", {
+          title: "Diagnose",
+          instructions: "Find the cause",
+        }),
+    );
+    const stuck = await waitFor(
+      () => asAgent(world, "overseer", (agent) => agent.inbox()),
+      (m) => m.some((x) => x.kind === "question" && /is stuck/.test(JSON.stringify(x.body))),
+    );
+    const question = stuck.find((x) =>
+      x.kind === "question" && /is stuck/.test(JSON.stringify(x.body))
+    )!;
+    const raised = await raise(world, { summary: "Agent is stuck", questionId: question.id });
+    assertEquals(raised.isError, false, raised.text);
+    assertEquals((await listed(world))[0].requestId, 1);
+
+    await failTheStep(world, step.id);
+
+    assertEquals(await listed(world), []);
+    assertEquals((await listed(world, "--all"))[0].status, "stale");
+  },
+);
+
+withWorld(
   "an escalation that names no request and no assignment is left open when a request fails",
   async (world) => {
     await startRequest(world);

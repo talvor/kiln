@@ -302,10 +302,12 @@ export function createRouter(opts: RouterOptions) {
     store.appendEvent("agent.stuck", { address: session.address, why });
     log.warn("agent is stuck", { address: session.address, why });
     if (!overseer || !sender || session.role === "overseer") return;
+    const concerns = openAssignments(sender.address).find((a) => a.deadLetteredAt === null);
     append({
       from: sender.address,
       to: overseer.address,
       kind: "question",
+      assignmentId: concerns?.id,
       body: {
         question: `${session.address} is stuck: ${why}. Kiln has stopped waking it; ` +
           `\`kiln resume\` tries again.`,
@@ -326,12 +328,12 @@ export function createRouter(opts: RouterOptions) {
     if (failures > policy.retries) {
       store.recordLaunchFailure(session.address, { stuck: true });
       const reason = `${failures} launches in a row failed (${why})`;
+      reportStuck(session, reason);
       for (const m of openAssignments(session.address)) {
         if (m.deadLetteredAt === null && !opts.hold?.(m)) {
           synthesiseFailure(m, `Kiln could not wake ${session.address}: ${reason}.`);
         }
       }
-      reportStuck(session, reason);
       return;
     }
     const seconds = Math.min(
@@ -398,8 +400,8 @@ export function createRouter(opts: RouterOptions) {
           if (m.deadLetteredAt !== null || opts.hold?.(m)) continue;
           if (m.interruptions + 1 >= MAX_INTERRUPTIONS) {
             const why = `assignment ${m.id} ("${m.body.title}") was interrupted twice`;
-            synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
             reportStuck(session, why);
+            synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
             outcome.failed++;
           } else {
             store.requeueMessage(m.id, true);
