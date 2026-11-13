@@ -168,7 +168,7 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
   },
   "implement-a-ticket": {
     description:
-      "Implement a ticket through to a pull request that has passed QA, then wrap the ticket up once the user has merged it. The user is told once QA has passed.",
+      "Implement a ticket through to a pull request that has passed QA, then wrap the ticket up once the user has merged it. Once QA has passed the pull request is marked ready for review and the user is told; there is no decision for them to make.",
     steps: [
       {
         name: "check-ticket",
@@ -183,7 +183,7 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
         department: "engineering",
         worker: "implementer",
         instructions:
-          "Implement the ticket test-first with the tdd skill, committing as you go. Then use the pr skill to write the pull request description to the artifact: the first line is the pull request's title as a heading, the rest is its description. Kiln opens a draft pull request from the request branch once this step is verified. You may be sent QA findings later: fix them on the same branch and update the description.",
+          "Implement the ticket test-first with the tdd skill, committing as you go. Then use the pr skill to write the pull request description to the artifact: the first line is the pull request's title as a heading, the rest is its description. Kiln opens a draft pull request from the request branch once this step is verified; it is marked ready for review once QA passes. You may be sent QA findings later: fix them on the same branch and update the description.",
         artifact: "pull-request.md",
         publish: "draft-pr",
       },
@@ -201,11 +201,10 @@ export const DEFAULT_PLAYBOOKS: Record<string, unknown> = {
         department: "engineering",
         worker: "gatekeeper",
         instructions:
-          "Run the project's checks and confirm the change meets each of the ticket's acceptance criteria, then write your verdict to the artifact. Do not change the code. If it falls short, report status findings with the findings in the summary: they go back to the implementer as a new assignment on the same pull request. Once you pass it, Kiln comments a QA summary on the pull request and tells the user.",
+          "Run the project's checks and confirm the change meets each of the ticket's acceptance criteria, then write your verdict to the artifact. Do not change the code. If it falls short, report status findings with the findings in the summary: they go back to the implementer as a new assignment on the same pull request. Once you pass it, Kiln comments a QA summary on the pull request, marks it ready for review and tells the user.",
         artifact: "gatekeeper.md",
         findings: "implement",
         publish: "qa-summary",
-        gate: "qa-passed",
       },
       {
         name: "wrap-up",

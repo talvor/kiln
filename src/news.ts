@@ -8,6 +8,7 @@ export const NEWS_EVENTS = [
   "step.failed",
   "step.escalated",
   "breakdown.approved",
+  "pr.ready",
   "agent.stuck",
   "budget.request_warned",
   "budget.request_blocked",
@@ -19,6 +20,7 @@ export const money = (usd: number): string => `$${usd.toFixed(2)}`;
 
 interface NewsData {
   id?: number;
+  url?: string;
   request?: number;
   why?: string;
   tickets?: string[];
@@ -39,6 +41,8 @@ export function describeNews(e: EventRecord): string {
       return `Request ${d.request}: the Overseer approved the breakdown of the spec into ${
         d.tickets?.length ?? 0
       } ticket(s): ${(d.tickets ?? []).join(", ")}.`;
+    case "pr.ready":
+      return `Request ${d.request}: pull request ${d.url} passed QA and is ready for you to review.`;
     case "request.done":
       return `Request ${d.id} finished.` +
         (d.costUsd === undefined ? "" : ` It cost ${money(d.costUsd)}.`);

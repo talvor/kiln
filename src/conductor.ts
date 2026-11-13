@@ -46,6 +46,7 @@ import {
   closeTicket,
   commentOnPr,
   isResearchTicket,
+  markPrReady,
   openDraftPr,
   parseTicket,
   PublishFailed,
@@ -587,27 +588,15 @@ export function createConductor(opts: ConductorOptions) {
     if (!step.spec.gate) return true;
     const gate = gateOf(step, step.spec.gate);
     if (!gate) {
-      let summary: string;
-      let detail: string;
-      if (step.spec.gate === "qa-passed") {
-        summary =
-          `Request ${request.id} passed QA: pull request ${request.prUrl} is ready for you.`;
-        detail = `${request.description}\n\nPull request: ${request.prUrl}\n\n` +
-          `Kiln does not merge. Merge the pull request when you are happy with it and Kiln ` +
-          `carries on; approving it here while it is open asks you to confirm.\n\n${await qaSummary(
-            request,
-          )}`;
-      } else {
-        const wt = store.getWorktree(request.worktreeId!);
-        const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
-        const parts: string[] = [];
-        for (const file of files) {
-          const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
-          if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
-        }
-        summary = `Approve the spec for request ${request.id}?`;
-        detail = `${request.description}\n\n${parts.join("\n\n")}`;
+      const wt = store.getWorktree(request.worktreeId!);
+      const files = [...new Set(store.listSteps(request.id).map((s) => s.spec.artifact))];
+      const parts: string[] = [];
+      for (const file of files) {
+        const text = await Deno.readTextFile(join(wt.path, file)).catch(() => "");
+        if (text.trim()) parts.push(`## ${file}\n\n${text.trim()}`);
       }
+      const summary = `Approve the spec for request ${request.id}?`;
+      const detail = `${request.description}\n\n${parts.join("\n\n")}`;
       const raised = store.addEscalation({
         raisedBy: overseerSeat().address,
         requestId: request.id,
@@ -625,21 +614,8 @@ export function createConductor(opts: ConductorOptions) {
       });
       return false;
     }
-    // Merging the pull request is the user's go-ahead, whether or not they also said so here.
-    if (gate.status === "open") return step.spec.gate === "qa-passed" && !!request.prMergedAt;
+    if (gate.status === "open") return false;
     if (gate.status === "approved") return true;
-    if (step.spec.gate === "qa-passed") {
-      const target = store.listSteps(request.id).find((s) => s.spec.name === step.spec.findings);
-      if (!target) throw new StepFailed(`The user rejected the result: ${gate.reason}`);
-      await sendBack(
-        request,
-        target,
-        gate.reason ?? "",
-        "The user rejected the pull request although it passed QA. Fix what they ask for on the " +
-          "same branch, so the same pull request is updated. Their reason:",
-      );
-      return false;
-    }
     const mine = assignments.filter((a) => sameWorker(step, a) && a.branch);
     reject(
       request,
@@ -817,15 +793,15 @@ export function createConductor(opts: ConductorOptions) {
         throw err;
       }
     }
-    if (
-      step.spec.publish === "qa-summary" && (!step.spec.gate || !gateOf(step, step.spec.gate))
-    ) {
+    if (step.spec.publish === "qa-summary") {
       if (!request.prUrl) {
         throw new StepFailed("QA passed, but Kiln has no pull request to report it on.");
       }
       try {
+        await markPrReady(project.clonePath, request.prUrl);
         await commentOnPr(project.clonePath, request.prUrl, await qaSummary(request));
         store.appendEvent("pr.commented", { request: request.id, url: request.prUrl });
+        store.appendEvent("pr.ready", { request: request.id, url: request.prUrl });
       } catch (err) {
         if (err instanceof PublishFailed) throw new StepFailed(err.message);
         throw err;
@@ -995,12 +971,11 @@ export function createConductor(opts: ConductorOptions) {
     });
   }
 
-  /** Whether the user has been told the pull request passed QA, and not turned it down. */
+  /** Whether the pull request passed QA and was marked ready, so it now waits for the user. */
   function awaitsMerge(request: RequestRecord): boolean {
-    const told = store.listEscalations().filter((e) =>
-      e.requestId === request.id && e.gate === "qa-passed"
-    ).at(-1);
-    return !!told && told.status !== "rejected";
+    return store.listSteps(request.id).some((s) =>
+      s.spec.publish === "qa-summary" && s.status === "done"
+    );
   }
 
   /**

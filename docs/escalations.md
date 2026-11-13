@@ -14,6 +14,8 @@ kiln reject <escalation-id> --reason <text>
 - A decision records its Source (`via`; the CLI sends `cli`), and `kiln report` shows it. A daemon
   reply that refuses a call carries a `code` (`stale`, `final`, `needs-confirm`, `not-found`,
   `halted` or `invalid`) beside the same text the CLI prints.
+- `--confirm` and the `needs-confirm` code remain in the CLI and protocol, but nothing in the
+  shipped playbooks currently requires them.
 - An Escalation waits for as long as it takes. Nothing times it out or decides for you.
 - Only the daemon records a decision, and only for you. A decision is final: deciding again is
   refused. A rejection needs a reason, which the Overseer reads.

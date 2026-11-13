@@ -122,9 +122,12 @@ if (Deno.args[0] === "issue" && Deno.args[1] === "create") {
   Deno.exit(reply.exit ?? 0);
 }
 
-if (Deno.args[0] === "pr" && (Deno.args[1] === "create" || Deno.args[1] === "comment")) {
-  // `gh pr create` replies from pr-create/script.json; `gh pr comment` just succeeds.
-  const tool = Deno.args[1] === "create" ? "pr-create" : "pr-comment";
+if (
+  Deno.args[0] === "pr" &&
+  (Deno.args[1] === "create" || Deno.args[1] === "comment" || Deno.args[1] === "ready")
+) {
+  // `gh pr create` replies from pr-create/script.json; `gh pr comment` and `gh pr ready` just succeed.
+  const tool = Deno.args[1] === "create" ? "pr-create" : `pr-${Deno.args[1]}`;
   const prDir = join(Deno.env.get("KILN_FAKE_DIR") ?? "", tool);
   const prFile = join(prDir, "script.json");
   Deno.mkdirSync(prDir, { recursive: true });
@@ -133,7 +136,7 @@ if (Deno.args[0] === "pr" && (Deno.args[1] === "create" || Deno.args[1] === "com
     JSON.stringify({ args: Deno.args, cwd: Deno.cwd() }) + "\n",
     { append: true },
   );
-  if (tool === "pr-comment") Deno.exit(0);
+  if (tool !== "pr-create") Deno.exit(0);
   let prScript: { replies: { stdout?: string; stderr?: string; exit?: number }[]; next: number };
   try {
     prScript = JSON.parse(Deno.readTextFileSync(prFile));

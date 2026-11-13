@@ -434,7 +434,7 @@ export interface StepSpec {
   /** The step waits to begin until the Request's pull request has been merged. */
   after?: "merge";
   /** A Gate the user must pass, once the step is verified and merged, before the step is done. */
-  gate?: "spec-approval" | "qa-passed";
+  gate?: "spec-approval";
   /** The earlier step that findings reported on this step go back to, as a new Assignment. */
   findings?: string;
 }
@@ -569,7 +569,7 @@ export interface EscalationRecord {
   createdAt: string;
   decidedAt: string | null;
 }
-export type GateKind = "spec-approval" | "out-of-scope" | "blocked-on-user" | "qa-passed";
+export type GateKind = "spec-approval" | "out-of-scope" | "blocked-on-user";
 export interface NewEscalation {
   raisedBy: string;
   stepId?: number | null;

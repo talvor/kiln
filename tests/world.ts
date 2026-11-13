@@ -96,6 +96,8 @@ export interface World extends Home {
     >;
     /** The comments Kiln made: the pull request and the text. */
     comments(): Promise<{ pr: string; body: string }[]>;
+    /** The pull requests Kiln marked ready for review, in order. */
+    readied(): Promise<string[]>;
   };
   /** A clone of the remote, standing in for a registered Project's checkout. */
   project: { path: string };
@@ -367,6 +369,7 @@ export async function makeWorld(): Promise<World> {
           pr: call.args[2],
           body: call.args[call.args.indexOf("--body") + 1],
         })),
+      readied: async () => (await calls("pr-ready")).map((call) => call.args[2]),
     },
     prStatus: {
       script: (statuses) => script("pr-status", "statuses", statuses),

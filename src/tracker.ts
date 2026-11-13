@@ -76,6 +76,23 @@ export async function openDraftPr(
   return url;
 }
 
+/** Mark a draft pull request ready for review. */
+export async function markPrReady(clonePath: string, prUrl: string): Promise<void> {
+  let result;
+  try {
+    result = await run("gh", ["pr", "ready", prUrl], clonePath, REMOTE_TIMEOUT_MS);
+  } catch {
+    throw new PublishFailed(
+      "Could not mark the pull request ready: the gh command is not available.",
+    );
+  }
+  if (result.code !== 0) {
+    throw new PublishFailed(
+      `Could not mark the pull request ready: ${firstLine(result.stderr || result.stdout)}`,
+    );
+  }
+}
+
 /** Comment on a pull request. */
 export async function commentOnPr(clonePath: string, prUrl: string, body: string): Promise<void> {
   let result;

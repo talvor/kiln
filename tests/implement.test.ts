@@ -3,7 +3,6 @@
 // leader and the workers), the fake remote and the fake launcher and `gh`.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { rawCall } from "./helpers.ts";
 import { withWorld, type World } from "./world.ts";
 import { asAgent, waitFor } from "./router_helpers.ts";
 
@@ -156,8 +155,8 @@ async function wrapUp(world: World) {
   });
 }
 
-/** Run the QA steps; return the Gate the Overseer raised for the user. */
-async function passQa(world: World): Promise<Escalation> {
+/** Run the QA steps, until Kiln has marked the pull request ready for the user. */
+async function passQa(world: World) {
   const review = await implement(world);
   await deliver(world, {
     worker: "reviewer-3",
@@ -170,7 +169,7 @@ async function passQa(world: World): Promise<Escalation> {
     stepMessage: gatekeep.id,
     files: { "gatekeeper.md": "All acceptance criteria met.\n" },
   });
-  return (await waitFor(() => escalations(world), (e) => e.length > 0))[0];
+  await waitFor(() => world.pullRequests.readied(), (r) => r.length > 0);
 }
 
 /** Kiln's own clone of the Project, found through the request's worktree (while it exists). */
@@ -190,7 +189,7 @@ const branchesOf = async (world: World, gitDir: string) =>
     .stdout.split("\n").filter(Boolean);
 
 withWorld(
-  "a ticket goes through readiness, a draft PR, review and the gatekeeper, and only then the user hears",
+  "a ticket goes through readiness, a draft PR, review and the gatekeeper, and only then is the PR ready for the user",
   async (world) => {
     await startTicket(world);
     const review = await implement(world);
@@ -217,6 +216,7 @@ withWorld(
     assertStringIncludes(String(gatekeep.body.instructions), "gatekeeper-4");
     assertEquals(await escalations(world), []);
     assertEquals(await world.pullRequests.comments(), []);
+    assertEquals(await world.pullRequests.readied(), []);
 
     await deliver(world, {
       worker: "gatekeeper-4",
@@ -224,17 +224,17 @@ withWorld(
       files: { "gatekeeper.md": "All acceptance criteria met.\n" },
     });
 
-    // QA passed: Kiln comments the QA summary on the PR and the Overseer tells the user.
+    // QA passed: Kiln comments the QA summary on the PR and takes it out of draft.
+    await waitFor(() => world.pullRequests.readied(), (r) => r.length > 0);
+    assertEquals(await world.pullRequests.readied(), [PR_URL]);
     const comments = await world.pullRequests.comments();
     assertEquals(comments.length, 1);
     assertEquals(comments[0].pr, PR_URL);
     assertStringIncludes(comments[0].body, "QA summary");
     assertStringIncludes(comments[0].body, "No defects found.");
     assertStringIncludes(comments[0].body, "All acceptance criteria met.");
-    const [told] = await escalations(world);
-    assertStringIncludes(told.summary, "passed QA");
-    assertStringIncludes(told.summary, PR_URL);
-    assertStringIncludes(told.detail!, "No defects found.");
+    // The user is told as news, not asked: no Gate is raised and nothing needs approving.
+    assertEquals(await escalations(world, "--all"), []);
     assertEquals((await statusOf(world)).status, "active");
 
     // Kiln never merges. The user merges the pull request, and that is the go-ahead.
@@ -244,8 +244,7 @@ withWorld(
     assertEquals(done.steps.map((s) => s.status), ["done", "done", "done", "done", "done"]);
     assertEquals((await world.pullRequests.created()).length, 1);
     assertEquals(await world.tracker.closed(), [{ item: "#18", comment: SHIPPED.trim() }]);
-    // The Gate was never decided by anyone, and is now moot.
-    assertEquals(await escalations(world), []);
+    assertEquals(await escalations(world, "--all"), []);
   },
 );
 
@@ -360,8 +359,8 @@ withWorld("review findings return as a new assignment that updates the same PR",
     files: { "gatekeeper.md": "Passes.\n" },
   });
 
-  const [told] = await escalations(world);
-  assertStringIncludes(told.summary, "passed QA");
+  await waitFor(() => world.pullRequests.readied(), (r) => r.length > 0);
+  assertEquals(await escalations(world, "--all"), []);
   const comments = await world.pullRequests.comments();
   assertEquals(comments.length, 1);
   assertStringIncludes(comments[0].body, "Quoting fixed.");
@@ -372,7 +371,7 @@ withWorld("review findings return as a new assignment that updates the same PR",
 });
 
 withWorld(
-  "gatekeeper findings and a rejection by the user both go back to the implementer",
+  "gatekeeper findings go back to the implementer and the PR is readied once QA passes",
   async (world) => {
     await startTicket(world);
     const review = await implement(world);
@@ -410,33 +409,12 @@ withWorld(
       await deliver(world, { worker, stepMessage: m.id, files: { [file]: "Ok.\n" } });
     }
 
-    // The user can still turn the PR down; the reason goes back to a fresh implementer.
-    const [told] = await escalations(world);
-    const rejected = await world.kiln("reject", String(told.id), "--reason", "Use semicolons");
-    assertEquals(rejected.code, 0, rejected.stderr);
-    const rework = await nextForLeader(world);
-    assertStringIncludes(String(rework.body.instructions), "Use semicolons");
-    assertStringIncludes(String(rework.body.instructions), "implementer-2-retry-2");
-    assertEquals((await statusOf(world)).status, "active");
-    await deliver(world, {
-      worker: "implementer-2-retry-2",
-      stepMessage: rework.id,
-      files: { "feature.txt": "export v3 with semicolons\n" },
-    });
-    for (
-      const [worker, file] of [["reviewer-3-round-2", "review.md"], [
-        "gatekeeper-4-round-2",
-        "gatekeeper.md",
-      ]]
-    ) {
-      const m = await nextForLeader(world);
-      await deliver(world, { worker, stepMessage: m.id, files: { [file]: "Ok again.\n" } });
-    }
-    const all = await escalations(world, "--all");
-    assertEquals(all.map((e) => e.status), ["rejected", "open"]);
+    // Only the final pass comments on the PR and readies it; the user decides nothing.
+    await waitFor(() => world.pullRequests.readied(), (r) => r.length > 0);
+    assertEquals(await escalations(world, "--all"), []);
     assertEquals((await world.pullRequests.created()).length, 1);
-    assertEquals((await world.pullRequests.comments()).length, 2);
-    assertEquals((await world.kiln("approve", String(all[1].id), "--confirm")).code, 0);
+    assertEquals((await world.pullRequests.comments()).length, 1);
+    assertEquals(await world.pullRequests.readied(), [PR_URL]);
     await world.prStatus.script([MERGED]);
     await wrapUp(world);
     const status = await waitFor(() => statusOf(world), (s) => s.status === "done");
@@ -491,61 +469,6 @@ withWorld(
     assertEquals(await world.pullRequests.comments(), []);
   },
 );
-
-withWorld("the Dashboard shows the unmerged refusal and Approve anyway confirms", async (world) => {
-  await startTicket(world);
-  const told = await passQa(world);
-  await world.prStatus.script([OPEN]);
-  const d = await world.dashboard();
-  const cookie = await d.signIn();
-  const send = (body: unknown) =>
-    d.fetch(`/api/escalations/${told.id}/decide`, {
-      method: "POST",
-      cookie,
-      origin: d.origin,
-      body: JSON.stringify(body),
-    });
-
-  const refused = await send({ approved: true });
-  assertEquals(refused.status, 409);
-  const refusal = await refused.json();
-  assertEquals(refusal.code, "needs-confirm");
-  assertStringIncludes(refusal.error, "still open");
-  assertEquals((await escalations(world)).map((e) => e.status), ["open"]);
-
-  const confirmed = await send({ approved: true, confirm: true });
-  assertEquals(confirmed.status, 200);
-  await confirmed.body?.cancel();
-  assertEquals(await escalations(world), []); // none waits any more
-});
-
-withWorld("approving while the pull request is open asks to confirm first", async (world) => {
-  await startTicket(world);
-  const told = await passQa(world);
-  await world.prStatus.script([OPEN]);
-
-  const asked = await world.kiln("approve", String(told.id));
-  assertEquals(asked.code, 1);
-  assertStringIncludes(asked.stderr, "still open");
-  assertStringIncludes(asked.stderr, "--confirm");
-  assertEquals((await escalations(world)).map((e) => e.status), ["open"]);
-  // A client that is not the CLI gets the reason as a code; the text is the same.
-  const raw = await rawCall(world, "escalations.decide", { id: told.id, approved: true });
-  assertEquals([raw.ok, raw.code, raw.error], [false, "needs-confirm", asked.stderr.trim()]);
-
-  // Confirmed, the approval stands, but Kiln still waits for the merge and keeps the branches.
-  const approved = await world.kiln("approve", String(told.id), "--confirm");
-  assertEquals(approved.code, 0, approved.stderr);
-  const waiting = await waitFor(() => statusOf(world), (s) => s.steps[3].status === "done");
-  assertEquals(waiting.status, "active");
-  assertEquals(waiting.steps.map((s) => s.status), ["done", "done", "done", "done", "planned"]);
-  assert((await world.remote.branches()).includes("kiln/request-1"));
-  assertEquals(await world.tracker.closed(), []);
-
-  await world.prStatus.script([MERGED]);
-  await wrapUp(world);
-  await waitFor(() => statusOf(world), (s) => s.status === "done");
-});
 
 withWorld(
   "a merged pull request is wrapped up, then everything it left behind is cleaned up",
