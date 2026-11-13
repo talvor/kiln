@@ -493,17 +493,9 @@ export function startDashboard(paths: KilnPaths, opts: { port?: number } = {}): 
     }
   }
 
-  /** Run the doctor's checks now. It would start a daemon that is down, so it is not run then. */
+  /** Run the doctor's checks now. */
   async function doctor(): Promise<Response> {
-    try {
-      await call(paths, "status");
-      return json({ ok: true, checks: await runDoctor(paths) });
-    } catch (err) {
-      if (err instanceof DaemonNotRunning) {
-        return json({ ok: false, error: "Kiln is not running.", code: "down" }, 503);
-      }
-      throw err;
-    }
+    return json({ ok: true, checks: await runDoctor(paths, { startDaemon: false }) });
   }
 
   const redirectHome = (setCookie?: string) =>

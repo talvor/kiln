@@ -1,7 +1,7 @@
 // `kiln doctor`: is this machine ready for Kiln to do work? Checks what Kiln cannot work
 // without (git, Claude installed and logged in, its store, the remotes of its Projects) and what it
 // merely does better with (the tools it publishes through), and says how to fix what is wrong.
-import { call, ensureDaemon } from "./client.ts";
+import { call, DaemonNotRunning, ensureDaemon } from "./client.ts";
 import { findClaude } from "./launcher.ts";
 import { loadLimits } from "./limits.ts";
 import type { DaemonStatus } from "./daemon.ts";
@@ -43,7 +43,10 @@ async function run(cmd: string, args: string[], cwd?: string) {
 
 const firstLine = (text: string) => text.trim().split("\n")[0] ?? "";
 
-export async function runDoctor(paths: KilnPaths): Promise<Check[]> {
+export async function runDoctor(
+  paths: KilnPaths,
+  options: { startDaemon?: boolean } = {},
+): Promise<Check[]> {
   const checks: Check[] = [];
   const add = (name: string, status: Check["status"], detail: string) =>
     checks.push({ name, status, detail });
@@ -74,19 +77,21 @@ export async function runDoctor(paths: KilnPaths): Promise<Check[]> {
 
   let projects: ProjectRecord[] = [];
   try {
-    await ensureDaemon(paths);
+    if (options.startDaemon !== false) await ensureDaemon(paths);
     const s = await call<DaemonStatus>(paths, "status");
+    projects = await call<ProjectRecord[]>(paths, "projects.list");
     add(
       "sqlite",
       "ok",
       `SQLite ${s.store.sqliteVersion}, store schema ${s.store.schemaVersion} (${s.store.journalMode}) at ${s.paths.store}`,
     );
-    projects = await call<ProjectRecord[]>(paths, "projects.list");
   } catch (err) {
     add(
       "sqlite",
       "fail",
-      `Kiln's daemon and store could not be started: ${(err as Error).message}`,
+      options.startDaemon === false && err instanceof DaemonNotRunning
+        ? "Kiln is not running"
+        : `Kiln's daemon and store could not be started: ${(err as Error).message}`,
     );
   }
 

@@ -951,7 +951,7 @@
     if (stripBusy) return;
     stripBusy = true;
     stripRefusal = null;
-    renderStrip();
+    render();
     try {
       const res = await fetch(path, { method: "POST" });
       const out = await res.json().catch(() => ({ ok: false, error: "Something went wrong." }));
@@ -961,7 +961,7 @@
     }
     await refresh();
     stripBusy = false;
-    renderStrip();
+    render();
   }
 
   function renderStrip() {

@@ -1402,5 +1402,14 @@ Deno.test("the Health view shows the daemon, Halt and Resume, trouble read-only,
   // Resume is the same one click as the strip's.
   main.querySelectorAll("button")[0].click();
   assertEquals(pending.at(-1)!.url, "/api/resume");
+  assertEquals(main.querySelectorAll("button")[0].getAttribute("aria-disabled"), "true");
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "true");
   await reply("/api/resume", Response.json({ ok: true }));
+  await reply("/api/needs-you", Response.json({
+    ...snapshot(0),
+    strip: { haltedSince: since, capUsd: null, todayUsd: 0, capReached: false, stuck: 1 },
+  }));
+  await reply("/api/health", Response.json(facts()));
+  assertEquals(main.querySelectorAll("button")[0].getAttribute("aria-disabled"), "false");
+  assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
 });

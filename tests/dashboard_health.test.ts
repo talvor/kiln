@@ -33,3 +33,21 @@ withWorld("the dashboard runs the doctor checks on demand, and only when asked",
   const names = out.checks.map((c: { name: string }) => c.name);
   assert(names.includes("git") && names.includes("sqlite"));
 });
+
+withWorld("dashboard doctor reports a stopped daemon without starting it", async (w) => {
+  await openTeam(w);
+  const d = await w.dashboard();
+  const cookie = await d.signIn();
+  assertEquals((await w.kiln("daemon", "stop")).code, 0);
+
+  const res = await d.fetch("/api/doctor", { method: "POST", cookie, origin: d.origin });
+  assertEquals(res.status, 200);
+  const out = await res.json();
+  assertEquals(out.ok, true);
+  assertEquals(out.checks.find((c: { name: string }) => c.name === "sqlite"), {
+    name: "sqlite",
+    status: "fail",
+    detail: "Kiln is not running",
+  });
+  assertEquals((await w.kiln("daemon", "status")).code, 3);
+});
