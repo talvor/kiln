@@ -293,7 +293,7 @@ export function createRouter(opts: RouterOptions) {
   }
 
   /** Tell the Overseer an agent is stuck, as a question from the agent's leader. */
-  function reportStuck(session: SessionRecord, why: string): void {
+  function reportStuck(session: SessionRecord, why: string, assignmentId?: number): void {
     const sessions = store.listSessions();
     const overseer = sessions.find((s) => s.role === "overseer");
     const sender = session.role === "leader"
@@ -302,12 +302,24 @@ export function createRouter(opts: RouterOptions) {
     store.appendEvent("agent.stuck", { address: session.address, why });
     log.warn("agent is stuck", { address: session.address, why });
     if (!overseer || !sender || session.role === "overseer") return;
-    const concerns = openAssignments(sender.address).find((a) => a.deadLetteredAt === null);
+    const tracked = (id: number): boolean => {
+      try {
+        store.getAssignment(id);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const concerns = [
+      ...(assignmentId === undefined ? [] : [assignmentId]),
+      ...openAssignments(session.address).filter((a) => a.deadLetteredAt === null).map((a) => a.id),
+      ...openAssignments(sender.address).filter((a) => a.deadLetteredAt === null).map((a) => a.id),
+    ].find(tracked);
     append({
       from: sender.address,
       to: overseer.address,
       kind: "question",
-      assignmentId: concerns?.id,
+      assignmentId: concerns,
       body: {
         question: `${session.address} is stuck: ${why}. Kiln has stopped waking it; ` +
           `\`kiln resume\` tries again.`,
@@ -400,7 +412,7 @@ export function createRouter(opts: RouterOptions) {
           if (m.deadLetteredAt !== null || opts.hold?.(m)) continue;
           if (m.interruptions + 1 >= MAX_INTERRUPTIONS) {
             const why = `assignment ${m.id} ("${m.body.title}") was interrupted twice`;
-            reportStuck(session, why);
+            reportStuck(session, why, m.id);
             synthesiseFailure(m, `Kiln stopped under this assignment's worker twice: ${why}.`);
             outcome.failed++;
           } else {
