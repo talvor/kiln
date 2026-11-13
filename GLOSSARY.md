@@ -94,8 +94,9 @@ dead-lettered) is recorded beside them. _Avoid_: email, ticket, event
 results and questions go up to the sender's direct superior (worker to its department's leader,
 leader to the overseer). Any other path is refused. _Avoid_: channel, permission
 
-**Dead letter**: A Message nobody read after three Nudges. Kiln stops waking anyone for it; a
-dead-lettered assignment is reported back to its sender as a failed result written by Kiln. _Avoid_:
+**Dead letter**: A Message nobody read after three Nudges, or one addressed to a Worker whose
+Worktree is gone (it can no longer be woken). Kiln stops waking anyone for it; a dead-lettered
+assignment is reported back to its sender as a failed result written by Kiln. _Avoid_:
 lost message, expired message
 
 **Merge watch**: How Kiln follows a pull request that has passed QA and been marked ready for

@@ -3,7 +3,7 @@
 // when nobody picks one up Kiln Nudges the recipient, then gives up and dead-letters it.
 import { DEFAULT_LIMITS } from "./limits.ts";
 import type { Logger } from "./log.ts";
-import { type LaunchRequest, type LaunchResult, workdirMissing } from "./launcher.ts";
+import { errorText, type LaunchRequest, type LaunchResult, workdirMissing } from "./launcher.ts";
 import { confine, DEFAULT_TOOLS, judgeCall } from "./confinement.ts";
 import { KINDS, refuseRoute, superiorOf, validateBody } from "./messages.ts";
 import {
@@ -73,6 +73,8 @@ export interface RouterOptions {
 
 /** Why a launch ended without the agent having done its part. */
 type Outcome = "ok" | "failed" | "unstarted" | "stopped";
+/** How much of the launcher's complaint is kept to explain a failed launch. */
+const WHY_KEEP = 500;
 /** An Outcome, and what the launcher said went wrong when it did not complete. */
 interface Launched {
   outcome: Outcome;
@@ -632,8 +634,10 @@ export function createRouter(opts: RouterOptions) {
    * worktree removed, so there is nowhere to start Claude. Waking it can never succeed.
    */
   function orphaned(session: SessionRecord): boolean {
+    // Only a Worktree Kiln itself released: a directory that vanished some other way (a deleted
+    // clone, a deleted Worktree) is put right by the environment checks, and may be retried.
     return session.role === "worker" && workdirMissing(session.cwd) &&
-      store.findLiveWorktree(session.cwd) === undefined;
+      store.findWorktree(session.cwd)?.releasedAt != null;
   }
 
   /**
@@ -771,7 +775,7 @@ export function createRouter(opts: RouterOptions) {
       if (launched.ok) return { outcome: "ok" };
       return {
         outcome: launched.turns === 0 ? "unstarted" : "failed",
-        why: `Claude ended with ${launched.outcome}: ${launched.text}`.slice(0, 500),
+        why: `Claude ended with ${launched.outcome}: ${launched.text}`.slice(0, WHY_KEEP),
       };
     } catch (err) {
       log.warn("could not nudge", { address: session.address, err });
@@ -779,7 +783,7 @@ export function createRouter(opts: RouterOptions) {
       if (stoppedByKiln(abortController)) return { outcome: "stopped" };
       return {
         outcome: abortController.signal.aborted ? "failed" : "unstarted",
-        why: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+        why: errorText(err).slice(0, WHY_KEEP),
       };
     } finally {
       // A halt cut the agent off mid-work: what it had been given is put back for after the resume.

@@ -82,6 +82,16 @@ export function workdirMissing(cwd: string): boolean {
 /** How much of the child's stderr a failure keeps. */
 const STDERR_KEEP = 2000;
 
+const missingWorkdir = (cwd: string, cause?: unknown) =>
+  new LaunchError(
+    `cannot start Claude: its working directory ${cwd} does not exist` +
+      ` (the launcher's "failed to launch" text for this is misleading)`,
+    { cause },
+  );
+
+/** What an error says, whatever was thrown. */
+export const errorText = (err: unknown): string => err instanceof Error ? err.message : String(err);
+
 /**
  * The error to report for a launch that failed. The SDK blames the binary's libc when spawning it
  * fails with ENOENT, but Node reports a missing working directory the same way, so a directory
@@ -89,14 +99,8 @@ const STDERR_KEEP = 2000;
  * and what the child wrote to stderr added to it.
  */
 export function explainLaunchError(err: unknown, cwd: string, stderr: string): Error {
-  if (workdirMissing(cwd)) {
-    return new LaunchError(
-      `cannot start Claude: its working directory ${cwd} does not exist` +
-        ` (the launcher's "failed to launch" text for this is misleading)`,
-      { cause: err },
-    );
-  }
-  const base = err instanceof Error ? err.message : String(err);
+  if (workdirMissing(cwd)) return missingWorkdir(cwd, err);
+  const base = errorText(err);
   const code = (err as { code?: unknown } | null)?.code;
   const tail = stderr.trim().slice(-STDERR_KEEP);
   const parts = [base];
@@ -124,7 +128,7 @@ export function findClaude(): string {
 /** Launch Claude on a request with the installed `claude` and wait for it to finish. */
 export async function launch(req: LaunchRequest): Promise<LaunchResult> {
   const maxBudgetUsd = Math.min(req.maxBudgetUsd ?? MAX_LAUNCH_USD, MAX_LAUNCH_USD);
-  if (workdirMissing(req.cwd)) throw explainLaunchError(undefined, req.cwd, "");
+  if (workdirMissing(req.cwd)) throw missingWorkdir(req.cwd);
   let stderr = "";
   const run = query({
     prompt: req.prompt,

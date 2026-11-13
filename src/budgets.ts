@@ -5,6 +5,7 @@ import { dailyCapReached, dailyWarning, describeNews, money, NEWS_EVENTS } from 
 import { DEFAULT_LIMITS, type LimitsConfig, requestBudgetUsd } from "./limits.ts";
 import type { Logger } from "./log.ts";
 import type { RequestRecord, Store } from "./store.ts";
+import { viewOf } from "./escalations.ts";
 
 /** Something Kiln tells the user outside the chat. */
 export interface Notification {
@@ -210,7 +211,11 @@ export function createBudgets(opts: BudgetsOptions) {
   /** What happened since the digest last told the user, or undefined when nothing did. */
   function digestText(through: number): string | undefined {
     const lines = store.listEvents(through, NEWS_EVENTS).map(describeNews);
-    for (const e of store.listEscalations().filter((e) => e.status === "open")) {
+    for (
+      const e of store.listEscalations().map((e) => viewOf(store, e)).filter((e) =>
+        e.status === "open"
+      )
+    ) {
       lines.push(`Decision waiting for you: escalation ${e.id}: ${e.summary}`);
     }
     if (!lines.length) return undefined; // no news: nothing to say
