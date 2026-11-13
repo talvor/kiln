@@ -264,7 +264,12 @@ async function oneAssignment(
 ) {
   await setLimits(world, limits);
   await register(world);
+  await world.launcher.script([{ result: "ready" }]);
   await start(world);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (prompts) => prompts.some((prompt) => prompt.includes("You are the engineering leader")),
+  );
   await leaderInbox(world);
   // Scripted before the worker is delegated to, so no wake of it can come first.
   if (runs) await world.launcher.script(runs);
@@ -314,8 +319,12 @@ withWorld("an Assignment that uses its turns is stopped and the leader gets opti
 });
 
 withWorld("an Assignment that spends its budget is stopped", async (w) => {
-  const job = await oneAssignment(w, { defaults: { spendUsd: 0.2 } });
-  await w.launcher.script(Array(4).fill({ result: "ok", costUsd: 0.25 }));
+  const job = await oneAssignment(
+    w,
+    { defaults: { spendUsd: 0.2 } },
+    {},
+    Array(4).fill({ result: "ok", costUsd: 0.25 }),
+  );
 
   const stopped = await waitFor(() => assignmentOf(w, job.id), (a) => a.status === "failed");
   assertEquals([stopped.limitReached, stopped.spendUsd], ["spend", 0.25]);
@@ -327,8 +336,12 @@ withWorld("an Assignment that spends its budget is stopped", async (w) => {
 });
 
 withWorld("the wall-clock watch stops a worker that is still running", async (w) => {
-  const job = await oneAssignment(w, { defaults: { seconds: 3 } });
-  await w.launcher.script(Array(3).fill({ result: "ok", hang: true }));
+  const job = await oneAssignment(
+    w,
+    { defaults: { seconds: 3 } },
+    {},
+    Array(3).fill({ result: "ok", hang: true }),
+  );
 
   const stopped = await waitFor(() => assignmentOf(w, job.id), (a) => a.status === "failed");
   assertEquals(stopped.limitReached, "time");

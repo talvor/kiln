@@ -517,9 +517,11 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     reject: (error: Error) => void;
   }> = [];
   const fetch = (url: string, init?: { method?: string }) =>
-    new Promise<Response>((resolve, reject) =>
-      pending.push({ url, method: init?.method, resolve, reject })
-    );
+    url === "/api/cost"
+      ? Promise.resolve(Response.json({ running: true, cost: null })) // not under test here
+      : new Promise<Response>((resolve, reject) =>
+        pending.push({ url, method: init?.method, resolve, reject })
+      );
   let ageTimer = () => {};
   let refreshTimer = () => {};
   let stream: EventSource;
@@ -611,7 +613,9 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
   assertEquals(posts[0].method, "POST");
   posts[0].resolve(Response.json({ ok: true }));
   await tick();
-  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  pending.findLast((p) => p.url === "/api/needs-you")!.resolve(
+    Response.json({ ...snapshot(0), strip: quiet }),
+  );
   await tick();
   assertEquals(strip.querySelector("button")?.getAttribute("aria-disabled"), "false");
 
@@ -620,7 +624,9 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     status: 409,
   }));
   await tick();
-  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  pending.findLast((p) => p.url === "/api/needs-you")!.resolve(
+    Response.json({ ...snapshot(0), strip: quiet }),
+  );
   await tick();
   assertEquals(strip.textContent.includes("Cannot halt"), true);
 
@@ -646,14 +652,18 @@ Deno.test("the header strip shows conditions and spend, and Halt and Resume igno
     code: "down",
   }, { status: 503 }));
   await tick();
-  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  pending.findLast((p) => p.url === "/api/needs-you")!.resolve(
+    Response.json({ ...snapshot(0), strip: quiet }),
+  );
   await tick();
   assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
 
   strip.querySelector("button")!.click();
   pending.at(-1)!.reject(new Error("offline"));
   await tick();
-  pending.at(-1)!.resolve(Response.json({ ...snapshot(0), strip: quiet }));
+  pending.findLast((p) => p.url === "/api/needs-you")!.resolve(
+    Response.json({ ...snapshot(0), strip: quiet }),
+  );
   await tick();
   assertEquals(strip.textContent, "$1.50 of $5.00 todayHalt");
 });
@@ -1166,4 +1176,116 @@ Deno.test("the Transcript tab loads Messages, appends live, flags and truncates 
   );
   assertEquals(items().length, 4);
   assertEquals(items()[3].textContent.includes("arrived during Overview"), true);
+});
+
+Deno.test("the Cost view shows today against the cap, a table per Project and Request, and unclaimed spend", async () => {
+  const page = new Page();
+  const location = { pathname: "/" };
+  const pending: Array<{ url: string; resolve: (response: Response) => void }> = [];
+  const fetch = (url: string) => new Promise<Response>((resolve) => pending.push({ url, resolve }));
+  let stream: EventSource;
+  class EventSource extends PageEvents {
+    constructor(url: string) {
+      super(url);
+      stream = this;
+    }
+  }
+  new Function(
+    "document",
+    "location",
+    "history",
+    "fetch",
+    "EventSource",
+    "addEventListener",
+    "setInterval",
+    "setTimeout",
+    "clearTimeout",
+    "Date",
+    appJs,
+  )(
+    page,
+    location,
+    { pushState: (_s: null, _t: string, path: string) => location.pathname = path },
+    fetch,
+    EventSource,
+    () => {},
+    () => {},
+    (callback: () => void) => {
+      callback();
+      return 1;
+    },
+    () => {},
+    Date,
+  );
+  const answer = async (url: string, response: Response) => {
+    const found = pending.findLast((p) => p.url === url)!;
+    pending.splice(pending.indexOf(found), 1);
+    found.resolve(response);
+    await tick();
+  };
+  stream!.emit("open");
+  await answer(
+    "/api/needs-you",
+    Response.json({
+      ...snapshot(0),
+      strip: { haltedSince: null, capUsd: 5, todayUsd: 3.5, capReached: false, stuck: 0 },
+    }),
+  );
+  const link = page.getElementById("strip").querySelectorAll("a")[0];
+  assertEquals(link.href, "/cost");
+  link.click();
+  await tick();
+  assertEquals(location.pathname, "/cost");
+  await answer(
+    "/api/cost",
+    Response.json({
+      running: true,
+      cost: {
+        day: "2026-01-01",
+        todayUsd: 3.5,
+        capUsd: 5,
+        capReached: false,
+        projects: [{ name: "Example", usd: 3 }],
+        requests: [
+          { id: 7, project: "Example", status: "active", usd: 3, totalUsd: 4, budgetUsd: 8 },
+          { id: 8, project: "Example", status: "done", usd: 0, totalUsd: 1, budgetUsd: null },
+        ],
+        otherUsd: 0.5,
+      },
+    }),
+  );
+  const text = page.getElementById("main").textContent;
+  for (
+    const part of [
+      "$3.50 of the $5.00 daily cap",
+      "Example",
+      "#7",
+      "$4.00 of $8.00 (50%)",
+      "no Budget set",
+      "Unclaimed spend",
+      "$0.50 today that no Request claims",
+    ]
+  ) assertEquals(text.includes(part), true, part);
+  const main = page.getElementById("main");
+  assertEquals(main.children.some((child) => child.getAttribute("role") === "progressbar"), false);
+  const tables = main.children.filter((child) => child.tag === "table");
+  assertEquals(tables.length, 2);
+  assertEquals(tables[0].children[0].children.map((cell) => cell.textContent), [
+    "Project",
+    "Today",
+  ]);
+  assertEquals(tables[1].children[0].children.map((cell) => cell.textContent), [
+    "Request",
+    "Project",
+    "Today",
+    "Total",
+    "Budget",
+  ]);
+  assertEquals(tables[1].children[1].children.map((cell) => cell.textContent), [
+    "#7",
+    "Example",
+    "$3.00",
+    "$4.00",
+    "$4.00 of $8.00 (50%)",
+  ]);
 });

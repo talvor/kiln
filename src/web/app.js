@@ -19,6 +19,8 @@
   const opened = new Set();
   // The Report tab's summary of how the Request went.
   let report = { id: null, data: null, error: null };
+  // The Cost view's report of today's spend.
+  let cost = { data: null, error: null };
   const CUT = 600;
   const blankCancel = { asking: false, busy: false, refusal: null, shownAt: null };
   let cancelAct = { ...blankCancel };
@@ -293,7 +295,7 @@
   async function loadDetail() {
     const mine = ++detailSeq;
     const id = selectedRequestId();
-    if (id === null) return;
+    if (id === null) return location.pathname === "/cost" ? await loadCost(mine) : undefined;
     const current = () => mine === detailSeq && selectedRequestId() === id;
     const cached = requestDetails.get(id);
     const after = cached?.last ?? 0;
@@ -320,6 +322,21 @@
     const tab = tabOf(id);
     if (tab === "transcript") await loadTranscript(id, current);
     else if (tab === "report") await loadReport(id, current);
+  }
+
+  async function loadCost(mine) {
+    const current = () => mine === detailSeq && location.pathname === "/cost";
+    try {
+      const res = await fetch("/api/cost");
+      const out = await res.json().catch(() => ({ error: "Something went wrong." }));
+      if (!current()) return;
+      if (res.ok) cost = { data: out.cost, error: null };
+      else cost = { data: null, error: out.error ?? "Something went wrong." };
+    } catch {
+      if (!current()) return;
+      cost = { data: cost.data, error: "The dashboard could not be reached." };
+    }
+    render();
   }
 
   async function loadReport(id, current) {
@@ -688,13 +705,77 @@
     if (live) main.append(cancelControls(r));
   }
 
+  function costTable(head, rows) {
+    const table = el("table", "cost");
+    const top = el("tr");
+    for (const h of head) top.append(el("th", "", h));
+    table.append(top);
+    for (const row of rows) {
+      const tr = el("tr");
+      for (const cell of row) tr.append(el("td", "", cell));
+      table.append(tr);
+    }
+    return table;
+  }
+
+  /** The Cost view: today against the daily cap, per Project and per Request, and unclaimed spend. */
+  function renderCost() {
+    main.append(el("h2", "", "Cost"));
+    if (cost.error) main.append(el("p", "refusal", cost.error));
+    const c = cost.data;
+    if (!c) {
+      if (!cost.error) main.append(el("p", "note", "Loading the cost…"));
+      return;
+    }
+    main.append(
+      el(
+        "p",
+        "meta",
+        c.capUsd === null
+          ? "Today (" + c.day + "): " + usd(c.todayUsd) + " spent, no daily cap set"
+          : "Today (" + c.day + "): " + usd(c.todayUsd) + " of the " + usd(c.capUsd) +
+            " daily cap" + (c.capReached ? " (cap reached)" : ""),
+      ),
+    );
+    main.append(el("h3", "", "By Project (today)"));
+    main.append(
+      c.projects.length === 0
+        ? el("p", "note", "No Project has spent anything today.")
+        : costTable(["Project", "Today"], c.projects.map((p) => [p.name, usd(p.usd)])),
+    );
+    main.append(el("h3", "", "By Request"));
+    main.append(
+      c.requests.length === 0 ? el("p", "note", "No Request has spent anything today.") : costTable(
+        ["Request", "Project", "Today", "Total", "Budget"],
+        c.requests.map((r) => [
+          "#" + r.id,
+          r.project,
+          usd(r.usd),
+          usd(r.totalUsd),
+          r.budgetUsd === null
+            ? "no Budget set"
+            : usd(r.totalUsd) + " of " + usd(r.budgetUsd) + " (" +
+              Math.round(r.budgetUsd > 0 ? (r.totalUsd / r.budgetUsd) * 100 : 100) + "%)",
+        ]),
+      ),
+    );
+    main.append(el("h3", "", "Unclaimed spend"));
+    main.append(
+      el(
+        "p",
+        "meta",
+        usd(c.otherUsd) + " today that no Request claims, such as the Overseer's own.",
+      ),
+    );
+  }
+
   function renderMain() {
     main.replaceChildren();
     const requestId = selectedRequestId();
     if (requestId !== null) return renderRequest(requestId);
     const id = selectedId();
     if (location.pathname === "/cost") {
-      return main.append(el("p", "note", "The Cost view is not built yet."));
+      return renderCost();
     }
     if (id === null) return main.append(el("p", "note", "Pick an Escalation to see its detail."));
     const all = [...view.groups.flatMap((g) => g.items), ...view.stale];

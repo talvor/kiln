@@ -24,8 +24,8 @@ first, with their outcome, time, Source and any reason.
 
 The **header strip** shows what needs attention at a glance: **Halted** (with how long ago), **Daily
 cap reached**, and the number of **Stuck agents**, plus today's spend against the daily cap (or just
-today's spend when no cap is set), which links to `/cost`. The Cost view itself comes in a later
-change. **Halt** shows while Kiln is running and **Resume** while it is halted or has Stuck agents;
+today's spend when no cap is set). The spend chip links to the Cost view below. **Halt** shows while
+Kiln is running and **Resume** while it is halted or has Stuck agents;
 each is one click, with no confirmation, and records Source `dashboard`. A held key or double click
 counts once, and the buttons ignore clicks while one is in flight. The strip's facts come from
 `health.report`, in the same snapshot as Needs you.
@@ -51,6 +51,12 @@ outcome, timings, cost against Budget, each step's report, the Escalations raise
 of each decision) and the branch, tickets and pull request. A running or waiting Request opens on
 Overview; a finished or failed one opens on Report. The Overview tab has its own address
 (`/requests/<id>/overview`) once the Request has finished.
+
+The **Cost view** (`/cost`, opened from the spend chip) shows today's spend against the daily cap
+(or today's spend alone when no cap is set), a table per Project (today) and per Request (today,
+total, and total against its Budget), and the unclaimed spend no Request claims, such as the
+Overseer's. It comes from `cost.report` and
+refreshes with the rest of the page. Only Requests that spent something today are listed.
 
 Views have their own addresses (`/`, `/cost`, `/escalations/<id>`, `/requests/<id>`,
 `/requests/<id>/overview`, `/requests/<id>/transcript` and `/requests/<id>/report`), so reload, back

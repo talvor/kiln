@@ -43,6 +43,7 @@ async function delegated(world: World, limits: unknown, runs: LauncherRun[]) {
   await Deno.mkdir(world.dirs.config, { recursive: true });
   await Deno.writeTextFile(join(world.dirs.config, "limits.json"), JSON.stringify(limits));
   await register(world);
+  await world.launcher.script([{ result: "ready" }]);
   const started = await world.kiln(
     "request",
     "start",
@@ -53,6 +54,10 @@ async function delegated(world: World, limits: unknown, runs: LauncherRun[]) {
     "Logins fail after midnight",
   );
   assertEquals(started.code, 0, started.stderr);
+  await waitFor(
+    () => world.launcher.prompts(),
+    (prompts) => prompts.some((prompt) => prompt.includes("You are the engineering leader")),
+  );
   await asAgent(world, "engineering-leader", (a) => a.inbox());
   await world.launcher.script(runs);
   await asAgent(
